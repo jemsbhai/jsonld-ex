@@ -1,0 +1,53 @@
+name: Publish npm
+
+on:
+  push:
+    tags:
+      - "js-v*" # Trigger on tags like js-v0.1.0, js-v1.0.0
+
+jobs:
+  test:
+    name: Test before publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: packages/js/package-lock.json
+      - working-directory: packages/js
+        run: npm ci
+      - working-directory: packages/js
+        run: npm run build
+      - working-directory: packages/js
+        run: npm test
+
+  publish:
+    name: Publish to npm
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Required for npm provenance
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: packages/js/package-lock.json
+
+      - name: Install and build
+        working-directory: packages/js
+        run: |
+          npm ci
+          npm run build
+
+      - name: Publish
+        working-directory: packages/js
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

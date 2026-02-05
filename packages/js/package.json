@@ -1,0 +1,39 @@
+{
+  "name": "@jsonld-ex/core",
+  "version": "0.1.0",
+  "description": "JSON-LD 1.2 extensions for AI/ML data exchange, security hardening, and validation",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "lint": "eslint src/",
+    "benchmark": "ts-node ../benchmarks/run.ts"
+  },
+  "keywords": [
+    "json-ld", "linked-data", "semantic-web", "ai", "ml",
+    "confidence", "provenance", "embeddings", "security",
+    "validation", "rdf", "knowledge-graph"
+  ],
+  "author": "Muntaser Aljabry",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YOUR_USERNAME/jsonld-ex"
+  },
+  "dependencies": {
+    "jsonld": "^8.3.2"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.11.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.2",
+    "typescript": "^5.4.0",
+    "eslint": "^8.57.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0"
+  }
+}
