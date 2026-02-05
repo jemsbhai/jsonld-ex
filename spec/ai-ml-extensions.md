@@ -2,7 +2,7 @@
 
 **Status:** Draft  
 **Version:** 0.1.0  
-**Authors:** Muntaser Aljabry, Marius Silaghi  
+**Authors:** Muntaser Syed, Marius Silaghi, Sheikh Abujar, Rwaida Alssadi  
 **Date:** 2026-01-15
 
 ## 1. Introduction

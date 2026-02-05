@@ -10,7 +10,7 @@ readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
 authors = [
-    {name = "Muntaser Aljabry", email = "jemsbhai@gmail.com"},
+    {name = "Muntaser Syed", email = "jemsbhai@gmail.com"},
 ]
 keywords = [
     "json-ld", "linked-data", "semantic-web", "ai", "ml",

@@ -17,7 +17,7 @@
     "confidence", "provenance", "embeddings", "security",
     "validation", "rdf", "knowledge-graph"
   ],
-  "author": "Muntaser Aljabry",
+  "author": "Muntaser Syed",
   "license": "MIT",
   "repository": {
     "type": "git",

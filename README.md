@@ -128,7 +128,7 @@ MIT
 ```bibtex
 @inproceedings{jsonld-ex-2026,
   title={Extending JSON-LD for Modern AI: Addressing Security, Data Modeling, and Implementation Gaps},
-  author={Aljabry, Muntaser and Silaghi, Marius},
+  author={Syed, Muntaser and Silaghi, Marius and Abujar, Sheikh and Alssadi, Rwaida},
   booktitle={Proceedings of the 39th International FLAIRS Conference},
   year={2026}
 }
