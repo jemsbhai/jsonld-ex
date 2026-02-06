@@ -30,6 +30,12 @@ from jsonld_ex.inference import (
     PropagationResult,
     ConflictReport,
 )
+from jsonld_ex.merge import (
+    merge_graphs,
+    diff_graphs,
+    MergeReport,
+    MergeConflict,
+)
 
 __all__ = [
     "JsonLdEx",
@@ -65,4 +71,9 @@ __all__ = [
     "propagate_graph_confidence",
     "PropagationResult",
     "ConflictReport",
+    # Graph merging
+    "merge_graphs",
+    "diff_graphs",
+    "MergeReport",
+    "MergeConflict",
 ]
