@@ -43,6 +43,20 @@ from jsonld_ex.temporal import (
     TemporalDiffResult,
 )
 
+# Optional modules — import only if dependencies are available
+try:
+    from jsonld_ex.cbor_ld import to_cbor, from_cbor, payload_stats, PayloadStats
+except ImportError:
+    pass
+
+try:
+    from jsonld_ex.mqtt import (
+        to_mqtt_payload, from_mqtt_payload,
+        derive_mqtt_topic, derive_mqtt_qos,
+    )
+except ImportError:
+    pass
+
 __all__ = [
     "JsonLdEx",
     # AI/ML annotations
@@ -87,4 +101,14 @@ __all__ = [
     "query_at_time",
     "temporal_diff",
     "TemporalDiffResult",
+    # CBOR-LD serialization (requires cbor2)
+    "to_cbor",
+    "from_cbor",
+    "payload_stats",
+    "PayloadStats",
+    # MQTT transport (requires cbor2)
+    "to_mqtt_payload",
+    "from_mqtt_payload",
+    "derive_mqtt_topic",
+    "derive_mqtt_qos",
 ]
