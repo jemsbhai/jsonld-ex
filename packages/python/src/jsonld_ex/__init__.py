@@ -36,6 +36,12 @@ from jsonld_ex.merge import (
     MergeReport,
     MergeConflict,
 )
+from jsonld_ex.temporal import (
+    add_temporal,
+    query_at_time,
+    temporal_diff,
+    TemporalDiffResult,
+)
 
 __all__ = [
     "JsonLdEx",
@@ -76,4 +82,9 @@ __all__ = [
     "diff_graphs",
     "MergeReport",
     "MergeConflict",
+    # Temporal extensions
+    "add_temporal",
+    "query_at_time",
+    "temporal_diff",
+    "TemporalDiffResult",
 ]
