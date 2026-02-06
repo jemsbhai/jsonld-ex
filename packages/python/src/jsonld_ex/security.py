@@ -22,9 +22,14 @@ def compute_integrity(
     context: str | dict | Any, algorithm: str = "sha256"
 ) -> str:
     """Compute an integrity hash for a context."""
+    if context is None:
+        raise TypeError("Context must not be None")
     if algorithm not in SUPPORTED_ALGORITHMS:
         raise ValueError(f"Unsupported algorithm: {algorithm}")
-    content = context if isinstance(context, str) else json.dumps(context)
+    try:
+        content = context if isinstance(context, str) else json.dumps(context, sort_keys=True)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"Context is not JSON-serializable: {exc}") from exc
     h = hashlib.new(algorithm, content.encode("utf-8")).digest()
     b64 = base64.b64encode(h).decode("ascii")
     return f"{algorithm}-{b64}"
@@ -63,18 +68,39 @@ def is_context_allowed(url: str, config: dict[str, Any]) -> bool:
     return True
 
 
+_MAX_RECURSION_DEPTH = 500  # Safety cap for _measure_depth
+
+
 def enforce_resource_limits(
     document: str | dict | Any,
     limits: Optional[dict[str, int]] = None,
 ) -> None:
     """Validate document against resource limits before processing."""
+    if document is None:
+        raise TypeError("Document must not be None")
     resolved = {**DEFAULT_RESOURCE_LIMITS, **(limits or {})}
-    content = document if isinstance(document, str) else json.dumps(document)
-    if len(content) > resolved["max_document_size"]:
-        raise ValueError(
-            f"Document size {len(content)} exceeds limit {resolved['max_document_size']}"
-        )
-    parsed = json.loads(content) if isinstance(document, str) else document
+    if isinstance(document, str):
+        content = document
+        if len(content) > resolved["max_document_size"]:
+            raise ValueError(
+                f"Document size {len(content)} exceeds limit {resolved['max_document_size']}"
+            )
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Document is not valid JSON: {exc}") from exc
+    elif isinstance(document, (dict, list)):
+        try:
+            content = json.dumps(document)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(f"Document is not JSON-serializable: {exc}") from exc
+        if len(content) > resolved["max_document_size"]:
+            raise ValueError(
+                f"Document size {len(content)} exceeds limit {resolved['max_document_size']}"
+            )
+        parsed = document
+    else:
+        raise TypeError(f"Document must be a str, dict, or list, got: {type(document).__name__}")
     depth = _measure_depth(parsed)
     if depth > resolved["max_graph_depth"]:
         raise ValueError(
@@ -83,6 +109,8 @@ def enforce_resource_limits(
 
 
 def _measure_depth(obj: Any, current: int = 0) -> int:
+    if current > _MAX_RECURSION_DEPTH:
+        return current  # Safety cap to prevent stack overflow
     if obj is None or not isinstance(obj, (dict, list)):
         return current
     max_depth = current

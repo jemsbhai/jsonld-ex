@@ -73,15 +73,15 @@ def validate_node(node: dict[str, Any], shape: dict[str, Any]) -> ValidationResu
             if type_err:
                 errors.append(ValidationError(prop, "type", type_err, raw))
 
-        # Numeric
-        if "@minimum" in constraint and isinstance(raw, (int, float)):
+        # Numeric (exclude booleans — they are int subclass in Python)
+        if "@minimum" in constraint and isinstance(raw, (int, float)) and not isinstance(raw, bool):
             if raw < constraint["@minimum"]:
                 errors.append(ValidationError(
                     prop, "minimum",
                     f"Value {raw} below minimum {constraint['@minimum']}", raw,
                 ))
 
-        if "@maximum" in constraint and isinstance(raw, (int, float)):
+        if "@maximum" in constraint and isinstance(raw, (int, float)) and not isinstance(raw, bool):
             if raw > constraint["@maximum"]:
                 errors.append(ValidationError(
                     prop, "maximum",
@@ -105,10 +105,16 @@ def validate_node(node: dict[str, Any], shape: dict[str, Any]) -> ValidationResu
 
         # Pattern
         if "@pattern" in constraint and isinstance(raw, str):
-            if not re.search(constraint["@pattern"], raw):
+            try:
+                if not re.search(constraint["@pattern"], raw):
+                    errors.append(ValidationError(
+                        prop, "pattern",
+                        f'"{raw}" does not match pattern "{constraint["@pattern"]}"', raw,
+                    ))
+            except re.error as exc:
                 errors.append(ValidationError(
                     prop, "pattern",
-                    f'"{raw}" does not match pattern "{constraint["@pattern"]}"', raw,
+                    f'Invalid regex pattern "{constraint["@pattern"]}": {exc}', raw,
                 ))
 
     return ValidationResult(len(errors) == 0, errors, warnings)
@@ -148,8 +154,12 @@ def _extract_raw(value: Any) -> Any:
         return None
     if isinstance(value, dict) and "@value" in value:
         return value["@value"]
+    if isinstance(value, dict) and not any(k.startswith("@") for k in value):
+        return None  # Plain dict without JSON-LD keywords — treat as absent
     if isinstance(value, list) and len(value) > 0:
         return _extract_raw(value[0])
+    if isinstance(value, list) and len(value) == 0:
+        return None
     return value
 
 
@@ -174,9 +184,9 @@ def _validate_type(value: Any, expected: str) -> Optional[str]:
     checks = {
         f"{XSD}string": lambda v: isinstance(v, str),
         f"{XSD}integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
-        f"{XSD}double": lambda v: isinstance(v, (int, float)),
-        f"{XSD}float": lambda v: isinstance(v, (int, float)),
-        f"{XSD}decimal": lambda v: isinstance(v, (int, float)),
+        f"{XSD}double": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+        f"{XSD}float": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+        f"{XSD}decimal": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
         f"{XSD}boolean": lambda v: isinstance(v, bool),
     }
     checker = checks.get(xsd_type)

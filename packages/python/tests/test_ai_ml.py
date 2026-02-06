@@ -94,3 +94,73 @@ class TestAggregateConfidence:
 
     def test_empty(self):
         assert aggregate_confidence([]) == 0.0
+
+    def test_weighted_zero_weights_raises(self):
+        with pytest.raises(ValueError, match="greater than zero"):
+            aggregate_confidence([0.5, 0.5], "weighted", [0, 0])
+
+    def test_weighted_negative_weight_raises(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            aggregate_confidence([0.5, 0.5], "weighted", [-1, 2])
+
+    def test_weighted_bool_weight_raises(self):
+        with pytest.raises(TypeError, match="number"):
+            aggregate_confidence([0.5, 0.5], "weighted", [True, 1])
+
+    def test_weighted_mismatched_length(self):
+        with pytest.raises(ValueError, match="match"):
+            aggregate_confidence([0.5], "weighted", [1, 2])
+
+
+class TestConfidenceEdgeCases:
+    def test_nan_confidence_rejected(self):
+        with pytest.raises(ValueError, match="finite"):
+            annotate("x", confidence=float("nan"))
+
+    def test_inf_confidence_rejected(self):
+        with pytest.raises(ValueError, match="finite"):
+            annotate("x", confidence=float("inf"))
+
+    def test_neg_inf_confidence_rejected(self):
+        with pytest.raises(ValueError, match="finite"):
+            annotate("x", confidence=float("-inf"))
+
+    def test_bool_confidence_rejected(self):
+        with pytest.raises(TypeError, match="number"):
+            annotate("x", confidence=True)
+
+    def test_string_confidence_rejected(self):
+        with pytest.raises(TypeError, match="number"):
+            annotate("x", confidence="0.5")
+
+    def test_boundary_0(self):
+        result = annotate("x", confidence=0.0)
+        assert result["@confidence"] == 0.0
+
+    def test_boundary_1(self):
+        result = annotate("x", confidence=1.0)
+        assert result["@confidence"] == 1.0
+
+    def test_integer_confidence_accepted(self):
+        result = annotate("x", confidence=1)
+        assert result["@confidence"] == 1
+
+    def test_get_confidence_non_dict(self):
+        assert get_confidence(42) is None
+        assert get_confidence("string") is None
+        assert get_confidence([]) is None
+
+    def test_get_provenance_non_dict(self):
+        prov = get_provenance(42)
+        assert prov.confidence is None
+
+    def test_filter_empty_graph(self):
+        assert filter_by_confidence([], "name", 0.5) == []
+
+    def test_filter_missing_property(self):
+        graph = [{"@id": "#a", "other": "value"}]
+        assert filter_by_confidence(graph, "name", 0.5) == []
+
+    def test_annotate_none_value(self):
+        result = annotate(None, confidence=0.5)
+        assert result["@value"] is None

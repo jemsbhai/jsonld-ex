@@ -124,7 +124,14 @@ def aggregate_confidence(
     elif strategy == "weighted":
         if weights is None or len(weights) != len(scores):
             raise ValueError("Weights must match scores length")
+        for w in weights:
+            if not isinstance(w, (int, float)) or isinstance(w, bool):
+                raise TypeError(f"Weight must be a number, got: {type(w).__name__}")
+            if w < 0:
+                raise ValueError(f"Weight must be non-negative, got: {w}")
         total_weight = sum(weights)
+        if total_weight == 0:
+            raise ValueError("Total weight must be greater than zero")
         return sum(s * w for s, w in zip(scores, weights)) / total_weight
     else:  # mean
         return sum(scores) / len(scores)
@@ -133,7 +140,11 @@ def aggregate_confidence(
 # ── Internal ───────────────────────────────────────────────────────
 
 def _validate_confidence(score: float) -> None:
-    if not isinstance(score, (int, float)) or score < 0 or score > 1:
+    if not isinstance(score, (int, float)) or isinstance(score, bool):
+        raise TypeError(f"@confidence must be a number, got: {type(score).__name__}")
+    if math.isnan(score) or math.isinf(score):
+        raise ValueError(f"@confidence must be finite, got: {score}")
+    if score < 0 or score > 1:
         raise ValueError(f"@confidence must be between 0.0 and 1.0, got: {score}")
 
 

@@ -11,7 +11,7 @@ def vector_term_definition(
     """Create a context term definition for a vector embedding property."""
     defn: dict[str, Any] = {"@id": iri, "@container": "@vector"}
     if dimensions is not None:
-        if not isinstance(dimensions, int) or dimensions < 1:
+        if not isinstance(dimensions, int) or isinstance(dimensions, bool) or dimensions < 1:
             raise ValueError(f"@dimensions must be a positive integer, got: {dimensions}")
         defn["@dimensions"] = dimensions
     return {term_name: defn}
@@ -29,7 +29,7 @@ def validate_vector(
         errors.append("Vector must not be empty")
         return False, errors
     for i, v in enumerate(vector):
-        if not isinstance(v, (int, float)) or math.isnan(v) or math.isinf(v):
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or math.isnan(v) or math.isinf(v):
             errors.append(f"Vector element [{i}] must be a finite number, got: {v}")
     if expected_dimensions is not None and len(vector) != expected_dimensions:
         errors.append(
@@ -39,9 +39,20 @@ def validate_vector(
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
-    """Compute cosine similarity between two vectors."""
+    """Compute cosine similarity between two vectors.
+
+    Returns 0.0 when either vector is a zero vector (norm == 0).
+    """
     if len(a) != len(b):
         raise ValueError(f"Vector dimension mismatch: {len(a)} vs {len(b)}")
+    if len(a) == 0:
+        raise ValueError("Vectors must not be empty")
+    for i, (x, y) in enumerate(zip(a, b)):
+        for label, v in (("a", x), ("b", y)):
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                raise TypeError(f"Vector {label}[{i}] must be a number, got: {type(v).__name__}")
+            if math.isnan(v) or math.isinf(v):
+                raise ValueError(f"Vector {label}[{i}] must be finite, got: {v}")
     dot = sum(x * y for x, y in zip(a, b))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))
