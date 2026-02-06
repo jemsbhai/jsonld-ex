@@ -1,0 +1,57 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+## [0.2.0] — 2026-02-06
+
+### Added
+
+**OWL/RDF Interoperability** (`owl_interop`)
+- Bidirectional PROV-O conversion (`to_prov_o`, `from_prov_o`)
+- Bidirectional SHACL mapping (`shape_to_shacl`, `shacl_to_shape`)
+- OWL class restriction generation (`shape_to_owl_restrictions`)
+- RDF-star N-Triples export (`to_rdf_star_ntriples`)
+- Verbosity comparison utilities (`compare_with_prov_o`, `compare_with_shacl`)
+
+**Confidence Propagation** (`inference`)
+- Chain propagation: multiply, bayesian, min, dampened methods
+- Multi-source combination: average, max, noisy-OR, Dempster–Shafer
+- Conflict resolution: highest, weighted_vote, recency strategies
+- Graph-level propagation along property chains
+
+**Graph Merging** (`merge`)
+- Confidence-aware merge of multiple JSON-LD graphs
+- Conflict strategies: highest, weighted_vote, recency, union
+- Semantic diff between two graphs (`diff_graphs`)
+- Full audit trail via `MergeReport`
+
+**Temporal Extensions** (`temporal`)
+- `@validFrom`, `@validUntil`, `@asOf` annotation helpers
+- Point-in-time graph queries (`query_at_time`)
+- Temporal diff between two timestamps (`temporal_diff`)
+
+**CBOR-LD Serialization** (`cbor_ld`) — *requires `cbor2`*
+- Binary serialization with context compression (`to_cbor`, `from_cbor`)
+- Payload size comparison (`payload_stats`)
+
+**MQTT Transport** (`mqtt`) — *requires `cbor2`*
+- MQTT payload serialization (`to_mqtt_payload`, `from_mqtt_payload`)
+- Topic derivation from `@type`/`@id` (`derive_mqtt_topic`)
+- QoS mapping from `@confidence` (`derive_mqtt_qos`)
+
+### Changed
+- Version bumped to 0.2.0
+- Added `iot` and `mqtt` optional dependency groups in pyproject.toml
+- Added `pytest-benchmark` to dev dependencies
+
+### Migration from 0.1.x
+No breaking changes. All existing public API is preserved. New modules are purely additive. CBOR-LD and MQTT modules are optional — they gracefully skip if `cbor2` is not installed.
+
+## [0.1.3] — 2026-01-20
+
+### Added
+- Core AI/ML extensions: `@confidence`, `@source`, `@extractedAt`, `@method`, `@humanVerified`
+- Vector extensions: `@vector` container, cosine similarity, dimension validation
+- Security extensions: `@integrity` context verification, context allowlists, resource limits
+- Validation extensions: `@shape` native validation framework
+- `JsonLdEx` processor wrapping PyLD
