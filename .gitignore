@@ -17,3 +17,6 @@ coverage/
 .DS_Store
 Thumbs.db
 ROADMAP.md
+
+# Benchmark convenience copies (overwritten each run; timestamped files are the record)
+benchmarks/results/*_latest.*
