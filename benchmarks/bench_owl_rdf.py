@@ -5,7 +5,7 @@ Measures:
   - PROV-O verbosity ratio (triples, bytes)
   - SHACL verbosity ratio
   - Round-trip fidelity (to_prov_o → from_prov_o)
-  - Conversion throughput (nodes/sec)
+  - Conversion throughput (nodes/sec) with stddev and 95% CI
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from jsonld_ex import (
 )
 
 from data_generators import make_annotated_graph
+from bench_utils import timed_trials, DEFAULT_TRIALS
 
 
 @dataclass
@@ -124,7 +125,6 @@ def bench_shacl_verbosity() -> dict[str, Any]:
 
         # Round-trip
         rt, _warnings = shacl_to_shape(shacl)
-        # Check structural match (ignoring key order)
         n_props = len([k for k in shape if k != "@type"])
         rt_props = len([k for k in rt if k != "@type"])
 
@@ -144,7 +144,6 @@ def bench_round_trip_fidelity(n: int = 100) -> dict[str, Any]:
     total_props = 0
     preserved = 0
 
-    # Test round-trip per individual node (from_prov_o recovers one main node)
     for orig_node in doc["@graph"]:
         single_doc = {"@context": "http://schema.org/"}
         single_doc.update(orig_node)
@@ -172,35 +171,53 @@ def bench_round_trip_fidelity(n: int = 100) -> dict[str, Any]:
 
 def bench_conversion_throughput(
     sizes: list[int] = [10, 100, 1000],
-    iterations: int = 5,
+    n_trials: int = DEFAULT_TRIALS,
 ) -> dict[str, Any]:
-    """Measure to_prov_o and shape_to_shacl throughput."""
+    """Measure to_prov_o and from_prov_o throughput with statistical rigor."""
     results = {}
     for n in sizes:
         doc = make_annotated_graph(n)
 
-        # to_prov_o
-        times = []
-        for _ in range(iterations):
-            start = time.perf_counter()
-            to_prov_o(doc)
-            times.append(time.perf_counter() - start)
-        avg_prov = sum(times) / len(times)
+        # Build per-node single docs (to_prov_o/from_prov_o handle single nodes)
+        singles = []
+        for node in doc["@graph"]:
+            single = {"@context": "http://schema.org/"}
+            single.update(node)
+            singles.append(single)
 
-        # from_prov_o
-        prov_doc, _ = to_prov_o(doc)
-        times = []
-        for _ in range(iterations):
-            start = time.perf_counter()
-            from_prov_o(prov_doc)
-            times.append(time.perf_counter() - start)
-        avg_from = sum(times) / len(times)
+        # to_prov_o: convert each node
+        def do_to_prov():
+            for s in singles:
+                to_prov_o(s)
+
+        stats_to = timed_trials(do_to_prov, n=n_trials)
+
+        # from_prov_o: convert each PROV-O doc back
+        prov_docs = [to_prov_o(s)[0] for s in singles]
+
+        def do_from_prov():
+            for pd in prov_docs:
+                from_prov_o(pd)
+
+        stats_from = timed_trials(do_from_prov, n=n_trials)
 
         results[f"n={n}"] = {
-            "to_prov_o_avg_sec": round(avg_prov, 6),
-            "from_prov_o_avg_sec": round(avg_from, 6),
-            "to_prov_o_nodes_per_sec": round(n / avg_prov, 1) if avg_prov > 0 else 0,
-            "from_prov_o_nodes_per_sec": round(n / avg_from, 1) if avg_from > 0 else 0,
+            "to_prov_o": {
+                **stats_to.to_dict(),
+                "nodes_per_sec": round(n / stats_to.mean, 1) if stats_to.mean > 0 else 0,
+                "nodes_per_sec_ci95": [
+                    round(n / stats_to.ci95_high, 1) if stats_to.ci95_high > 0 else 0,
+                    round(n / stats_to.ci95_low, 1) if stats_to.ci95_low > 0 else 0,
+                ],
+            },
+            "from_prov_o": {
+                **stats_from.to_dict(),
+                "nodes_per_sec": round(n / stats_from.mean, 1) if stats_from.mean > 0 else 0,
+                "nodes_per_sec_ci95": [
+                    round(n / stats_from.ci95_high, 1) if stats_from.ci95_high > 0 else 0,
+                    round(n / stats_from.ci95_low, 1) if stats_from.ci95_low > 0 else 0,
+                ],
+            },
         }
     return results
 
@@ -229,7 +246,7 @@ if __name__ == "__main__":
     print("\n--- PROV-O Verbosity ---")
     for k, v in r.prov_o_verbosity.items():
         print(f"  {k}: jsonld-ex {v['jsonld_ex_bytes']}B vs PROV-O {v['prov_o_bytes']}B "
-              f"(ratio {v['byte_ratio']}, compression {v['compression_ratio']:.2f})")
+              f"(ratio {v['byte_ratio']}, expansion {v['node_expansion_factor']}x)")
 
     print("\n--- SHACL Verbosity ---")
     for k, v in r.shacl_verbosity.items():
@@ -243,5 +260,7 @@ if __name__ == "__main__":
 
     print("\n--- Conversion Throughput ---")
     for k, v in r.conversion_throughput.items():
-        print(f"  {k}: to_prov_o {v['to_prov_o_nodes_per_sec']:.0f} nodes/s, "
-              f"from_prov_o {v['from_prov_o_nodes_per_sec']:.0f} nodes/s")
+        tp = v['to_prov_o']
+        fp = v['from_prov_o']
+        print(f"  {k}: to_prov_o {tp['nodes_per_sec']:.0f} ± {tp['std_sec']*1e3:.2f}ms, "
+              f"from_prov_o {fp['nodes_per_sec']:.0f} ± {fp['std_sec']*1e3:.2f}ms")

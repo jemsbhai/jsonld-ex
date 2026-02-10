@@ -6,6 +6,7 @@ Measures:
   - End-to-end pipeline: annotate → validate → serialize
   - MQTT topic/QoS derivation overhead
   - Batch sensor processing throughput
+  All with stddev, 95% CI, and n=30 trials.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from jsonld_ex.mqtt import (
 )
 
 from data_generators import make_sensor_reading, make_sensor_batch
+from bench_utils import timed_trials, timed_trials_us, DEFAULT_TRIALS
 
 
 SENSOR_SHAPE = {
@@ -71,109 +73,93 @@ def bench_payload_sizes(sizes: list[int] = [1, 10, 100, 1000]) -> dict[str, Any]
 
 def bench_pipeline_throughput(
     n_readings: int = 1000,
-    iterations: int = 5,
+    n_trials: int = DEFAULT_TRIALS,
 ) -> dict[str, Any]:
     """End-to-end: generate → annotate → validate → serialize → deserialize."""
     readings = make_sensor_batch(n_readings)
 
-    # Time each phase
     results: dict[str, Any] = {"n_readings": n_readings}
 
-    # Phase 1: Annotation (already annotated by generator, but simulate re-annotation)
-    times = []
-    for _ in range(iterations):
-        start = time.perf_counter()
+    # Phase 1: Annotation
+    def do_annotate():
         for r in readings:
             r["value"] = annotate(
                 r["value"]["@value"],
                 confidence=r["value"]["@confidence"],
                 source=r["value"]["@source"],
             )
-        times.append(time.perf_counter() - start)
-    results["annotate_avg_ms"] = round(sum(times) / len(times) * 1000, 2)
+    stats_ann = timed_trials(do_annotate, n=n_trials)
+    results["annotate"] = stats_ann.to_dict()
+    results["annotate_avg_ms"] = stats_ann.mean_ms()
+    results["annotate_std_ms"] = stats_ann.std_ms()
 
     # Phase 2: Validation
-    times = []
-    for _ in range(iterations):
-        start = time.perf_counter()
+    def do_validate():
         for r in readings:
             validate_node(r, SENSOR_SHAPE)
-        times.append(time.perf_counter() - start)
-    results["validate_avg_ms"] = round(sum(times) / len(times) * 1000, 2)
+    stats_val = timed_trials(do_validate, n=n_trials)
+    results["validate"] = stats_val.to_dict()
+    results["validate_avg_ms"] = stats_val.mean_ms()
+    results["validate_std_ms"] = stats_val.std_ms()
 
     # Phase 3: CBOR serialization
     doc = {"@context": "http://schema.org/", "@graph": readings}
-    times_ser = []
-    times_de = []
-    for _ in range(iterations):
-        start = time.perf_counter()
-        payload = to_cbor(doc)
-        times_ser.append(time.perf_counter() - start)
+    stats_ser = timed_trials(lambda: to_cbor(doc), n=n_trials)
+    results["serialize"] = stats_ser.to_dict()
+    results["serialize_avg_ms"] = stats_ser.mean_ms()
+    results["serialize_std_ms"] = stats_ser.std_ms()
 
-        start = time.perf_counter()
-        from_cbor(payload)
-        times_de.append(time.perf_counter() - start)
-
-    results["serialize_avg_ms"] = round(sum(times_ser) / len(times_ser) * 1000, 2)
-    results["deserialize_avg_ms"] = round(sum(times_de) / len(times_de) * 1000, 2)
-    results["total_avg_ms"] = round(
-        results["annotate_avg_ms"]
-        + results["validate_avg_ms"]
-        + results["serialize_avg_ms"],
-        2,
-    )
-    results["readings_per_sec"] = round(
-        n_readings / (results["total_avg_ms"] / 1000), 0
-    )
+    # Total
+    total_mean = stats_ann.mean + stats_val.mean + stats_ser.mean
+    total_std = (stats_ann.std**2 + stats_val.std**2 + stats_ser.std**2) ** 0.5
+    results["total_avg_ms"] = round(total_mean * 1000, 2)
+    results["total_std_ms"] = round(total_std * 1000, 2)
+    results["readings_per_sec"] = round(n_readings / total_mean, 0) if total_mean > 0 else 0
+    results["n_trials"] = n_trials
 
     return results
 
 
 def bench_mqtt_overhead(
     n: int = 1000,
-    iterations: int = 5,
+    n_trials: int = DEFAULT_TRIALS,
 ) -> dict[str, Any]:
     """Overhead of topic derivation and QoS mapping per message."""
     readings = make_sensor_batch(n)
     results: dict[str, Any] = {"n": n}
 
     # Topic derivation
-    times = []
-    for _ in range(iterations):
-        start = time.perf_counter()
+    def do_topic():
         for r in readings:
             derive_mqtt_topic(r)
-        times.append(time.perf_counter() - start)
-    avg = sum(times) / len(times)
-    results["topic_derivation_us_per_msg"] = round(avg / n * 1_000_000, 2)
+    stats_topic = timed_trials(do_topic, n=n_trials)
+    results["topic_derivation_us_per_msg"] = round(stats_topic.mean / n * 1_000_000, 2)
+    results["topic_derivation_std_us"] = round(stats_topic.std / n * 1_000_000, 2)
 
     # QoS derivation
-    times = []
-    for _ in range(iterations):
-        start = time.perf_counter()
+    def do_qos():
         for r in readings:
             derive_mqtt_qos(r)
-        times.append(time.perf_counter() - start)
-    avg = sum(times) / len(times)
-    results["qos_derivation_us_per_msg"] = round(avg / n * 1_000_000, 2)
+    stats_qos = timed_trials(do_qos, n=n_trials)
+    results["qos_derivation_us_per_msg"] = round(stats_qos.mean / n * 1_000_000, 2)
+    results["qos_derivation_std_us"] = round(stats_qos.std / n * 1_000_000, 2)
 
     # Full MQTT payload round-trip
-    times = []
-    for _ in range(iterations):
-        start = time.perf_counter()
+    def do_roundtrip():
         for r in readings:
             payload = to_mqtt_payload(r, compress=True)
             from_mqtt_payload(payload, compressed=True)
-        times.append(time.perf_counter() - start)
-    avg = sum(times) / len(times)
-    results["mqtt_roundtrip_us_per_msg"] = round(avg / n * 1_000_000, 2)
+    stats_rt = timed_trials(do_roundtrip, n=n_trials)
+    results["mqtt_roundtrip_us_per_msg"] = round(stats_rt.mean / n * 1_000_000, 2)
+    results["mqtt_roundtrip_std_us"] = round(stats_rt.std / n * 1_000_000, 2)
+    results["n_trials"] = n_trials
 
     return results
 
 
 def bench_batch_scaling(
     sizes: list[int] = [10, 100, 500, 1000, 5000, 10000],
-    iterations: int = 3,
+    n_trials: int = DEFAULT_TRIALS,
 ) -> dict[str, Any]:
     """Full pipeline throughput at varying batch sizes."""
     results = {}
@@ -181,23 +167,21 @@ def bench_batch_scaling(
         readings = make_sensor_batch(n)
         doc = {"@context": "http://schema.org/", "@graph": readings}
 
-        times = []
-        for _ in range(iterations):
-            start = time.perf_counter()
-            # annotate
+        def pipeline():
             for r in readings:
                 annotate(r["value"]["@value"], confidence=r["value"]["@confidence"])
-            # validate
             for r in readings:
                 validate_node(r, SENSOR_SHAPE)
-            # serialize
             to_cbor(doc)
-            times.append(time.perf_counter() - start)
 
-        avg = sum(times) / len(times)
+        stats = timed_trials(pipeline, n=n_trials)
         results[f"n={n}"] = {
-            "avg_sec": round(avg, 4),
-            "readings_per_sec": round(n / avg, 0) if avg > 0 else 0,
+            **stats.to_dict(),
+            "readings_per_sec": round(n / stats.mean, 0) if stats.mean > 0 else 0,
+            "readings_per_sec_ci95": [
+                round(n / stats.ci95_high, 0) if stats.ci95_high > 0 else 0,
+                round(n / stats.ci95_low, 0) if stats.ci95_low > 0 else 0,
+            ],
         }
     return results
 
@@ -231,17 +215,8 @@ if __name__ == "__main__":
 
     print(f"\n--- Pipeline Throughput (n={r.pipeline_throughput['n_readings']}) ---")
     p = r.pipeline_throughput
-    print(f"  annotate:    {p['annotate_avg_ms']:.1f}ms")
-    print(f"  validate:    {p['validate_avg_ms']:.1f}ms")
-    print(f"  serialize:   {p['serialize_avg_ms']:.1f}ms")
-    print(f"  total:       {p['total_avg_ms']:.1f}ms ({p['readings_per_sec']:.0f} readings/s)")
-
-    print(f"\n--- MQTT Overhead ---")
-    m = r.mqtt_overhead
-    print(f"  topic derivation:  {m['topic_derivation_us_per_msg']:.1f} μs/msg")
-    print(f"  QoS derivation:    {m['qos_derivation_us_per_msg']:.1f} μs/msg")
-    print(f"  full roundtrip:    {m['mqtt_roundtrip_us_per_msg']:.1f} μs/msg")
-
-    print(f"\n--- Batch Scaling ---")
-    for k, v in r.batch_scaling.items():
-        print(f"  {k}: {v['readings_per_sec']:.0f} readings/s")
+    print(f"  annotate:    {p['annotate_avg_ms']:.1f} ± {p['annotate_std_ms']:.2f}ms")
+    print(f"  validate:    {p['validate_avg_ms']:.1f} ± {p['validate_std_ms']:.2f}ms")
+    print(f"  serialize:   {p['serialize_avg_ms']:.1f} ± {p['serialize_std_ms']:.2f}ms")
+    print(f"  total:       {p['total_avg_ms']:.1f} ± {p['total_std_ms']:.2f}ms "
+          f"({p['readings_per_sec']:.0f} readings/s, n={p['n_trials']})")

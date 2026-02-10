@@ -41,6 +41,10 @@ mqtt = [
     "cbor2>=5.6.0",
     "paho-mqtt>=2.0",
 ]
+bench = [
+    "rdflib>=7.0",
+    "pyshacl>=0.26",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.23",
@@ -48,6 +52,8 @@ dev = [
     "mypy>=1.8",
     "ruff>=0.2",
     "cbor2>=5.6.0",
+    "rdflib>=7.0",
+    "pyshacl>=0.26",
 ]
 
 [tool.setuptools.packages.find]

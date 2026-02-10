@@ -30,6 +30,22 @@ from jsonld_ex.inference import (
     PropagationResult,
     ConflictReport,
 )
+from jsonld_ex.confidence_algebra import (
+    Opinion,
+    cumulative_fuse,
+    averaging_fuse,
+    trust_discount,
+)
+from jsonld_ex.confidence_bridge import (
+    combine_opinions_from_scalars,
+    propagate_opinions_from_scalars,
+)
+from jsonld_ex.confidence_decay import (
+    decay_opinion,
+    exponential_decay,
+    linear_decay,
+    step_decay,
+)
 from jsonld_ex.merge import (
     merge_graphs,
     diff_graphs,
@@ -91,6 +107,18 @@ __all__ = [
     "propagate_graph_confidence",
     "PropagationResult",
     "ConflictReport",
+    # Formal confidence algebra (Subjective Logic)
+    "Opinion",
+    "cumulative_fuse",
+    "averaging_fuse",
+    "trust_discount",
+    "combine_opinions_from_scalars",
+    "propagate_opinions_from_scalars",
+    # Temporal decay
+    "decay_opinion",
+    "exponential_decay",
+    "linear_decay",
+    "step_decay",
     # Graph merging
     "merge_graphs",
     "diff_graphs",

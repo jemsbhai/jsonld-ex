@@ -1,0 +1,3 @@
+# Baseline comparison tools for benchmarks
+rdflib>=7.0
+pyshacl>=0.26
