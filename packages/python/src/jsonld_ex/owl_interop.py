@@ -83,7 +83,6 @@ def to_prov_o(doc: dict[str, Any]) -> tuple[dict[str, Any], ConversionReport]:
     """
     report = ConversionReport(success=True)
     graph_nodes: list[dict[str, Any]] = []
-    result_doc = copy.deepcopy(doc)
     input_triples = 0
     output_triples = 0
 
@@ -219,8 +218,9 @@ def to_prov_o(doc: dict[str, Any]) -> tuple[dict[str, Any], ConversionReport]:
 
         return processed
 
-    # Process the main document
-    main_node = _process_node(result_doc)
+    # Process the main document (read-only traversal — no deepcopy needed;
+    # _process_node builds entirely new dicts and never mutates its input)
+    main_node = _process_node(doc)
 
     # Remove @context from main_node (we'll add our own)
     main_node.pop("@context", None)
