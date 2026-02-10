@@ -244,6 +244,19 @@ class Opinion:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# UTILITY
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _require_opinion(value: object, name: str) -> None:
+    """Raise TypeError if *value* is not an Opinion."""
+    if not isinstance(value, Opinion):
+        raise TypeError(
+            f"{name} must be an Opinion, got: {type(value).__name__}"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════
 # OPERATORS
 # ═══════════════════════════════════════════════════════════════════
 
@@ -440,4 +453,80 @@ def trust_discount(trust: Opinion, opinion: Opinion) -> Opinion:
         disbelief=fused_d,
         uncertainty=fused_u,
         base_rate=opinion.base_rate,
+    )
+
+
+def deduce(
+    opinion_x: Opinion,
+    opinion_y_given_x: Opinion,
+    opinion_y_given_not_x: Opinion,
+) -> Opinion:
+    """Deduction operator — conditional reasoning under uncertainty.
+
+    Per Jøsang (2016, §12.6).  Given an opinion about an antecedent x
+    and two conditional opinions about y (one conditioned on x being
+    true, one on x being false), derive an opinion about y.
+
+    This is the subjective-logic generalisation of the **law of total
+    probability**:
+        P(y) = P(x)·P(y|x) + P(¬x)·P(y|¬x)
+
+    Formula (Def. 12.6):
+        Let ā_x = 1 − a_x.  For each component c ∈ {b, d, u}:
+
+        c_y = b_x · c_{y|x}
+            + d_x · c_{y|¬x}
+            + u_x · (a_x · c_{y|x} + ā_x · c_{y|¬x})
+
+    Base rate:
+        a_y = a_x · P(y|x) + ā_x · P(y|¬x)
+
+    where P(y|x) = b_{y|x} + a_{y|x} · u_{y|x}.
+
+    Key properties:
+        - **Additivity**:  b_y + d_y + u_y = 1 always.
+        - **Classical limit**: When all opinions are dogmatic (u=0),
+          reduces to the law of total probability.
+        - **Projected probability**: P(ω_y) = P(x)·P(y|x) + (1-P(x))·P(y|¬x).
+
+    Args:
+        opinion_x:            Opinion about antecedent x (ω_x).
+        opinion_y_given_x:    Conditional opinion about y given x (ω_{y|x}).
+        opinion_y_given_not_x: Conditional opinion about y given ¬x (ω_{y|¬x}).
+
+    Returns:
+        Deduced opinion about y (ω_y).
+
+    Raises:
+        TypeError: If any argument is not an Opinion.
+    """
+    _require_opinion(opinion_x, "opinion_x")
+    _require_opinion(opinion_y_given_x, "opinion_y_given_x")
+    _require_opinion(opinion_y_given_not_x, "opinion_y_given_not_x")
+
+    b_x = opinion_x.belief
+    d_x = opinion_x.disbelief
+    u_x = opinion_x.uncertainty
+    a_x = opinion_x.base_rate
+    a_x_bar = 1.0 - a_x
+
+    # Shorthand for the two conditional opinions
+    yx = opinion_y_given_x
+    ynx = opinion_y_given_not_x
+
+    # ── Deduction formula (Def. 12.6) for each component ──
+    b_y = b_x * yx.belief + d_x * ynx.belief + u_x * (a_x * yx.belief + a_x_bar * ynx.belief)
+    d_y = b_x * yx.disbelief + d_x * ynx.disbelief + u_x * (a_x * yx.disbelief + a_x_bar * ynx.disbelief)
+    u_y = b_x * yx.uncertainty + d_x * ynx.uncertainty + u_x * (a_x * yx.uncertainty + a_x_bar * ynx.uncertainty)
+
+    # ── Base rate: a_y = a_x · P(y|x) + ā_x · P(y|¬x) ──
+    p_y_given_x = yx.projected_probability()
+    p_y_given_not_x = ynx.projected_probability()
+    a_y = a_x * p_y_given_x + a_x_bar * p_y_given_not_x
+
+    return Opinion(
+        belief=b_y,
+        disbelief=d_y,
+        uncertainty=u_y,
+        base_rate=a_y,
     )

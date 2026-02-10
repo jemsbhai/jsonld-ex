@@ -35,6 +35,7 @@ from jsonld_ex.confidence_algebra import (
     cumulative_fuse,
     averaging_fuse,
     trust_discount,
+    deduce,
 )
 from jsonld_ex.confidence_bridge import (
     combine_opinions_from_scalars,
@@ -112,6 +113,7 @@ __all__ = [
     "cumulative_fuse",
     "averaging_fuse",
     "trust_discount",
+    "deduce",
     "combine_opinions_from_scalars",
     "propagate_opinions_from_scalars",
     # Temporal decay
