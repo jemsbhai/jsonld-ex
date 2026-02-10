@@ -611,3 +611,169 @@ def deduce(
         uncertainty=u_y,
         base_rate=a_y,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# CONFLICT DETECTION
+# ═══════════════════════════════════════════════════════════════════
+
+
+def pairwise_conflict(op_a: Opinion, op_b: Opinion) -> float:
+    """Pairwise conflict between two opinions.
+
+    Per Jøsang (2016, §12.3.4).  Measures how much two opinions
+    *disagree* — specifically, the degree to which one's belief
+    overlaps with the other's disbelief.
+
+    Formula:
+        con(A, B) = b_A · d_B + d_A · b_B
+
+    Properties:
+        - Range: [0, 1]
+        - Symmetry:  con(A, B) = con(B, A)
+        - Zero when opinions agree (both believe or both disbelieve)
+        - Maximum (1.0) when one fully believes, other fully disbelieves
+        - Zero when either opinion is vacuous (u = 1)
+
+    Args:
+        op_a: First opinion.
+        op_b: Second opinion.
+
+    Returns:
+        Conflict score in [0, 1].
+
+    Raises:
+        TypeError: If either argument is not an Opinion.
+    """
+    _require_opinion(op_a, "op_a")
+    _require_opinion(op_b, "op_b")
+    return op_a.belief * op_b.disbelief + op_a.disbelief * op_b.belief
+
+
+def conflict_metric(opinion: Opinion) -> float:
+    """Internal conflict (balance) metric for a single opinion.
+
+    Measures how much the evidence *within* an opinion is
+    self-contradictory.  This typically arises when fusing opinions
+    from agents that disagree — the fused result has high belief
+    AND high disbelief simultaneously.
+
+    Formula:
+        conflict = 1 − |b − d| − u
+
+    Intuition:
+        - b ≈ d, u small  →  high conflict (evidence cancels out)
+        - b ≫ d or d ≫ b  →  low conflict (clear direction)
+        - u ≈ 1            →  low conflict (ignorance, not disagreement)
+
+    The KEY property: this metric distinguishes *conflict* (high b
+    and high d) from *ignorance* (high u).  A scalar confidence of
+    0.5 could be either — this metric separates the two.
+
+    Range: [0, 1]  (can be slightly negative due to float arithmetic;
+    clamped to 0).
+
+    Args:
+        opinion: The opinion to evaluate.
+
+    Returns:
+        Conflict score in [0, 1].
+
+    Raises:
+        TypeError: If argument is not an Opinion.
+    """
+    _require_opinion(opinion, "opinion")
+    result = 1.0 - abs(opinion.belief - opinion.disbelief) - opinion.uncertainty
+    return max(0.0, result)
+
+
+def robust_fuse(
+    opinions: list[Opinion],
+    threshold: float = 0.15,
+    max_removals: int | None = None,
+) -> tuple[Opinion, list[int]]:
+    """Byzantine-resistant fusion via iterative conflict filtering.
+
+    Identifies and removes outlier agents whose opinions conflict
+    strongly with the majority, then fuses the remaining cohesive
+    subset via :func:`cumulative_fuse`.
+
+    Algorithm:
+        1. Compute pairwise conflict matrix.
+        2. For each agent, compute mean conflict (discord score)
+           against all other agents.
+        3. If the worst discord score exceeds *threshold*, remove
+           that agent.
+        4. Repeat until the group is cohesive or *max_removals*
+           agents have been removed.
+        5. Fuse the remaining opinions via cumulative fusion.
+
+    Args:
+        opinions:     List of opinions from independent agents.
+        threshold:    Discord score above which an agent is removed.
+                      Default 0.15 (tight enough to catch strong
+                      disagreements like 0.8 vs 0.2 belief).
+        max_removals: Maximum number of agents to remove.  Default
+                      ``len(opinions) // 2`` — never remove a
+                      majority.
+
+    Returns:
+        Tuple of (fused_opinion, removed_indices) where
+        removed_indices are positions in the **original** list.
+
+    Raises:
+        ValueError: If opinions list is empty.
+
+    Example::
+
+        >>> honest = [Opinion(0.8, 0.1, 0.1), Opinion(0.7, 0.1, 0.2)]
+        >>> rogue  = [Opinion(0.0, 0.9, 0.1)]
+        >>> fused, removed = robust_fuse(honest + rogue)
+        >>> 2 in removed  # rogue was at index 2
+        True
+    """
+    if len(opinions) == 0:
+        raise ValueError("robust_fuse requires at least one opinion")
+    if len(opinions) == 1:
+        return (opinions[0], [])
+
+    if max_removals is None:
+        max_removals = len(opinions) // 2
+
+    # Track original indices alongside opinions
+    indexed: list[tuple[int, Opinion]] = list(enumerate(opinions))
+    removed: list[int] = []
+
+    for _ in range(max_removals):
+        n = len(indexed)
+        if n <= 2:
+            break  # Can't go below 2 agents
+
+        # Compute discord score for each remaining agent
+        discord = [0.0] * n
+        for i in range(n):
+            for j in range(i + 1, n):
+                c = pairwise_conflict(indexed[i][1], indexed[j][1])
+                discord[i] += c
+                discord[j] += c
+
+        # Normalize to mean conflict per peer
+        for i in range(n):
+            discord[i] /= (n - 1)
+
+        # Find worst agent
+        worst_idx = max(range(n), key=lambda k: discord[k])
+        worst_score = discord[worst_idx]
+
+        if worst_score < threshold:
+            break  # Group is cohesive enough
+
+        # Remove worst agent, record its original index
+        original_idx, _ = indexed.pop(worst_idx)
+        removed.append(original_idx)
+
+    # Fuse remaining opinions
+    remaining_opinions = [op for _, op in indexed]
+    fused = cumulative_fuse(*remaining_opinions)
+
+    return (fused, removed)

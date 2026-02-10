@@ -1,0 +1,4 @@
+# file: E:\data\code\claudecode\jsonld\jsonld-ex\packages\python\src\jsonld_ex\inference.py
+# hypothesis_version: 6.151.5
+
+[-1.0, 0.0, 0.0001, 1.0, '@confidence', '@derivedFrom', '@extractedAt', '@method', '@value', 'average', 'bayesian', 'dampened', 'dempster_shafer', 'highest', 'max', 'min', 'multiply', 'noisy_or', 'recency', 'weighted_vote']

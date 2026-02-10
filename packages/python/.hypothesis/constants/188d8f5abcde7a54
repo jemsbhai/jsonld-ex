@@ -1,0 +1,4 @@
+# file: E:\data\code\claudecode\jsonld\jsonld-ex\packages\python\src\jsonld_ex\security.py
+# hypothesis_version: 6.151.5
+
+[100, 500, 1024, '$', '-', '.', '.*', '@id', '@integrity', '\\*', '\\?', '^', 'allowed', 'ascii', 'max_context_depth', 'max_document_size', 'max_expansion_time', 'max_graph_depth', 'patterns', 'sha256', 'sha384', 'sha512', 'utf-8']

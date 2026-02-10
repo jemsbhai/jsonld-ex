@@ -237,6 +237,56 @@ def to_prov_o(doc: dict[str, Any]) -> tuple[dict[str, Any], ConversionReport]:
     return prov_doc, report
 
 
+def to_prov_o_graph(doc: dict[str, Any]) -> tuple[dict[str, Any], ConversionReport]:
+    """Batch-convert a JSON-LD document with @graph to PROV-O.
+
+    Equivalent to calling to_prov_o per-node but processes the entire
+    @graph array in a single pass, producing one unified PROV-O graph.
+
+    Args:
+        doc: A JSON-LD document with @graph array containing annotated nodes.
+
+    Returns:
+        Tuple of (PROV-O JSON-LD document, ConversionReport).
+    """
+    nodes = doc.get("@graph", [])
+    base_context = doc.get("@context", {})
+
+    combined_graph: list[dict[str, Any]] = []
+    report = ConversionReport(success=True)
+
+    for node in nodes:
+        # Build a standalone single-node document
+        single: dict[str, Any] = {"@context": base_context}
+        single.update(node)
+
+        prov_doc, node_report = to_prov_o(single)
+
+        # Accumulate graph nodes from each conversion
+        combined_graph.extend(prov_doc.get("@graph", []))
+        report.nodes_converted += node_report.nodes_converted
+        report.triples_input += node_report.triples_input
+        report.triples_output += node_report.triples_output
+        report.warnings.extend(node_report.warnings)
+        report.errors.extend(node_report.errors)
+
+    # Build unified PROV-O context
+    prov_context: dict[str, Any] = {
+        "prov": PROV,
+        "xsd": XSD,
+        "rdfs": RDFS,
+        "jsonld-ex": JSONLD_EX,
+    }
+    if isinstance(base_context, str):
+        prov_context["_original"] = base_context
+    elif isinstance(base_context, dict):
+        for k, v in base_context.items():
+            if k not in prov_context:
+                prov_context[k] = v
+
+    return {"@context": prov_context, "@graph": combined_graph}, report
+
+
 def from_prov_o(prov_doc: dict[str, Any]) -> tuple[dict[str, Any], ConversionReport]:
     """Convert PROV-O provenance graph back to jsonld-ex inline annotations.
 

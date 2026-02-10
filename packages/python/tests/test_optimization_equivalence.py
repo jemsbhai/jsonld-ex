@@ -324,14 +324,10 @@ class TestTrustedCreateEquivalence:
 
 
 class TestProvOBatchEquivalence:
-    """Tests for the batch to_prov_o_graph API (to be implemented).
+    """Tests for the batch to_prov_o_graph API.
 
-    These tests verify that processing a @graph array in batch produces
-    equivalent results to processing each node individually, which is
-    the current behavior in bench_bridge.py.
-
-    These tests will initially be SKIPPED (marked xfail) until the
-    batch API is implemented.
+    Verifies that processing a @graph array in batch produces
+    equivalent results to processing each node individually.
     """
 
     def _make_graph_doc(self, n: int = 10) -> dict:
@@ -371,7 +367,6 @@ class TestProvOBatchEquivalence:
             total_triples += report.triples_output
         return all_prov_docs, total_converted, total_triples
 
-    @pytest.mark.xfail(reason="to_prov_o_graph not yet implemented")
     def test_batch_node_count_matches(self):
         """Batch produces same number of converted nodes."""
         from jsonld_ex.owl_interop import to_prov_o_graph
@@ -381,7 +376,6 @@ class TestProvOBatchEquivalence:
         _, batch_report = to_prov_o_graph(doc)
         assert batch_report.nodes_converted == per_node_converted
 
-    @pytest.mark.xfail(reason="to_prov_o_graph not yet implemented")
     def test_batch_triple_count_matches(self):
         """Batch produces same triple count."""
         from jsonld_ex.owl_interop import to_prov_o_graph
@@ -391,7 +385,6 @@ class TestProvOBatchEquivalence:
         _, batch_report = to_prov_o_graph(doc)
         assert batch_report.triples_output == per_node_triples
 
-    @pytest.mark.xfail(reason="to_prov_o_graph not yet implemented")
     def test_batch_preserves_all_values(self):
         """Every @value in the input appears in the batch output."""
         from jsonld_ex.owl_interop import to_prov_o_graph
@@ -414,7 +407,6 @@ class TestProvOBatchEquivalence:
                 if isinstance(node.get(key), dict) and "@value" in node[key]:
                     assert str(node[key]["@value"]) in prov_values
 
-    @pytest.mark.xfail(reason="to_prov_o_graph not yet implemented")
     def test_batch_preserves_all_confidences(self):
         """Every @confidence in the input appears in the batch output."""
         from jsonld_ex.owl_interop import to_prov_o_graph
@@ -436,7 +428,6 @@ class TestProvOBatchEquivalence:
                 if isinstance(val, dict) and "@confidence" in val:
                     assert val["@confidence"] in confidences
 
-    @pytest.mark.xfail(reason="to_prov_o_graph not yet implemented")
     def test_batch_does_not_mutate_input(self):
         """Batch API does not mutate its input."""
         from jsonld_ex.owl_interop import to_prov_o_graph

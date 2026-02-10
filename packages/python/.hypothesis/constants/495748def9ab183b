@@ -1,0 +1,4 @@
+# file: E:\data\code\claudecode\jsonld\jsonld-ex\packages\python\src\jsonld_ex\temporal.py
+# hypothesis_version: 6.151.5
+
+['%Y-%m-%d', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%dT%H:%M:%S%z', '%Y-%m-%dT%H:%M:%SZ', '+00:00', '@asOf', '@context', '@id', '@type', '@validFrom', '@validUntil', '@value', 'Z', 'property', 'state', 'value', 'value_at_t1', 'value_at_t2']

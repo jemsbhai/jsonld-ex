@@ -1,0 +1,4 @@
+# file: E:\data\code\claudecode\jsonld\jsonld-ex\packages\python\src\jsonld_ex\merge.py
+# hypothesis_version: 6.151.5
+
+[-1.0, 0.5, '@confidence', '@context', '@derivedFrom', '@extractedAt', '@graph', '@humanVerified', '@id', '@method', '@source', '@type', '@value', 'added', 'average', 'confidence_a', 'confidence_b', 'highest', 'max', 'modified', 'node', 'noisy_or', 'property', 'recency', 'removed', 'unchanged', 'union', 'union (all kept)', 'value', 'value_a', 'value_b', 'weighted_vote']

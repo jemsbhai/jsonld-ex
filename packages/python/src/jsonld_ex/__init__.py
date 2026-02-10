@@ -14,6 +14,7 @@ from jsonld_ex.security import compute_integrity, verify_integrity, is_context_a
 from jsonld_ex.validation import validate_node, validate_document
 from jsonld_ex.owl_interop import (
     to_prov_o,
+    to_prov_o_graph,
     from_prov_o,
     shape_to_shacl,
     shacl_to_shape,
@@ -36,6 +37,9 @@ from jsonld_ex.confidence_algebra import (
     averaging_fuse,
     trust_discount,
     deduce,
+    pairwise_conflict,
+    conflict_metric,
+    robust_fuse,
 )
 from jsonld_ex.confidence_bridge import (
     combine_opinions_from_scalars,
@@ -94,6 +98,7 @@ __all__ = [
     "validate_document",
     # OWL/RDF interoperability
     "to_prov_o",
+    "to_prov_o_graph",
     "from_prov_o",
     "shape_to_shacl",
     "shacl_to_shape",
@@ -114,6 +119,9 @@ __all__ = [
     "averaging_fuse",
     "trust_discount",
     "deduce",
+    "pairwise_conflict",
+    "conflict_metric",
+    "robust_fuse",
     "combine_opinions_from_scalars",
     "propagate_opinions_from_scalars",
     # Temporal decay

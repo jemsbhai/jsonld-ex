@@ -1,0 +1,4 @@
+# file: C:\Users\User\AppData\Roaming\Python\Python312\site-packages\ipykernel\iostream.py
+# hypothesis_version: 6.151.5
+
+[b'\x00', b'stream.', 0.2, 1000, 3000, 'Bad pipe message: %s', 'IOPub', 'PYTEST_CURRENT_TEST', 'UTF-8', '__', 'ascii', 'darwin', 'fileno', 'force', 'hooks', 'inproc://%s', 'io_thread', 'linux', 'name', 'parent_header', 'read', 'replace', 'stream', 'tcp://127.0.0.1', 'tcp://127.0.0.1:%i', 'text', 'w', 'write']

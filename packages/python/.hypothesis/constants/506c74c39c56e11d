@@ -1,0 +1,4 @@
+# file: E:\data\code\claudecode\jsonld\jsonld-ex\packages\python\src\jsonld_ex\confidence_algebra.py
+# hypothesis_version: 6.151.5
+
+[0.0, 1e-09, 0.5, 1.0, 2.0, '@confidence', '@type', 'Opinion', 'baseRate', 'base_rate', 'belief', 'disbelief', 'opinion_x', 'opinion_y_given_x', 'uncertainty']
