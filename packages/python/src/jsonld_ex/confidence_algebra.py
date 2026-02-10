@@ -345,43 +345,50 @@ def _cumulative_fuse_pair(a: Opinion, b: Opinion) -> Opinion:
 def averaging_fuse(*opinions: Opinion) -> Opinion:
     """Averaging fusion (⊘) — combine dependent/correlated sources.
 
-    Per Jøsang 2016 §12.5.  When sources may be correlated (e.g.,
+    Per Jøsang (2016, §12.5).  When sources may be correlated (e.g.,
     reading the same underlying data), averaging fusion avoids
     double-counting evidence.
 
-    For two opinions with equal weight:
-        κ = u_A + u_B                         (normalization)
-        b = (b_A · u_B + b_B · u_A) / κ
-        d = (d_A · u_B + d_B · u_A) / κ
-        u = 2 · u_A · u_B / κ
+    For n opinions ω_i = (b_i, d_i, u_i) with equal weight:
 
-    Key property — Idempotence: A ⊘ A = A.
-    Unlike cumulative fusion, averaging fusion does NOT reduce
-    uncertainty when the same opinion is fused with itself.
+        U_i = ∏_{j≠i} u_j   (product of all OTHER uncertainties)
+        κ   = Σ_i U_i
 
-    Important: averaging fusion is NOT associative in general.
-    (A ⊘ B) ⊘ C ≠ A ⊘ (B ⊘ C).  Josang (2016, §12.5) defines
-    a separate n-ary formula for simultaneous multi-source fusion.
-    This implementation uses sequential pairwise left-fold, which
-    is adequate for the 2-source case (where it is exact) and
-    provides a reasonable approximation for n>2.  For rigorous
-    n-source averaging, users should implement the n-ary formula.
+        b = Σ_i (b_i · U_i) / κ
+        d = Σ_i (d_i · U_i) / κ
+        u = n · ∏_i u_i / κ
+
+    When all U_i = 0 (κ = 0), the formula has an indeterminate form.
+    The limit with equal relative weight yields the simple average:
+        b = Σ b_i / n,  d = Σ d_i / n,  u = 0.
+
+    Key properties:
+        - Commutativity:  order of opinions does not matter.
+        - Idempotence:    A ⊘ A ⊘ ... ⊘ A = A.
+        - NOT associative: (A ⊘ B) ⊘ C ≠ A ⊘ (B ⊘ C) in general.
+          The simultaneous n-ary formula must be used for n > 2.
+
+    For n = 2 this is mathematically identical to the pairwise formula.
 
     Args:
-        *opinions: Two or more opinions to fuse.
+        *opinions: One or more opinions to fuse.
 
     Returns:
         Fused Opinion.
+
+    Raises:
+        ValueError: If no opinions are provided.
     """
     if len(opinions) == 0:
         raise ValueError("averaging_fuse requires at least one opinion")
     if len(opinions) == 1:
         return opinions[0]
+    if len(opinions) == 2:
+        # 2-source: delegate to the pairwise formula (identical result,
+        # avoids unnecessary product computation).
+        return _averaging_fuse_pair(opinions[0], opinions[1])
 
-    result = opinions[0]
-    for i in range(1, len(opinions)):
-        result = _averaging_fuse_pair(result, opinions[i])
-    return result
+    return _averaging_fuse_nary(opinions)
 
 
 def _averaging_fuse_pair(a: Opinion, b: Opinion) -> Opinion:
@@ -410,6 +417,80 @@ def _averaging_fuse_pair(a: Opinion, b: Opinion) -> Opinion:
             fused_u = 2.0 * u_a * u_b / kappa
 
     fused_a = (a.base_rate + b.base_rate) / 2.0
+
+    return Opinion(
+        belief=fused_b,
+        disbelief=fused_d,
+        uncertainty=fused_u,
+        base_rate=fused_a,
+    )
+
+
+def _averaging_fuse_nary(opinions: tuple[Opinion, ...] | list[Opinion]) -> Opinion:
+    """Simultaneous n-ary averaging fusion (Jøsang 2016, §12.5).
+
+    Uses the proper simultaneous formula for n ≥ 3 opinions with
+    equal weight.  NOT a pairwise fold — averaging fusion is not
+    associative, so pairwise application gives incorrect results.
+
+    Formula:
+        U_i = ∏_{j≠i} u_j
+        κ   = Σ_i U_i
+        b   = Σ_i (b_i · U_i) / κ
+        d   = Σ_i (d_i · U_i) / κ
+        u   = n · ∏_i u_i / κ
+
+    When κ = 0 (all U_i are zero — occurs when enough opinions
+    are dogmatic), the limit with equal weight reduces to a
+    simple average:  b = Σb_i/n, d = Σd_i/n, u = 0.
+    """
+    n = len(opinions)
+
+    # ── Compute the full product of all uncertainties ──
+    # We use math.prod for clarity and precision.
+    uncertainties = [o.uncertainty for o in opinions]
+    full_product = math.prod(uncertainties)
+
+    # ── Compute U_i = full_product / u_i for each i ──
+    # When u_i = 0, U_i = ∏_{j≠i} u_j.  If ANY other u_j = 0
+    # then U_i = 0 as well.  We handle this carefully to avoid
+    # division by zero.
+    capital_u = []
+    for i, u_i in enumerate(uncertainties):
+        if u_i != 0.0:
+            capital_u.append(full_product / u_i)
+        else:
+            # u_i = 0: compute ∏_{j≠i} u_j directly
+            product = 1.0
+            for j, u_j in enumerate(uncertainties):
+                if j != i:
+                    product *= u_j
+            capital_u.append(product)
+
+    kappa = sum(capital_u)
+
+    # ── Dogmatic fallback: κ = 0 ──
+    # κ = 0 requires ≥ 2 dogmatic opinions (proof: if only one u_i = 0,
+    # then U_i = ∏_{j≠i} u_j > 0 for the dogmatic i, so κ > 0).
+    #
+    # In the limit, dogmatic opinions have infinite relative evidence
+    # weight.  Non-dogmatic opinions' U_i terms vanish at higher order
+    # (ε² vs ε), contributing nothing.  The correct limit with equal
+    # relative dogmatism among the dogmatic subset is their simple
+    # average.
+    if kappa == 0.0:
+        dogmatic = [o for o in opinions if o.uncertainty == 0.0]
+        z = len(dogmatic) if dogmatic else n  # fallback to all if none found
+        pool = dogmatic if dogmatic else list(opinions)
+        fused_b = sum(o.belief for o in pool) / z
+        fused_d = sum(o.disbelief for o in pool) / z
+        fused_u = 0.0
+    else:
+        fused_b = sum(o.belief * u_i for o, u_i in zip(opinions, capital_u)) / kappa
+        fused_d = sum(o.disbelief * u_i for o, u_i in zip(opinions, capital_u)) / kappa
+        fused_u = n * full_product / kappa
+
+    fused_a = sum(o.base_rate for o in opinions) / n
 
     return Opinion(
         belief=fused_b,

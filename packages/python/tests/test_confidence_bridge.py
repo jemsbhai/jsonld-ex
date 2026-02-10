@@ -171,21 +171,43 @@ class TestAverageEquivalence:
 
         assert scalar_result == pytest.approx(algebra_result, abs=1e-9)
 
-    def test_three_sources_NOT_equivalent(self):
-        """For n>2, pairwise averaging fusion ≠ scalar arithmetic mean.
+    def test_three_sources_dogmatic_IS_equivalent(self):
+        """For dogmatic opinions (u=0), n-ary averaging fusion reduces
+        to simple average for ANY n.  This is mathematically correct:
+        when all u_i = 0, the κ = 0 fallback yields Σb_i / n.
 
-        This is NOT a bug — averaging fusion is not associative,
-        so sequential pairwise application diverges from the
-        simultaneous n-ary mean.  We test this explicitly to
-        prevent anyone from claiming n>2 equivalence.
+        The equivalence breaks for non-dogmatic opinions, where the
+        uncertainty-weighted formula diverges from the scalar mean.
         """
         scores = [0.9, 0.7, 0.5]
         scalar_mean = combine_sources(scores, "average").score  # 0.7
 
+        # Dogmatic opinions (from_confidence defaults to u=0)
         opinions = [Opinion.from_confidence(p) for p in scores]
         algebra_result = averaging_fuse(*opinions).to_confidence()
 
-        # These should NOT match for n>2
+        assert scalar_mean == pytest.approx(algebra_result, abs=1e-9)
+
+    def test_three_sources_non_dogmatic_NOT_equivalent(self):
+        """For non-dogmatic opinions (u > 0), n-ary averaging fusion
+        uses uncertainty-weighted combination, which diverges from
+        the scalar arithmetic mean.
+
+        This is the key insight: the algebra provides richer
+        semantics than scalar averaging when uncertainty is present.
+        """
+        scores = [0.9, 0.7, 0.5]
+        scalar_mean = combine_sources(scores, "average").score  # 0.7
+
+        # Non-dogmatic opinions with varying uncertainty
+        opinions = [
+            Opinion.from_confidence(0.9, uncertainty=0.1),
+            Opinion.from_confidence(0.7, uncertainty=0.4),
+            Opinion.from_confidence(0.5, uncertainty=0.6),
+        ]
+        algebra_result = averaging_fuse(*opinions).to_confidence()
+
+        # These should NOT match — uncertainty weighting matters
         assert scalar_mean != pytest.approx(algebra_result, abs=0.01)
 
 
