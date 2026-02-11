@@ -67,6 +67,11 @@ class TestToolRegistration:
         # Group 6: Interoperability
         "to_prov_o",
         "shape_to_shacl",
+        # Group 7: MQTT / IoT Transport
+        "mqtt_encode",
+        "mqtt_decode",
+        "mqtt_derive_topic",
+        "mqtt_derive_qos",
     ]
 
     def test_all_tools_registered(self):
@@ -77,9 +82,9 @@ class TestToolRegistration:
             assert name in registered, f"Tool '{name}' not registered"
 
     def test_tool_count(self):
-        """Exactly 16 tools should be registered."""
+        """16 original + 21 Phase 1 + 4 MQTT = 41 tools should be registered."""
         tool_manager = mcp_server._tool_manager
-        assert len(tool_manager._tools) == 16
+        assert len(tool_manager._tools) == 41
 
     def test_all_tools_have_descriptions(self):
         """Every tool must have a non-empty description."""
@@ -532,6 +537,154 @@ class TestShapeToShaclTool:
 # ═══════════════════════════════════════════════════════════════════
 # Resources
 # ═══════════════════════════════════════════════════════════════════
+
+
+class TestMqttEncodeTool:
+    """Tests for the mqtt_encode tool."""
+
+    def test_basic_encode_compressed(self):
+        fn = _get_tool_fn("mqtt_encode")
+        doc = json.dumps({"@type": "Sensor", "value": 23.5})
+        result = fn(document_json=doc, compress=True)
+        assert "payload_base64" in result
+        assert result["payload_bytes"] > 0
+        assert result["format"] == "application/cbor"
+        assert "mqtt5_properties" in result
+
+    def test_basic_encode_uncompressed(self):
+        fn = _get_tool_fn("mqtt_encode")
+        doc = json.dumps({"@type": "Sensor", "value": 23.5})
+        result = fn(document_json=doc, compress=False)
+        assert result["format"] == "application/ld+json"
+        assert result["mqtt5_properties"]["payload_format_indicator"] == 1
+
+    def test_mqtt5_properties_included(self):
+        fn = _get_tool_fn("mqtt_encode")
+        doc = json.dumps({"@type": "Sensor", "@confidence": 0.9})
+        result = fn(document_json=doc, compress=True)
+        props = result["mqtt5_properties"]
+        assert "payload_format_indicator" in props
+        assert "content_type" in props
+        assert "user_properties" in props
+
+    def test_invalid_json_raises(self):
+        fn = _get_tool_fn("mqtt_encode")
+        with pytest.raises(ValueError, match="Invalid JSON"):
+            fn(document_json="{bad json", compress=True)
+
+
+class TestMqttDecodeTool:
+    """Tests for the mqtt_decode tool."""
+
+    def test_round_trip_compressed(self):
+        encode_fn = _get_tool_fn("mqtt_encode")
+        decode_fn = _get_tool_fn("mqtt_decode")
+        original = {"@type": "Sensor", "value": 23.5}
+        encoded = encode_fn(document_json=json.dumps(original), compress=True)
+        decoded_str = decode_fn(
+            payload_base64=encoded["payload_base64"],
+            compressed=True,
+        )
+        decoded = json.loads(decoded_str)
+        assert decoded["@type"] == "Sensor"
+        assert decoded["value"] == 23.5
+
+    def test_round_trip_uncompressed(self):
+        encode_fn = _get_tool_fn("mqtt_encode")
+        decode_fn = _get_tool_fn("mqtt_decode")
+        original = {"@type": "Sensor", "value": 42}
+        encoded = encode_fn(document_json=json.dumps(original), compress=False)
+        decoded_str = decode_fn(
+            payload_base64=encoded["payload_base64"],
+            compressed=False,
+        )
+        decoded = json.loads(decoded_str)
+        assert decoded["@type"] == "Sensor"
+        assert decoded["value"] == 42
+
+    def test_context_reattachment(self):
+        encode_fn = _get_tool_fn("mqtt_encode")
+        decode_fn = _get_tool_fn("mqtt_decode")
+        original = {"@type": "Sensor", "value": 10}
+        encoded = encode_fn(document_json=json.dumps(original), compress=True)
+        decoded_str = decode_fn(
+            payload_base64=encoded["payload_base64"],
+            compressed=True,
+            context="https://schema.org/",
+        )
+        decoded = json.loads(decoded_str)
+        assert decoded.get("@context") == "https://schema.org/"
+
+
+class TestMqttDeriveTopicTool:
+    """Tests for the mqtt_derive_topic tool."""
+
+    def test_basic_topic_derivation(self):
+        fn = _get_tool_fn("mqtt_derive_topic")
+        doc = json.dumps({"@type": "Sensor", "@id": "http://ex.org/s1"})
+        result = fn(document_json=doc, prefix="iot")
+        assert result["topic"].startswith("iot/")
+        assert result["type_segment"] == "Sensor"
+        assert result["topic_bytes"] > 0
+
+    def test_default_prefix(self):
+        fn = _get_tool_fn("mqtt_derive_topic")
+        doc = json.dumps({"@type": "Sensor"})
+        result = fn(document_json=doc)
+        assert result["prefix"] == "ld"
+
+    def test_invalid_json_raises(self):
+        fn = _get_tool_fn("mqtt_derive_topic")
+        with pytest.raises(ValueError, match="Invalid JSON"):
+            fn(document_json="not-json")
+
+
+class TestMqttDeriveQosTool:
+    """Tests for the mqtt_derive_qos tool."""
+
+    def test_high_confidence_qos2(self):
+        fn = _get_tool_fn("mqtt_derive_qos")
+        doc = json.dumps({"@type": "Sensor", "@confidence": 0.95})
+        result = fn(document_json=doc)
+        assert result["qos"] == 2
+        assert "QoS 2" in result["reasoning"]
+        assert result["confidence_used"] == 0.95
+
+    def test_medium_confidence_qos1(self):
+        fn = _get_tool_fn("mqtt_derive_qos")
+        doc = json.dumps({"@type": "Sensor", "@confidence": 0.7})
+        result = fn(document_json=doc)
+        assert result["qos"] == 1
+
+    def test_low_confidence_qos0(self):
+        fn = _get_tool_fn("mqtt_derive_qos")
+        doc = json.dumps({"@type": "Sensor", "@confidence": 0.3})
+        result = fn(document_json=doc)
+        assert result["qos"] == 0
+
+    def test_human_verified_qos2(self):
+        fn = _get_tool_fn("mqtt_derive_qos")
+        doc = json.dumps({"@type": "Sensor", "@humanVerified": True})
+        result = fn(document_json=doc)
+        assert result["qos"] == 2
+        assert result["human_verified"] is True
+
+    def test_no_confidence_default_qos1(self):
+        fn = _get_tool_fn("mqtt_derive_qos")
+        doc = json.dumps({"@type": "Sensor"})
+        result = fn(document_json=doc)
+        assert result["qos"] == 1
+        assert "default" in result["reasoning"]
+
+    def test_property_level_confidence(self):
+        fn = _get_tool_fn("mqtt_derive_qos")
+        doc = json.dumps({
+            "@type": "Sensor",
+            "temperature": {"@value": 23.5, "@confidence": 0.95},
+        })
+        result = fn(document_json=doc)
+        assert result["qos"] == 2
+        assert "property" in result["reasoning"]
 
 
 class TestResources:
