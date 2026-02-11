@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import base64
 import json
-import math
 from typing import Any, Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -29,7 +28,6 @@ from jsonld_ex.ai_ml import (
     annotate,
     get_confidence,
     get_provenance as _get_provenance_raw,
-    filter_by_confidence as _filter_by_confidence_raw,
 )
 from jsonld_ex.confidence_algebra import (
     Opinion,
@@ -64,7 +62,10 @@ from jsonld_ex.security import (
     enforce_resource_limits as _enforce_resource_limits_raw,
 )
 from jsonld_ex.validation import validate_node, ValidationResult
-from jsonld_ex.vector import validate_vector as _validate_vector_raw
+from jsonld_ex.vector import (
+    validate_vector as _validate_vector_raw,
+    cosine_similarity as _cosine_similarity_raw,
+)
 from jsonld_ex.merge import (
     merge_graphs as _merge_graphs_raw,
     diff_graphs as _diff_graphs_raw,
@@ -88,7 +89,7 @@ from jsonld_ex.mqtt import (
     to_mqtt_payload as _to_mqtt_payload_raw,
     from_mqtt_payload as _from_mqtt_payload_raw,
     derive_mqtt_topic as _derive_mqtt_topic_raw,
-    derive_mqtt_qos as _derive_mqtt_qos_raw,
+    derive_mqtt_qos_detailed as _derive_mqtt_qos_detailed_raw,
     derive_mqtt5_properties as _derive_mqtt5_properties_raw,
 )
 
@@ -832,19 +833,7 @@ def cosine_similarity(vector_a_json: str, vector_b_json: str) -> float:
     b = _parse_json(vector_b_json, "vector_b_json")
     if not isinstance(a, list) or not isinstance(b, list):
         raise ValueError("Both inputs must be JSON arrays of numbers")
-    if len(a) != len(b):
-        raise ValueError(f"Dimension mismatch: {len(a)} vs {len(b)}")
-    if len(a) == 0:
-        raise ValueError("Vectors must not be empty")
-
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
-
-    if norm_a == 0 or norm_b == 0:
-        raise ValueError("Cannot compute cosine similarity with zero-magnitude vector")
-
-    return dot / (norm_a * norm_b)
+    return _cosine_similarity_raw(a, b)
 
 
 @mcp.tool()
@@ -903,6 +892,8 @@ def merge_graphs(
     Returns:
         JSON string of the merged graph document.
     """
+    if strategy not in _MERGE_STRATEGIES:
+        raise ValueError(f"Unknown merge strategy: {strategy!r}. Choose from: {sorted(_MERGE_STRATEGIES)}")
     a = _parse_json(graph_a_json, "graph_a_json")
     b = _parse_json(graph_b_json, "graph_b_json")
     merged, _report = _merge_graphs_raw([a, b], conflict_strategy=strategy)
@@ -1313,44 +1304,7 @@ def mqtt_derive_qos(document_json: str) -> dict:
         Dict with qos (0, 1, or 2), reasoning, and confidence_used.
     """
     doc = _parse_json(document_json, "document_json")
-    qos = _derive_mqtt_qos_raw(doc)
-
-    # Build reasoning explanation
-    from jsonld_ex.ai_ml import get_confidence as _gc
-    conf = _gc(doc)
-    human_verified = doc.get("@humanVerified", False)
-    source = "document-level"
-
-    if conf is None and not human_verified:
-        # Check property level
-        for key, val in doc.items():
-            if key.startswith("@"):
-                continue
-            if isinstance(val, dict):
-                conf = _gc(val)
-                human_verified = val.get("@humanVerified", False)
-                if conf is not None or human_verified:
-                    source = f"property '{key}'"
-                    break
-
-    if human_verified:
-        reasoning = f"@humanVerified=True ({source}) → QoS 2 (exactly once)"
-    elif conf is not None:
-        if conf >= 0.9:
-            reasoning = f"@confidence={conf} ≥ 0.9 ({source}) → QoS 2 (exactly once)"
-        elif conf >= 0.5:
-            reasoning = f"0.5 ≤ @confidence={conf} < 0.9 ({source}) → QoS 1 (at least once)"
-        else:
-            reasoning = f"@confidence={conf} < 0.5 ({source}) → QoS 0 (at most once)"
-    else:
-        reasoning = "No confidence metadata found → QoS 1 (default)"
-
-    return {
-        "qos": qos,
-        "reasoning": reasoning,
-        "confidence_used": conf,
-        "human_verified": human_verified,
-    }
+    return _derive_mqtt_qos_detailed_raw(doc)
 
 
 # ═══════════════════════════════════════════════════════════════════

@@ -73,7 +73,7 @@ except ImportError:
 try:
     from jsonld_ex.mqtt import (
         to_mqtt_payload, from_mqtt_payload,
-        derive_mqtt_topic, derive_mqtt_qos,
+        derive_mqtt_topic, derive_mqtt_qos, derive_mqtt_qos_detailed,
     )
 except ImportError:
     pass
@@ -149,4 +149,5 @@ __all__ = [
     "from_mqtt_payload",
     "derive_mqtt_topic",
     "derive_mqtt_qos",
+    "derive_mqtt_qos_detailed",
 ]

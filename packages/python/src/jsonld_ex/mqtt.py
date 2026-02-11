@@ -222,12 +222,33 @@ def derive_mqtt_qos(doc: dict[str, Any]) -> int:
     Returns:
         MQTT QoS level: 0, 1, or 2.
     """
-    # Check document-level confidence
-    conf = get_confidence(doc)
+    return derive_mqtt_qos_detailed(doc)["qos"]
 
-    # Check if human-verified at document level
-    if doc.get("@humanVerified") is True:
-        return 2
+
+def derive_mqtt_qos_detailed(doc: dict[str, Any]) -> dict[str, Any]:
+    """Map document confidence to MQTT QoS level with reasoning.
+
+    Same heuristic as :func:`derive_mqtt_qos` but returns a dict
+    with the QoS level, human-readable reasoning, the confidence
+    value used (if any), the source location, and whether
+    ``@humanVerified`` was set.
+
+    Returns:
+        Dict with keys ``qos``, ``reasoning``, ``confidence_used``,
+        ``human_verified``.
+    """
+    conf = get_confidence(doc)
+    human_verified = doc.get("@humanVerified", False) is True
+    source = "document-level"
+
+    # Document-level humanVerified
+    if human_verified:
+        return {
+            "qos": 2,
+            "reasoning": f"@humanVerified=True ({source}) \u2192 QoS 2 (exactly once)",
+            "confidence_used": conf,
+            "human_verified": True,
+        }
 
     # If no document-level confidence, scan first annotated property
     if conf is None:
@@ -235,20 +256,47 @@ def derive_mqtt_qos(doc: dict[str, Any]) -> int:
             if key.startswith("@"):
                 continue
             if isinstance(val, dict):
-                conf = get_confidence(val)
-                if val.get("@humanVerified") is True:
-                    return 2
-                if conf is not None:
+                prop_conf = get_confidence(val)
+                prop_hv = val.get("@humanVerified", False) is True
+                if prop_hv:
+                    return {
+                        "qos": 2,
+                        "reasoning": (
+                            f"@humanVerified=True (property '{key}') "
+                            "\u2192 QoS 2 (exactly once)"
+                        ),
+                        "confidence_used": prop_conf,
+                        "human_verified": True,
+                    }
+                if prop_conf is not None:
+                    conf = prop_conf
+                    source = f"property '{key}'"
                     break
 
     if conf is None:
-        return 1  # default
+        return {
+            "qos": 1,
+            "reasoning": "No confidence metadata found \u2192 QoS 1 (default)",
+            "confidence_used": None,
+            "human_verified": False,
+        }
 
     if conf >= 0.9:
-        return 2
-    if conf >= 0.5:
-        return 1
-    return 0
+        qos = 2
+        reasoning = f"@confidence={conf} \u2265 0.9 ({source}) \u2192 QoS 2 (exactly once)"
+    elif conf >= 0.5:
+        qos = 1
+        reasoning = f"0.5 \u2264 @confidence={conf} < 0.9 ({source}) \u2192 QoS 1 (at least once)"
+    else:
+        qos = 0
+        reasoning = f"@confidence={conf} < 0.5 ({source}) \u2192 QoS 0 (at most once)"
+
+    return {
+        "qos": qos,
+        "reasoning": reasoning,
+        "confidence_used": conf,
+        "human_verified": False,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════

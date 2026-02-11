@@ -5,7 +5,7 @@ Each tool accepts JSON strings and returns dicts or primitives, mirroring
 the MCP tool interface.
 
 These tests verify that:
-  1. All 16 tools are registered and callable
+  1. All 41 tools are registered and callable
   2. Input JSON parsing and validation works correctly
   3. Tool outputs match the expected format
   4. Error cases produce clear error messages
