@@ -573,8 +573,6 @@ jsonld-ex is a research project targeting W3C standardization. It addresses gaps
 - **AI data modeling** — No standard way to express confidence, provenance, or vector embeddings in JSON-LD
 - **Validation** — JSON-LD lacks native validation; current options (SHACL, ShEx) require separate RDF tooling
 
-For the full gap analysis and proposal rationale, see the [JSON-LD Deep Research Report](https://github.com/jemsbhai/jsonld-ex).
-
 ## Links
 
 - **Repository:** [github.com/jemsbhai/jsonld-ex](https://github.com/jemsbhai/jsonld-ex)
