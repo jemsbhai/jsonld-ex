@@ -213,7 +213,7 @@ Detailed documentation, usage examples, and API reference for each language impl
 | Package | Path | Status |
 |---------|------|--------|
 | **Python** | [`packages/python/README.md`](./packages/python/README.md) | ✅ Published on [PyPI](https://pypi.org/project/jsonld-ex/) — 14 modules, 41 MCP tools, 832+ tests |
-| **JavaScript/TypeScript** | `packages/js/` | 🔜 Planned — deferred to focus on Python-first development |
+| **JavaScript/TypeScript** | [`packages/js/README.md`](./packages/js/README.md) | 🚧 Early development (v0.1.0) — 4 core modules (ai-ml, security, validation, vector) |
 
 ## Extension Specifications
 
