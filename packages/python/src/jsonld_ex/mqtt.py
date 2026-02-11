@@ -5,6 +5,7 @@ Optimises jsonld-ex documents for IoT pub/sub via MQTT, with:
   - CBOR or JSON payload serialization
   - Automatic MQTT topic derivation from ``@type`` and ``@id``
   - QoS level mapping from ``@confidence``
+  - MQTT 5.0 PUBLISH property derivation
 
 Requires the ``cbor2`` package for compressed payloads::
 
@@ -18,8 +19,10 @@ can be used with any MQTT client.
 from __future__ import annotations
 
 import json
+import math
 import re
-from typing import Any, Literal, Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 from jsonld_ex.ai_ml import get_confidence
 
@@ -29,6 +32,9 @@ try:
     _HAS_CBOR = True
 except ImportError:
     _HAS_CBOR = False
+
+# MQTT spec: topic name MUST NOT exceed 65,535 bytes (UTF-8 encoded).
+_MAX_TOPIC_BYTES = 65_535
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -138,12 +144,24 @@ def derive_mqtt_topic(
     keep topics short.  If ``@type`` or ``@id`` are missing, the
     corresponding segment is ``"unknown"``.
 
+    Per MQTT spec (v3.1.1 §4.7, v5.0 §4.7):
+
+    - Topic names are UTF-8 encoded strings, max 65,535 bytes.
+    - Wildcard characters ``#`` and ``+`` are forbidden in PUBLISH
+      topic names.
+    - Null character (``\\x00``) is forbidden.
+    - Topics starting with ``$`` are reserved for broker system use.
+
     Args:
         doc: JSON-LD document or node.
         prefix: Topic prefix (default ``"ld"``).
 
     Returns:
         MQTT topic string.
+
+    Raises:
+        ValueError: If the generated topic exceeds 65,535 bytes
+            (MQTT spec limit).
 
     Examples::
 
@@ -161,11 +179,21 @@ def derive_mqtt_topic(
     id_val = doc.get("@id", "unknown")
     id_str = _local_name(str(id_val))
 
-    # Sanitise for MQTT topic (no #, +, or null)
+    # Sanitise for MQTT topic (no #, +, null, or leading $)
     type_str = _sanitise_topic_segment(type_str)
     id_str = _sanitise_topic_segment(id_str)
 
-    return f"{prefix}/{type_str}/{id_str}"
+    topic = f"{prefix}/{type_str}/{id_str}"
+
+    # MQTT spec: topic name MUST NOT exceed 65,535 bytes (UTF-8).
+    topic_bytes = len(topic.encode("utf-8"))
+    if topic_bytes > _MAX_TOPIC_BYTES:
+        raise ValueError(
+            f"Generated MQTT topic is {topic_bytes} bytes, exceeding "
+            f"the MQTT spec limit of {_MAX_TOPIC_BYTES} bytes."
+        )
+
+    return topic
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -224,6 +252,99 @@ def derive_mqtt_qos(doc: dict[str, Any]) -> int:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# MQTT 5.0 PUBLISH PROPERTIES
+# ═══════════════════════════════════════════════════════════════════
+
+
+def derive_mqtt5_properties(
+    doc: dict[str, Any],
+    compress: bool = True,
+) -> dict[str, Any]:
+    """Derive MQTT 5.0 PUBLISH packet properties from a JSON-LD document.
+
+    MQTT 5.0 (OASIS Standard, §3.3.2.3) introduced several PUBLISH
+    properties that map naturally to JSON-LD-Ex metadata:
+
+    - **Payload Format Indicator** (byte): ``0`` = unspecified bytes
+      (CBOR), ``1`` = UTF-8 character data (JSON).
+    - **Content Type** (UTF-8 string): MIME type of the payload.
+      ``"application/cbor"`` for compressed, ``"application/ld+json"``
+      for uncompressed.
+    - **Message Expiry Interval** (uint32, seconds): Derived from
+      ``@validUntil`` temporal annotation — seconds remaining until
+      the statement expires.  ``None`` if no temporal bound.
+    - **User Properties** (key-value pairs): Extracted from JSON-LD
+      metadata — ``@type``, ``@source``, ``@confidence``.
+
+    These properties are returned as a plain dict suitable for passing
+    to any MQTT 5.0 client library (e.g. ``paho-mqtt``, ``gmqtt``).
+
+    Args:
+        doc: JSON-LD document or node.
+        compress: Whether the payload will be CBOR-compressed (True)
+            or JSON (False).  Determines format indicator and content
+            type.
+
+    Returns:
+        Dict with MQTT 5.0 property names as keys.  Only properties
+        that can be derived are included.
+
+    Examples::
+
+        >>> props = derive_mqtt5_properties(
+        ...     {"@type": "SensorReading", "@confidence": 0.95},
+        ...     compress=True,
+        ... )
+        >>> props["payload_format_indicator"]
+        0
+        >>> props["content_type"]
+        'application/cbor'
+    """
+    props: dict[str, Any] = {}
+
+    # --- Payload Format Indicator (§3.3.2.3.2) ---
+    # 0 = unspecified byte stream (CBOR), 1 = UTF-8 (JSON)
+    props["payload_format_indicator"] = 0 if compress else 1
+
+    # --- Content Type (§3.3.2.3.9) ---
+    props["content_type"] = (
+        "application/cbor" if compress else "application/ld+json"
+    )
+
+    # --- Message Expiry Interval (§3.3.2.3.3) ---
+    expiry = _derive_expiry_seconds(doc)
+    if expiry is not None:
+        props["message_expiry_interval"] = expiry
+
+    # --- User Properties (§3.3.2.3.7) ---
+    user_props: list[tuple[str, str]] = []
+
+    type_val = doc.get("@type")
+    if type_val is not None:
+        if isinstance(type_val, list):
+            type_val = type_val[0] if type_val else None
+        if type_val is not None:
+            user_props.append(("jsonld_type", str(type_val)))
+
+    conf = get_confidence(doc)
+    if conf is not None:
+        user_props.append(("jsonld_confidence", str(conf)))
+
+    source = doc.get("@source")
+    if source is not None:
+        user_props.append(("jsonld_source", str(source)))
+
+    doc_id = doc.get("@id")
+    if doc_id is not None:
+        user_props.append(("jsonld_id", str(doc_id)))
+
+    if user_props:
+        props["user_properties"] = user_props
+
+    return props
+
+
+# ═══════════════════════════════════════════════════════════════════
 # INTERNAL HELPERS
 # ═══════════════════════════════════════════════════════════════════
 
@@ -243,6 +364,67 @@ def _local_name(iri: str) -> str:
 
 
 def _sanitise_topic_segment(segment: str) -> str:
-    """Remove MQTT-illegal characters from a topic segment."""
+    """Remove MQTT-illegal characters from a topic segment.
+
+    Per MQTT spec (v3.1.1 §4.7, v5.0 §4.7):
+
+    - ``#`` and ``+`` are wildcard characters, forbidden in PUBLISH
+      topic names.
+    - Null character (``\\x00``) is forbidden.
+    - ``$`` as a leading character is reserved for broker system
+      topics (e.g. ``$SYS/``); stripped only when leading.
+    """
     # MQTT wildcards # and + are not allowed in published topics
-    return re.sub(r"[#+\x00]", "_", segment)
+    sanitised = re.sub(r"[#+\x00]", "_", segment)
+    # Strip leading $ (reserved for broker system topics like $SYS/)
+    sanitised = sanitised.lstrip("$")
+    # If stripping left us empty, fall back to "unknown"
+    return sanitised or "unknown"
+
+
+def _derive_expiry_seconds(doc: dict[str, Any]) -> Optional[int]:
+    """Compute Message Expiry Interval from ``@validUntil``.
+
+    Scans the document for ``@validUntil`` (ISO 8601 datetime) and
+    returns the number of seconds remaining until that time.  Returns
+    ``None`` if no ``@validUntil`` is found or if it has already
+    passed.
+
+    Also checks property-level ``@validUntil`` on the first annotated
+    property value.
+    """
+    valid_until = doc.get("@validUntil")
+
+    # Fall back to property-level search
+    if valid_until is None:
+        for key, val in doc.items():
+            if key.startswith("@"):
+                continue
+            if isinstance(val, dict) and "@validUntil" in val:
+                valid_until = val["@validUntil"]
+                break
+
+    if valid_until is None:
+        return None
+
+    try:
+        if isinstance(valid_until, str):
+            # Parse ISO 8601 — handle both timezone-aware and naive
+            dt_str = valid_until.replace("Z", "+00:00")
+            expiry_dt = datetime.fromisoformat(dt_str)
+            if expiry_dt.tzinfo is None:
+                expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
+        else:
+            return None
+
+        now = datetime.now(timezone.utc)
+        remaining = (expiry_dt - now).total_seconds()
+
+        if remaining <= 0:
+            return None
+
+        # MQTT Message Expiry Interval is a uint32 (max ~136 years)
+        return min(int(math.ceil(remaining)), 0xFFFFFFFF)
+
+    except (ValueError, TypeError, OverflowError):
+        return None
