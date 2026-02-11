@@ -104,8 +104,9 @@ class TestCosineSimilarity:
         with pytest.raises(ValueError, match="empty"):
             cosine_similarity([], [])
 
-    def test_zero_vector(self):
-        assert cosine_similarity([0.0, 0.0], [1.0, 2.0]) == 0.0
+    def test_zero_vector_raises(self):
+        with pytest.raises(ValueError, match="zero-magnitude"):
+            cosine_similarity([0.0, 0.0], [1.0, 2.0])
 
     def test_nan_raises(self):
         with pytest.raises(ValueError, match="finite"):

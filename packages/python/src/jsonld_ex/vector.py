@@ -41,7 +41,8 @@ def validate_vector(
 def cosine_similarity(a: list[float], b: list[float]) -> float:
     """Compute cosine similarity between two vectors.
 
-    Returns 0.0 when either vector is a zero vector (norm == 0).
+    Raises ``ValueError`` when either vector has zero magnitude,
+    since cosine similarity is mathematically undefined (0/0) in that case.
     """
     if len(a) != len(b):
         raise ValueError(f"Vector dimension mismatch: {len(a)} vs {len(b)}")
@@ -56,8 +57,9 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))
-    denom = norm_a * norm_b
-    return dot / denom if denom != 0 else 0.0
+    if norm_a == 0 or norm_b == 0:
+        raise ValueError("Cannot compute cosine similarity with zero-magnitude vector")
+    return dot / (norm_a * norm_b)
 
 
 def extract_vectors(
