@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] — 2026-02-11
+
+### Added
+
+**MCP Server Integration** (`jsonld_ex.mcp`) — *requires `mcp>=1.7`*
+- Model Context Protocol server exposing jsonld-ex as 16 MCP tools
+- 6 tool groups: AI/ML annotation, confidence algebra, security, vectors, graph ops, interop
+- 3 MCP resources: AI/ML context, security context, opinion JSON Schema
+- 2 MCP prompts: annotate_tool_results, trust_chain_analysis
+- Entry point: `python -m jsonld_ex.mcp` (stdio/HTTP transport)
+- Install via `pip install jsonld-ex[mcp]`
+- All tools are read-only and stateless
+
+### Changed
+- Added `mcp` optional dependency group in pyproject.toml
+- Version bumped to 0.3.0
+
+### Migration from 0.2.x
+No breaking changes. The MCP module is entirely optional and additive. Existing public API is fully preserved. Users who do not install the `mcp` extra are completely unaffected.
+
 ## [0.2.0] — 2026-02-06
 
 ### Added

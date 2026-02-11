@@ -5,7 +5,7 @@ Reference implementation of proposed JSON-LD 1.2 extensions.
 Wraps PyLD for core JSON-LD processing and adds extension layers.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from jsonld_ex.processor import JsonLdEx
 from jsonld_ex.ai_ml import annotate, get_confidence, get_provenance, filter_by_confidence
