@@ -5,7 +5,7 @@
 > Companion implementation for: *"Extending JSON-LD for Modern AI: Addressing Security, Data Modeling, and Implementation Gaps"* — FLAIRS-39 (2026)
 
 [![PyPI](https://img.shields.io/pypi/v/jsonld-ex)](https://pypi.org/project/jsonld-ex/)
-[![Tests](https://img.shields.io/badge/tests-328%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-832%2B%20passing-brightgreen)]()
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ## Overview
@@ -13,12 +13,14 @@
 `jsonld-ex` extends the existing JSON-LD ecosystem with backward-compatible extensions that address critical gaps in:
 
 1. **AI/ML Data Modeling** — `@confidence`, `@source`, `@vector` container, provenance tracking
-2. **Security Hardening** — `@integrity` context verification, context allowlists, resource limits
-3. **Validation** — `@shape` native validation framework
-4. **Inference** — Confidence propagation through inference chains, multi-source combination (noisy-OR, Dempster–Shafer)
-5. **Graph Operations** — Confidence-aware merging, semantic diff, conflict resolution
-6. **Temporal Modeling** — `@validFrom`, `@validUntil`, `@asOf` for time-aware assertions
-7. **IoT Transport** — CBOR-LD binary serialization, MQTT topic/QoS derivation
+2. **Confidence Algebra** — Full Subjective Logic framework (Jøsang 2016): opinions, cumulative/averaging fusion, trust discount, deduction, conflict detection, Byzantine-resistant fusion
+3. **Security Hardening** — `@integrity` context verification, context allowlists, resource limits
+4. **Validation** — `@shape` native validation framework
+5. **Inference** — Confidence propagation through inference chains, multi-source combination (noisy-OR, Dempster–Shafer)
+6. **Graph Operations** — Confidence-aware merging, semantic diff, conflict resolution
+7. **Temporal Modeling** — `@validFrom`, `@validUntil`, `@asOf` for time-aware assertions
+8. **IoT Transport** — CBOR-LD binary serialization, MQTT topic/QoS derivation
+9. **MCP Server** — 41 tools exposing all library capabilities to LLM agents via the [Model Context Protocol](https://modelcontextprotocol.io/)
 
 ## Ecosystem Interoperability
 
@@ -45,6 +47,11 @@ jsonld-ex does not replace existing standards — it bridges them:
 │  │@vector   │ │allowlist │ │         │ │ combination    │ │
 │  │@source   │ │limits    │ │         │ │ conflict res.  │ │
 │  └──────────┘ └──────────┘ └─────────┘ └────────────────┘ │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ Confidence Algebra (Subjective Logic)                │  │
+│  │ Opinion, cumulative/averaging fusion, trust discount │  │
+│  │ deduction, conflict detection, Byzantine-resistant   │  │
+│  └──────────────────────────────────────────────────────┘  │
 │  ┌──────────┐ ┌──────────┐ ┌─────────┐ ┌────────────────┐ │
 │  │ Temporal  │ │  Merge   │ │ OWL/RDF │ │ IoT Transport  │ │
 │  │@validFrom │ │ graphs   │ │ interop │ │ CBOR-LD, MQTT  │ │
@@ -189,11 +196,24 @@ round_tripped = from_prov_o(prov_doc)
 | `security` | `compute_integrity`, `verify_integrity`, `is_context_allowed` | `@integrity` and allowlists |
 | `validation` | `validate_node`, `validate_document` | `@shape` validation framework |
 | `owl_interop` | `to_prov_o`, `from_prov_o`, `shape_to_shacl`, `shacl_to_shape`, `shape_to_owl_restrictions`, `to_rdf_star_ntriples` | Bidirectional standards mapping |
+| `confidence_algebra` | `Opinion`, `cumulative_fuse`, `averaging_fuse`, `trust_discount`, `deduce`, `robust_fuse` | Subjective Logic framework (Jøsang 2016) |
+| `confidence_bridge` | `combine_opinions_from_scalars`, `propagate_opinions_from_scalars` | Scalar-to-opinion bridge |
+| `confidence_decay` | `decay_opinion`, `exponential_decay`, `linear_decay`, `step_decay` | Temporal decay of evidence |
 | `inference` | `propagate_confidence`, `combine_sources`, `resolve_conflict` | Confidence propagation and combination |
 | `merge` | `merge_graphs`, `diff_graphs` | Graph merging and diff |
 | `temporal` | `add_temporal`, `query_at_time`, `temporal_diff` | Time-aware assertions |
 | `cbor_ld` | `to_cbor`, `from_cbor`, `payload_stats` | Binary serialization *(requires `cbor2`)* |
 | `mqtt` | `to_mqtt_payload`, `from_mqtt_payload`, `derive_mqtt_topic`, `derive_mqtt_qos` | IoT transport *(requires `cbor2`)* |
+| `mcp` | MCP server (41 tools) | LLM agent integration *(requires `mcp`, Python 3.10+)* |
+
+## Packages
+
+Detailed documentation, usage examples, and API reference for each language implementation:
+
+| Package | Path | Status |
+|---------|------|--------|
+| **Python** | [`packages/python/README.md`](./packages/python/README.md) | ✅ Published on [PyPI](https://pypi.org/project/jsonld-ex/) — 14 modules, 41 MCP tools, 832+ tests |
+| **JavaScript/TypeScript** | `packages/js/` | 🔜 Planned — deferred to focus on Python-first development |
 
 ## Extension Specifications
 
@@ -212,10 +232,12 @@ MIT
 ## Citation
 
 ```bibtex
-@inproceedings{jsonld-ex-2026,
+@inproceedings{jsonld-ex-flairs-2026,
   title={Extending JSON-LD for Modern AI: Addressing Security, Data Modeling, and Implementation Gaps},
   author={Syed, Muntaser and Silaghi, Marius and Abujar, Sheikh and Alssadi, Rwaida},
   booktitle={Proceedings of the 39th International FLAIRS Conference},
   year={2026}
 }
 ```
+
+A follow-up paper targeting **NeurIPS 2026 Datasets & Benchmarks** is in preparation, covering the formal confidence algebra, comprehensive benchmarks, and extended evaluation.
