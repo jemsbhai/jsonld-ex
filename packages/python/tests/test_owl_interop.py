@@ -1562,7 +1562,7 @@ class TestExtendsShacl:
 # ═══════════════════════════════════════════════════════════════════
 
 
-def _find_nodes_by_type(graph: list, type_iri: str) -> list[dict]:
+def _find_nodes_by_type(graph, type_iri):
     """Find all nodes in a @graph array that have the given @type."""
     results = []
     for node in graph:
@@ -1576,7 +1576,7 @@ def _find_nodes_by_type(graph: list, type_iri: str) -> list[dict]:
     return results
 
 
-def _find_node_by_id(graph: list, node_id: str) -> dict | None:
+def _find_node_by_id(graph, node_id):
     """Find a node in @graph by its @id."""
     for node in graph:
         if isinstance(node, dict) and node.get("@id") == node_id:
