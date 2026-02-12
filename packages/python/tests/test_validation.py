@@ -135,3 +135,159 @@ class TestValidationEdgeCases:
         result = validate_node(node, PERSON_SHAPE)
         assert not result.valid
         assert any(e.constraint == "type" for e in result.errors)
+
+
+class TestCardinalityConstraints:
+    """GAP-V1: @minCount / @maxCount cardinality constraints."""
+
+    def test_mincount_list_satisfies(self):
+        shape = {"@type": "Thing", "tags": {"@minCount": 2}}
+        node = {"@type": "Thing", "tags": ["a", "b", "c"]}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_mincount_list_too_few(self):
+        shape = {"@type": "Thing", "tags": {"@minCount": 2}}
+        node = {"@type": "Thing", "tags": ["a"]}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "minCount" for e in result.errors)
+
+    def test_mincount_single_value_counts_as_one(self):
+        shape = {"@type": "Thing", "tags": {"@minCount": 2}}
+        node = {"@type": "Thing", "tags": "only-one"}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "minCount" for e in result.errors)
+
+    def test_mincount_absent_property(self):
+        shape = {"@type": "Thing", "tags": {"@minCount": 2}}
+        node = {"@type": "Thing"}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "minCount" for e in result.errors)
+
+    def test_mincount_one_with_single_value(self):
+        shape = {"@type": "Thing", "tags": {"@minCount": 1}}
+        node = {"@type": "Thing", "tags": "present"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_maxcount_list_within_limit(self):
+        shape = {"@type": "Thing", "tags": {"@maxCount": 3}}
+        node = {"@type": "Thing", "tags": ["a", "b"]}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_maxcount_list_exceeds(self):
+        shape = {"@type": "Thing", "tags": {"@maxCount": 3}}
+        node = {"@type": "Thing", "tags": ["a", "b", "c", "d", "e"]}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "maxCount" for e in result.errors)
+
+    def test_maxcount_one_with_single_value(self):
+        shape = {"@type": "Thing", "tags": {"@maxCount": 1}}
+        node = {"@type": "Thing", "tags": "single"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_maxcount_one_with_list_of_two(self):
+        shape = {"@type": "Thing", "tags": {"@maxCount": 1}}
+        node = {"@type": "Thing", "tags": ["a", "b"]}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "maxCount" for e in result.errors)
+
+    def test_combined_min_max_within_range(self):
+        shape = {"@type": "Thing", "tags": {"@minCount": 1, "@maxCount": 3}}
+        node = {"@type": "Thing", "tags": ["a", "b"]}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_exact_cardinality(self):
+        shape = {"@type": "Thing", "authors": {"@minCount": 2, "@maxCount": 2}}
+        node = {"@type": "Thing", "authors": ["Alice", "Bob"]}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_mincount_zero_always_valid(self):
+        shape = {"@type": "Thing", "tags": {"@minCount": 0}}
+        node = {"@type": "Thing"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_empty_list_with_mincount(self):
+        shape = {"@type": "Thing", "tags": {"@minCount": 1}}
+        node = {"@type": "Thing", "tags": []}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "minCount" for e in result.errors)
+
+
+class TestEnumerationConstraint:
+    """GAP-V2: @in enumeration constraint."""
+
+    def test_value_in_allowed_set(self):
+        shape = {"@type": "Article", "status": {"@in": ["draft", "published", "retracted"]}}
+        node = {"@type": "Article", "status": "published"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_value_not_in_allowed_set(self):
+        shape = {"@type": "Article", "status": {"@in": ["draft", "published", "retracted"]}}
+        node = {"@type": "Article", "status": "archived"}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "in" for e in result.errors)
+
+    def test_in_with_integers(self):
+        shape = {"@type": "Thing", "priority": {"@in": [1, 2, 3]}}
+        node = {"@type": "Thing", "priority": 2}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_in_integer_mismatch(self):
+        shape = {"@type": "Thing", "priority": {"@in": [1, 2, 3]}}
+        node = {"@type": "Thing", "priority": 5}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "in" for e in result.errors)
+
+    def test_in_with_mixed_types(self):
+        shape = {"@type": "Thing", "code": {"@in": ["auto", 0, 1]}}
+        node = {"@type": "Thing", "code": "auto"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_in_with_value_node(self):
+        shape = {"@type": "Article", "status": {"@in": ["draft", "published"]}}
+        node = {"@type": "Article", "status": {"@value": "draft"}}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_in_absent_optional_property(self):
+        shape = {"@type": "Article", "status": {"@in": ["draft", "published"]}}
+        node = {"@type": "Article"}
+        result = validate_node(node, shape)
+        assert result.valid  # absent optional property is fine
+
+    def test_in_combined_with_required(self):
+        shape = {"@type": "Article", "status": {"@required": True, "@in": ["draft", "published"]}}
+        node = {"@type": "Article"}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "required" for e in result.errors)
+
+    def test_in_with_booleans(self):
+        shape = {"@type": "Thing", "active": {"@in": [True, False]}}
+        node = {"@type": "Thing", "active": True}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_in_empty_set_always_invalid(self):
+        shape = {"@type": "Thing", "val": {"@in": []}}
+        node = {"@type": "Thing", "val": "anything"}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "in" for e in result.errors)

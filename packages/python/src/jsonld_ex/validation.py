@@ -57,6 +57,29 @@ def validate_node(node: dict[str, Any], shape: dict[str, Any]) -> ValidationResu
             continue
 
         value = node.get(prop)
+
+        # ── Cardinality constraints (operate on raw value before extraction) ──
+        count = _count_values(value)
+
+        if "@minCount" in constraint:
+            min_count = constraint["@minCount"]
+            if count < min_count:
+                errors.append(ValidationError(
+                    prop, "minCount",
+                    f"Expected at least {min_count} value(s), found {count}",
+                    value,
+                ))
+
+        if "@maxCount" in constraint:
+            max_count = constraint["@maxCount"]
+            if count > max_count:
+                errors.append(ValidationError(
+                    prop, "maxCount",
+                    f"Expected at most {max_count} value(s), found {count}",
+                    value,
+                ))
+
+        # ── Extract scalar for remaining constraints ──
         raw = _extract_raw(value)
 
         if constraint.get("@required") and raw is None:
@@ -103,6 +126,15 @@ def validate_node(node: dict[str, Any], shape: dict[str, Any]) -> ValidationResu
                     f"Length {len(raw)} exceeds maximum {constraint['@maxLength']}", raw,
                 ))
 
+        # Enumeration
+        if "@in" in constraint:
+            allowed = constraint["@in"]
+            if raw not in allowed:
+                errors.append(ValidationError(
+                    prop, "in",
+                    f"Value {raw!r} not in allowed set {allowed}", raw,
+                ))
+
         # Pattern
         if "@pattern" in constraint and isinstance(raw, str):
             try:
@@ -141,6 +173,20 @@ def validate_document(
 
 
 # ── Internal ───────────────────────────────────────────────────────
+
+def _count_values(value: Any) -> int:
+    """Count the number of values for cardinality checks.
+
+    - ``None`` (absent property) → 0
+    - A list → ``len(list)``
+    - Any other single value → 1
+    """
+    if value is None:
+        return 0
+    if isinstance(value, list):
+        return len(value)
+    return 1
+
 
 def _get_types(node: dict) -> list[str]:
     t = node.get("@type")
