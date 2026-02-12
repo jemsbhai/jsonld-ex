@@ -140,6 +140,62 @@ class TestExtractVectors:
         assert result == {}
 
 
+class TestMultiEmbeddingDocuments:
+    """GAP-MM2: Multiple embeddings per node."""
+
+    def test_multiple_vector_term_definitions(self):
+        ctx = {}
+        ctx.update(vector_term_definition("text_embedding", "http://ex.org/textEmb", 3))
+        ctx.update(vector_term_definition("image_embedding", "http://ex.org/imgEmb", 4))
+        assert "text_embedding" in ctx
+        assert "image_embedding" in ctx
+        assert ctx["text_embedding"]["@dimensions"] == 3
+        assert ctx["image_embedding"]["@dimensions"] == 4
+
+    def test_extract_multiple_vectors(self):
+        node = {
+            "@id": "http://example.org/product/1",
+            "text_embedding": [0.1, 0.2, 0.3],
+            "image_embedding": [0.4, 0.5, 0.6, 0.7],
+            "name": "Widget",
+        }
+        vectors = extract_vectors(node, ["text_embedding", "image_embedding"])
+        assert len(vectors) == 2
+        assert vectors["text_embedding"] == [0.1, 0.2, 0.3]
+        assert vectors["image_embedding"] == [0.4, 0.5, 0.6, 0.7]
+
+    def test_validate_multiple_vectors(self):
+        node = {
+            "text_embedding": [0.1, 0.2, 0.3],
+            "image_embedding": [0.4, 0.5, 0.6, 0.7],
+        }
+        ok1, errs1 = validate_vector(node["text_embedding"], expected_dimensions=3)
+        ok2, errs2 = validate_vector(node["image_embedding"], expected_dimensions=4)
+        assert ok1 is True and errs1 == []
+        assert ok2 is True and errs2 == []
+
+    def test_strip_preserves_other_vectors(self):
+        """Stripping one vector property leaves others intact."""
+        node = {
+            "@id": "http://example.org/x",
+            "text_embedding": [0.1, 0.2],
+            "image_embedding": [0.3, 0.4],
+            "name": "test",
+        }
+        stripped = strip_vectors_for_rdf(node, ["text_embedding"])
+        assert "text_embedding" not in stripped
+        assert stripped["image_embedding"] == [0.3, 0.4]
+        assert stripped["name"] == "test"
+
+    def test_cosine_similarity_between_modalities(self):
+        """Cross-modal similarity still works as plain vectors."""
+        # Same-dimension vectors from different modalities
+        text_vec = [1.0, 0.0, 0.0]
+        img_vec = [0.0, 1.0, 0.0]
+        sim = cosine_similarity(text_vec, img_vec)
+        assert sim == pytest.approx(0.0, abs=1e-9)
+
+
 class TestStripVectorsForRdf:
     def test_removes_vectors(self):
         doc = {"@type": "Product", "name": "Widget", "embedding": [1.0, 2.0]}

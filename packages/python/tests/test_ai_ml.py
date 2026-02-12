@@ -390,3 +390,328 @@ class TestDerivedFrom:
         node = {"@value": "test", "@confidence": 0.5}
         prov = get_provenance(node)
         assert prov.derived_from is None
+
+
+# -- GAP-IOT4: Aggregation metadata -------------------------------------------
+
+
+class TestAggregationMetadata:
+    """@aggregationMethod, @aggregationWindow, @aggregationCount."""
+
+    def test_annotate_with_aggregation_method(self):
+        result = annotate(23.5, confidence=0.99, aggregation_method="mean")
+        assert result["@aggregationMethod"] == "mean"
+
+    def test_annotate_with_aggregation_window(self):
+        result = annotate(23.5, aggregation_window="PT5M")
+        assert result["@aggregationWindow"] == "PT5M"
+
+    def test_annotate_with_aggregation_count(self):
+        result = annotate(23.5, aggregation_count=100)
+        assert result["@aggregationCount"] == 100
+
+    def test_annotate_full_aggregation(self):
+        result = annotate(
+            23.5,
+            confidence=0.99,
+            measurement_uncertainty=0.5,
+            unit="celsius",
+            aggregation_method="mean",
+            aggregation_window="PT5M",
+            aggregation_count=100,
+        )
+        assert result["@value"] == 23.5
+        assert result["@aggregationMethod"] == "mean"
+        assert result["@aggregationWindow"] == "PT5M"
+        assert result["@aggregationCount"] == 100
+        assert result["@measurementUncertainty"] == 0.5
+        assert result["@unit"] == "celsius"
+
+    def test_aggregation_without_other_annotations(self):
+        result = annotate(72.0, aggregation_method="p95", aggregation_count=500)
+        assert result == {
+            "@value": 72.0,
+            "@aggregationMethod": "p95",
+            "@aggregationCount": 500,
+        }
+
+    def test_get_provenance_aggregation(self):
+        node = {
+            "@value": 23.5,
+            "@aggregationMethod": "median",
+            "@aggregationWindow": "PT10M",
+            "@aggregationCount": 200,
+        }
+        prov = get_provenance(node)
+        assert prov.aggregation_method == "median"
+        assert prov.aggregation_window == "PT10M"
+        assert prov.aggregation_count == 200
+
+    def test_get_provenance_aggregation_absent(self):
+        node = {"@value": 23.5, "@confidence": 0.9}
+        prov = get_provenance(node)
+        assert prov.aggregation_method is None
+        assert prov.aggregation_window is None
+        assert prov.aggregation_count is None
+
+
+# -- GAP-IOT2: Calibration metadata -------------------------------------------
+
+
+class TestCalibrationMetadata:
+    """@calibratedAt, @calibrationMethod, @calibrationAuthority."""
+
+    def test_annotate_with_calibrated_at(self):
+        result = annotate(23.5, calibrated_at="2025-06-01T09:00:00Z")
+        assert result["@calibratedAt"] == "2025-06-01T09:00:00Z"
+
+    def test_annotate_with_calibration_method(self):
+        result = annotate(23.5, calibration_method="NIST-traceable two-point")
+        assert result["@calibrationMethod"] == "NIST-traceable two-point"
+
+    def test_annotate_with_calibration_authority(self):
+        result = annotate(23.5, calibration_authority="https://nist.gov")
+        assert result["@calibrationAuthority"] == "https://nist.gov"
+
+    def test_annotate_full_calibration(self):
+        result = annotate(
+            23.5,
+            confidence=0.99,
+            measurement_uncertainty=0.5,
+            unit="celsius",
+            calibrated_at="2025-06-01T09:00:00Z",
+            calibration_method="NIST-traceable two-point",
+            calibration_authority="https://nist.gov",
+        )
+        assert result["@calibratedAt"] == "2025-06-01T09:00:00Z"
+        assert result["@calibrationMethod"] == "NIST-traceable two-point"
+        assert result["@calibrationAuthority"] == "https://nist.gov"
+        assert result["@measurementUncertainty"] == 0.5
+        assert result["@unit"] == "celsius"
+
+    def test_calibration_composes_with_aggregation(self):
+        result = annotate(
+            23.5,
+            measurement_uncertainty=0.5,
+            unit="celsius",
+            calibrated_at="2025-06-01T09:00:00Z",
+            calibration_method="NIST-traceable two-point",
+            aggregation_method="mean",
+            aggregation_count=100,
+        )
+        assert result["@calibratedAt"] == "2025-06-01T09:00:00Z"
+        assert result["@aggregationMethod"] == "mean"
+        assert result["@aggregationCount"] == 100
+
+    def test_get_provenance_calibration(self):
+        node = {
+            "@value": 23.5,
+            "@calibratedAt": "2025-06-01T09:00:00Z",
+            "@calibrationMethod": "NIST-traceable two-point",
+            "@calibrationAuthority": "https://nist.gov",
+        }
+        prov = get_provenance(node)
+        assert prov.calibrated_at == "2025-06-01T09:00:00Z"
+        assert prov.calibration_method == "NIST-traceable two-point"
+        assert prov.calibration_authority == "https://nist.gov"
+
+    def test_get_provenance_calibration_absent(self):
+        node = {"@value": 23.5, "@confidence": 0.9}
+        prov = get_provenance(node)
+        assert prov.calibrated_at is None
+        assert prov.calibration_method is None
+        assert prov.calibration_authority is None
+
+
+# -- GAP-P1: Delegation chains ------------------------------------------------
+
+
+class TestDelegationChains:
+    """@delegatedBy for multi-agent provenance pipelines."""
+
+    def test_annotate_with_delegated_by(self):
+        result = annotate(
+            "extracted entity",
+            confidence=0.9,
+            source="https://model.example.org/ner-v3",
+            delegated_by="https://pipeline.example.org/etl-v2",
+        )
+        assert result["@delegatedBy"] == "https://pipeline.example.org/etl-v2"
+        assert result["@source"] == "https://model.example.org/ner-v3"
+
+    def test_annotate_delegation_chain_list(self):
+        result = annotate(
+            "value",
+            source="https://model.example.org/v1",
+            delegated_by=[
+                "https://pipeline.example.org/step-2",
+                "https://user.example.org/alice",
+            ],
+        )
+        assert isinstance(result["@delegatedBy"], list)
+        assert len(result["@delegatedBy"]) == 2
+
+    def test_annotate_delegated_by_without_source(self):
+        result = annotate("value", delegated_by="https://orchestrator.example.org")
+        assert result["@delegatedBy"] == "https://orchestrator.example.org"
+        assert "@source" not in result
+
+    def test_get_provenance_delegated_by(self):
+        node = {
+            "@value": "test",
+            "@source": "https://model.example.org/v1",
+            "@delegatedBy": "https://pipeline.example.org/etl",
+        }
+        prov = get_provenance(node)
+        assert prov.delegated_by == "https://pipeline.example.org/etl"
+
+    def test_get_provenance_delegated_by_list(self):
+        node = {
+            "@value": "test",
+            "@delegatedBy": ["https://a.org", "https://b.org"],
+        }
+        prov = get_provenance(node)
+        assert prov.delegated_by == ["https://a.org", "https://b.org"]
+
+    def test_get_provenance_delegated_by_absent(self):
+        node = {"@value": "test", "@confidence": 0.5}
+        prov = get_provenance(node)
+        assert prov.delegated_by is None
+
+
+# -- GAP-MM3: Content addressing (@contentHash) --------------------------------
+
+
+class TestContentHash:
+    """@contentHash for content-addressable annotations."""
+
+    def test_annotate_with_content_hash(self):
+        result = annotate(
+            "Alice",
+            confidence=0.95,
+            content_hash="sha256:abc123def456",
+        )
+        assert result["@contentHash"] == "sha256:abc123def456"
+
+    def test_annotate_content_hash_without_confidence(self):
+        result = annotate("data", content_hash="sha256:deadbeef")
+        assert result["@contentHash"] == "sha256:deadbeef"
+        assert "@confidence" not in result
+
+    def test_get_provenance_content_hash(self):
+        node = {
+            "@value": "Alice",
+            "@confidence": 0.9,
+            "@contentHash": "sha256:abc123",
+        }
+        prov = get_provenance(node)
+        assert prov.content_hash == "sha256:abc123"
+
+    def test_get_provenance_content_hash_absent(self):
+        node = {"@value": "Alice", "@confidence": 0.9}
+        prov = get_provenance(node)
+        assert prov.content_hash is None
+
+    def test_content_hash_composes_with_provenance(self):
+        result = annotate(
+            "fact",
+            confidence=0.99,
+            source="https://model.example.org/v3",
+            content_hash="sha256:fedcba987654",
+        )
+        assert result["@contentHash"] == "sha256:fedcba987654"
+        assert result["@source"] == "https://model.example.org/v3"
+        assert result["@confidence"] == 0.99
+
+
+# -- GAP-P3: Invalidation / retraction ----------------------------------------
+
+
+class TestInvalidation:
+    """@invalidatedAt / @invalidationReason for retracted assertions."""
+
+    def test_annotate_with_invalidated_at(self):
+        result = annotate(
+            "old value",
+            confidence=0.3,
+            invalidated_at="2025-06-01T00:00:00Z",
+        )
+        assert result["@invalidatedAt"] == "2025-06-01T00:00:00Z"
+
+    def test_annotate_with_invalidation_reason(self):
+        result = annotate(
+            "old value",
+            confidence=0.3,
+            invalidation_reason="Superseded by updated extraction",
+        )
+        assert result["@invalidationReason"] == "Superseded by updated extraction"
+
+    def test_annotate_full_invalidation(self):
+        result = annotate(
+            "retracted claim",
+            confidence=0.1,
+            source="https://model.example.org/v1",
+            invalidated_at="2025-07-01T12:00:00Z",
+            invalidation_reason="Model v1 deprecated",
+        )
+        assert result["@invalidatedAt"] == "2025-07-01T12:00:00Z"
+        assert result["@invalidationReason"] == "Model v1 deprecated"
+        assert result["@source"] == "https://model.example.org/v1"
+
+    def test_get_provenance_invalidation(self):
+        node = {
+            "@value": "old",
+            "@confidence": 0.2,
+            "@invalidatedAt": "2025-06-01T00:00:00Z",
+            "@invalidationReason": "Corrected",
+        }
+        prov = get_provenance(node)
+        assert prov.invalidated_at == "2025-06-01T00:00:00Z"
+        assert prov.invalidation_reason == "Corrected"
+
+    def test_get_provenance_invalidation_absent(self):
+        node = {"@value": "current", "@confidence": 0.9}
+        prov = get_provenance(node)
+        assert prov.invalidated_at is None
+        assert prov.invalidation_reason is None
+
+
+class TestFilterByConfidenceExcludeInvalidated:
+    """exclude_invalidated parameter on filter_by_confidence."""
+
+    def _make_graph(self):
+        return [
+            {"@id": "a", "name": annotate("Alice", confidence=0.9)},
+            {"@id": "b", "name": annotate(
+                "Bob", confidence=0.8,
+                invalidated_at="2025-06-01T00:00:00Z",
+            )},
+            {"@id": "c", "name": annotate("Carol", confidence=0.7)},
+        ]
+
+    def test_default_includes_invalidated(self):
+        """By default, invalidated nodes are NOT excluded (backward compat)."""
+        graph = self._make_graph()
+        results = filter_by_confidence(graph, "name", 0.5)
+        assert len(results) == 3
+
+    def test_exclude_invalidated_true(self):
+        graph = self._make_graph()
+        results = filter_by_confidence(graph, "name", 0.5, exclude_invalidated=True)
+        ids = [r["@id"] for r in results]
+        assert "a" in ids
+        assert "c" in ids
+        assert "b" not in ids
+
+    def test_exclude_invalidated_false_explicit(self):
+        graph = self._make_graph()
+        results = filter_by_confidence(graph, "name", 0.5, exclude_invalidated=False)
+        assert len(results) == 3
+
+    def test_exclude_invalidated_no_invalidated_nodes(self):
+        graph = [
+            {"@id": "a", "name": annotate("Alice", confidence=0.9)},
+            {"@id": "b", "name": annotate("Bob", confidence=0.8)},
+        ]
+        results = filter_by_confidence(graph, "name", 0.5, exclude_invalidated=True)
+        assert len(results) == 2

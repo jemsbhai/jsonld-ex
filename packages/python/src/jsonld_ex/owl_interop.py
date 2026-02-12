@@ -127,6 +127,9 @@ def to_prov_o(doc: dict[str, Any]) -> tuple[dict[str, Any], ConversionReport]:
                     prov.method is not None,
                     prov.human_verified is not None,
                     prov.derived_from is not None,
+                    prov.delegated_by is not None,
+                    prov.invalidated_at is not None,
+                    prov.invalidation_reason is not None,
                 ])
 
                 if has_annotations:
@@ -156,6 +159,19 @@ def to_prov_o(doc: dict[str, Any]) -> tuple[dict[str, Any], ConversionReport]:
                             "@type": f"{PROV}SoftwareAgent",
                         }
                         entity[f"{PROV}wasAttributedTo"] = {"@id": agent_id}
+
+                        # Delegation: agent actedOnBehalfOf delegator(s)
+                        if prov.delegated_by is not None:
+                            delegates = prov.delegated_by
+                            if isinstance(delegates, str):
+                                agent[f"{PROV}actedOnBehalfOf"] = {"@id": delegates}
+                                output_triples += 1
+                            elif isinstance(delegates, list):
+                                agent[f"{PROV}actedOnBehalfOf"] = [
+                                    {"@id": d} for d in delegates
+                                ]
+                                output_triples += len(delegates)
+
                         graph_nodes.append(agent)
                         output_triples += 2  # agent type + attribution
 
@@ -206,6 +222,26 @@ def to_prov_o(doc: dict[str, Any]) -> tuple[dict[str, Any], ConversionReport]:
                         ] if f"{PROV}wasAttributedTo" in entity else {"@id": verifier_id}
                         graph_nodes.append(verifier)
                         output_triples += 2  # verifier type + attribution
+
+                    # Invalidation → prov:wasInvalidatedBy
+                    if prov.invalidated_at is not None or prov.invalidation_reason is not None:
+                        inv_activity_id = f"_:invalidation-{uuid.uuid4().hex[:8]}"
+                        inv_activity: dict[str, Any] = {
+                            "@id": inv_activity_id,
+                            "@type": f"{PROV}Activity",
+                        }
+                        if prov.invalidated_at is not None:
+                            inv_activity[f"{PROV}atTime"] = {
+                                "@value": prov.invalidated_at,
+                                "@type": f"{XSD}dateTime",
+                            }
+                            output_triples += 1
+                        if prov.invalidation_reason is not None:
+                            inv_activity[f"{RDFS}label"] = prov.invalidation_reason
+                            output_triples += 1
+                        entity[f"{PROV}wasInvalidatedBy"] = {"@id": inv_activity_id}
+                        graph_nodes.append(inv_activity)
+                        output_triples += 2  # activity type + wasInvalidatedBy link
 
                     graph_nodes.append(entity)
                     report.nodes_converted += 1
@@ -453,6 +489,44 @@ def _entity_to_annotation(
             result["@derivedFrom"] = derived.get("@id", derived)
         else:
             result["@derivedFrom"] = derived
+
+    # Invalidation (from prov:wasInvalidatedBy → Activity)
+    inv_by = entity.get(f"{PROV}wasInvalidatedBy") or entity.get("prov:wasInvalidatedBy")
+    if inv_by is not None:
+        inv_id = inv_by.get("@id") if isinstance(inv_by, dict) else inv_by
+        if inv_id and inv_id in all_nodes:
+            inv_activity = all_nodes[inv_id]
+            at_time = inv_activity.get(f"{PROV}atTime") or inv_activity.get("prov:atTime")
+            if at_time is not None:
+                if isinstance(at_time, dict) and "@value" in at_time:
+                    result["@invalidatedAt"] = at_time["@value"]
+                else:
+                    result["@invalidatedAt"] = at_time
+            inv_label = inv_activity.get(f"{RDFS}label") or inv_activity.get("rdfs:label")
+            if inv_label is not None:
+                result["@invalidationReason"] = inv_label if not isinstance(inv_label, dict) else inv_label.get("@value", inv_label)
+
+    # DelegatedBy (from prov:actedOnBehalfOf on the SoftwareAgent)
+    if attr is not None:
+        attr_list_d = attr if isinstance(attr, list) else [attr]
+        for a in attr_list_d:
+            agent_id_d = a.get("@id") if isinstance(a, dict) else a
+            if agent_id_d and agent_id_d in all_nodes:
+                agent_d = all_nodes[agent_id_d]
+                behalf = (
+                    agent_d.get(f"{PROV}actedOnBehalfOf")
+                    or agent_d.get("prov:actedOnBehalfOf")
+                )
+                if behalf is not None:
+                    if isinstance(behalf, list):
+                        result["@delegatedBy"] = [
+                            b.get("@id") if isinstance(b, dict) else b
+                            for b in behalf
+                        ]
+                    elif isinstance(behalf, dict):
+                        result["@delegatedBy"] = behalf.get("@id", behalf)
+                    else:
+                        result["@delegatedBy"] = behalf
 
     return result
 
@@ -989,6 +1063,9 @@ def to_rdf_star_ntriples(
                 prov.method is not None,
                 prov.human_verified is not None,
                 prov.derived_from is not None,
+                prov.delegated_by is not None,
+                prov.invalidated_at is not None,
+                prov.invalidation_reason is not None,
             ])
 
             if not has_annotations:
@@ -1036,6 +1113,22 @@ def to_rdf_star_ntriples(
                 for src in sources:
                     lines.append(f'{embedded} <{JSONLD_EX}derivedFrom> <{src}> .')
                     report.triples_output += 1
+
+            if prov.delegated_by is not None:
+                delegates = prov.delegated_by
+                if isinstance(delegates, str):
+                    delegates = [delegates]
+                for dlg in delegates:
+                    lines.append(f'{embedded} <{JSONLD_EX}delegatedBy> <{dlg}> .')
+                    report.triples_output += 1
+
+            if prov.invalidated_at is not None:
+                lines.append(f'{embedded} <{JSONLD_EX}invalidatedAt> "{prov.invalidated_at}"^^<{XSD}dateTime> .')
+                report.triples_output += 1
+
+            if prov.invalidation_reason is not None:
+                lines.append(f'{embedded} <{JSONLD_EX}invalidationReason> "{_escape_ntriples(prov.invalidation_reason)}" .')
+                report.triples_output += 1
 
             report.nodes_converted += 1
         else:

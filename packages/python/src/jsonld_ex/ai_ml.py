@@ -32,6 +32,19 @@ class ProvenanceMetadata:
     unit: Optional[str] = None
     # Derivation tracking (GAP-P2)
     derived_from: Optional[str | list[str]] = None
+    # Aggregation metadata (GAP-IOT4)
+    aggregation_method: Optional[str] = None
+    aggregation_window: Optional[str] = None
+    aggregation_count: Optional[int] = None
+    # Calibration metadata (GAP-IOT2)
+    calibrated_at: Optional[str] = None
+    calibration_method: Optional[str] = None
+    calibration_authority: Optional[str] = None
+    # Delegation chains (GAP-P1)
+    delegated_by: Optional[Any] = None  # str or list[str]
+    # Invalidation (GAP-P3)
+    invalidated_at: Optional[str] = None
+    invalidation_reason: Optional[str] = None
 
 
 def annotate(
@@ -53,6 +66,19 @@ def annotate(
     unit: Optional[str] = None,
     # Derivation tracking (GAP-P2)
     derived_from: Optional[str | list[str]] = None,
+    # Aggregation metadata (GAP-IOT4)
+    aggregation_method: Optional[str] = None,
+    aggregation_window: Optional[str] = None,
+    aggregation_count: Optional[int] = None,
+    # Calibration metadata (GAP-IOT2)
+    calibrated_at: Optional[str] = None,
+    calibration_method: Optional[str] = None,
+    calibration_authority: Optional[str] = None,
+    # Delegation chains (GAP-P1)
+    delegated_by: Optional[Any] = None,
+    # Invalidation (GAP-P3)
+    invalidated_at: Optional[str] = None,
+    invalidation_reason: Optional[str] = None,
 ) -> dict[str, Any]:
     """Create an annotated JSON-LD value with provenance metadata."""
     result: dict[str, Any] = {"@value": value}
@@ -88,6 +114,28 @@ def annotate(
     # Derivation
     if derived_from is not None:
         result["@derivedFrom"] = derived_from
+    # Aggregation
+    if aggregation_method is not None:
+        result["@aggregationMethod"] = aggregation_method
+    if aggregation_window is not None:
+        result["@aggregationWindow"] = aggregation_window
+    if aggregation_count is not None:
+        result["@aggregationCount"] = aggregation_count
+    # Calibration
+    if calibrated_at is not None:
+        result["@calibratedAt"] = calibrated_at
+    if calibration_method is not None:
+        result["@calibrationMethod"] = calibration_method
+    if calibration_authority is not None:
+        result["@calibrationAuthority"] = calibration_authority
+    # Delegation
+    if delegated_by is not None:
+        result["@delegatedBy"] = delegated_by
+    # Invalidation
+    if invalidated_at is not None:
+        result["@invalidatedAt"] = invalidated_at
+    if invalidation_reason is not None:
+        result["@invalidationReason"] = invalidation_reason
 
     return result
 
@@ -138,6 +186,19 @@ def get_provenance(node: Any) -> ProvenanceMetadata:
         unit=_extract_field(node, "unit", "@unit"),
         # Derivation
         derived_from=_extract_field(node, "derivedFrom", "@derivedFrom"),
+        # Aggregation
+        aggregation_method=_extract_field(node, "aggregationMethod", "@aggregationMethod"),
+        aggregation_window=_extract_field(node, "aggregationWindow", "@aggregationWindow"),
+        aggregation_count=_extract_field(node, "aggregationCount", "@aggregationCount"),
+        # Calibration
+        calibrated_at=_extract_field(node, "calibratedAt", "@calibratedAt"),
+        calibration_method=_extract_field(node, "calibrationMethod", "@calibrationMethod"),
+        calibration_authority=_extract_field(node, "calibrationAuthority", "@calibrationAuthority"),
+        # Delegation
+        delegated_by=_extract_field(node, "delegatedBy", "@delegatedBy"),
+        # Invalidation
+        invalidated_at=_extract_field(node, "invalidatedAt", "@invalidatedAt"),
+        invalidation_reason=_extract_field(node, "invalidationReason", "@invalidationReason"),
     )
 
 
@@ -145,8 +206,15 @@ def filter_by_confidence(
     graph: Sequence[dict[str, Any]],
     property_name: str,
     min_confidence: float,
+    exclude_invalidated: bool = False,
 ) -> list[dict[str, Any]]:
-    """Filter graph nodes by minimum confidence on a property."""
+    """Filter graph nodes by minimum confidence on a property.
+
+    Args:
+        exclude_invalidated: If True, skip nodes whose matching property
+            has an ``@invalidatedAt`` field.  Defaults to False for
+            backward compatibility.
+    """
     _validate_confidence(min_confidence)
     results = []
     for node in graph:
@@ -154,6 +222,15 @@ def filter_by_confidence(
         if prop_value is None:
             continue
         values = prop_value if isinstance(prop_value, list) else [prop_value]
+
+        if exclude_invalidated:
+            # Skip node if *any* matching value is invalidated
+            if any(
+                isinstance(v, dict) and "@invalidatedAt" in v
+                for v in values
+            ):
+                continue
+
         if any(
             (c := get_confidence(v)) is not None and c >= min_confidence
             for v in values

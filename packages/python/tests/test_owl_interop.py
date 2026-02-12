@@ -430,6 +430,256 @@ class TestDerivedFromRdfStar:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# GAP-P1: @delegatedBy ↔ prov:actedOnBehalfOf ROUND-TRIP
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestDelegationProvO:
+    """@delegatedBy ↔ prov:actedOnBehalfOf bidirectional mapping."""
+
+    def test_to_prov_o_delegation_single(self):
+        """@delegatedBy → prov:actedOnBehalfOf on the SoftwareAgent."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Person",
+            "@id": "http://example.org/alice",
+            "name": annotate(
+                "Alice Smith",
+                confidence=0.95,
+                source="https://model.example.org/ner-v3",
+                delegated_by="https://pipeline.example.org/etl-v2",
+            ),
+        }
+        prov_doc, report = to_prov_o(doc)
+        graph = prov_doc["@graph"]
+
+        # The SoftwareAgent should have actedOnBehalfOf
+        agents = [n for n in graph if n.get("@type") == f"{PROV}SoftwareAgent"]
+        assert len(agents) == 1
+        agent = agents[0]
+        delegation = agent.get(f"{PROV}actedOnBehalfOf")
+        assert delegation is not None
+        assert delegation["@id"] == "https://pipeline.example.org/etl-v2"
+
+    def test_to_prov_o_delegation_list(self):
+        """@delegatedBy (list) → list of prov:actedOnBehalfOf."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Person",
+            "@id": "http://example.org/alice",
+            "name": annotate(
+                "Alice Smith",
+                confidence=0.95,
+                source="https://model.example.org/ner-v3",
+                delegated_by=[
+                    "https://pipeline.example.org/step-2",
+                    "https://user.example.org/alice",
+                ],
+            ),
+        }
+        prov_doc, report = to_prov_o(doc)
+        graph = prov_doc["@graph"]
+
+        agents = [n for n in graph if n.get("@type") == f"{PROV}SoftwareAgent"]
+        assert len(agents) == 1
+        agent = agents[0]
+        delegation = agent.get(f"{PROV}actedOnBehalfOf")
+        assert isinstance(delegation, list)
+        assert len(delegation) == 2
+
+    def test_to_prov_o_no_delegation(self):
+        """Without @delegatedBy, no actedOnBehalfOf should appear."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Person",
+            "@id": "http://example.org/alice",
+            "name": annotate(
+                "Alice",
+                confidence=0.95,
+                source="https://model.example.org/ner",
+            ),
+        }
+        prov_doc, _ = to_prov_o(doc)
+        graph = prov_doc["@graph"]
+
+        agents = [n for n in graph if n.get("@type") == f"{PROV}SoftwareAgent"]
+        assert len(agents) == 1
+        assert f"{PROV}actedOnBehalfOf" not in agents[0]
+
+    def test_round_trip_delegation_single(self):
+        """jsonld-ex → PROV-O → jsonld-ex preserves single @delegatedBy."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Person",
+            "@id": "http://example.org/alice",
+            "name": annotate(
+                "Alice Smith",
+                confidence=0.95,
+                source="https://model.example.org/ner-v3",
+                delegated_by="https://pipeline.example.org/etl-v2",
+            ),
+        }
+        prov_doc, _ = to_prov_o(doc)
+        restored, report = from_prov_o(prov_doc)
+
+        assert report.success is True
+        assert restored["name"]["@delegatedBy"] == "https://pipeline.example.org/etl-v2"
+
+    def test_round_trip_delegation_list(self):
+        """jsonld-ex → PROV-O → jsonld-ex preserves list @delegatedBy."""
+        delegates = [
+            "https://pipeline.example.org/step-2",
+            "https://user.example.org/alice",
+        ]
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Person",
+            "@id": "http://example.org/alice",
+            "name": annotate(
+                "Alice Smith",
+                confidence=0.95,
+                source="https://model.example.org/ner-v3",
+                delegated_by=delegates,
+            ),
+        }
+        prov_doc, _ = to_prov_o(doc)
+        restored, report = from_prov_o(prov_doc)
+
+        assert report.success is True
+        restored_delegates = restored["name"]["@delegatedBy"]
+        assert isinstance(restored_delegates, list)
+        assert set(restored_delegates) == set(delegates)
+
+
+class TestDelegationRdfStar:
+    """@delegatedBy in RDF-star N-Triples output."""
+
+    def test_delegated_by_in_ntriples(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate(
+                "Alice",
+                confidence=0.95,
+                source="https://model.example.org/ner",
+                delegated_by="https://pipeline.example.org/etl",
+            ),
+        }
+        ntriples, report = to_rdf_star_ntriples(doc)
+
+        assert f"{JSONLD_EX_NAMESPACE}delegatedBy" in ntriples
+        assert "pipeline.example.org/etl" in ntriples
+
+    def test_no_delegated_by_absent(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate("Alice", confidence=0.95),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+
+        assert "delegatedBy" not in ntriples
+
+
+# ═══════════════════════════════════════════════════════════════════
+# GAP-P3: @invalidatedAt/@invalidationReason ↔ prov:wasInvalidatedBy
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestInvalidationProvO:
+    """@invalidatedAt/@invalidationReason ↔ prov:wasInvalidatedBy."""
+
+    def test_to_prov_o_invalidated_at(self):
+        """@invalidatedAt → prov:wasInvalidatedBy with prov:atTime."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Person",
+            "@id": "http://example.org/alice",
+            "name": annotate(
+                "Old Name",
+                confidence=0.3,
+                invalidated_at="2025-06-01T00:00:00Z",
+                invalidation_reason="Corrected by human review",
+            ),
+        }
+        prov_doc, report = to_prov_o(doc)
+        graph = prov_doc["@graph"]
+
+        entities = [n for n in graph if n.get("@type") == f"{PROV}Entity"]
+        assert len(entities) == 1
+        entity = entities[0]
+
+        # Should have wasInvalidatedBy
+        invalidation = entity.get(f"{PROV}wasInvalidatedBy")
+        assert invalidation is not None
+
+    def test_to_prov_o_no_invalidation(self):
+        """Without invalidation fields, no wasInvalidatedBy should appear."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Person",
+            "@id": "http://example.org/alice",
+            "name": annotate("Alice", confidence=0.95),
+        }
+        prov_doc, _ = to_prov_o(doc)
+        graph = prov_doc["@graph"]
+
+        entities = [n for n in graph if n.get("@type") == f"{PROV}Entity"]
+        entity = entities[0]
+        assert f"{PROV}wasInvalidatedBy" not in entity
+
+    def test_round_trip_invalidation(self):
+        """jsonld-ex → PROV-O → jsonld-ex preserves invalidation."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Person",
+            "@id": "http://example.org/alice",
+            "name": annotate(
+                "Old Name",
+                confidence=0.3,
+                source="https://model.example.org/v1",
+                invalidated_at="2025-06-01T00:00:00Z",
+                invalidation_reason="Corrected",
+            ),
+        }
+        prov_doc, _ = to_prov_o(doc)
+        restored, report = from_prov_o(prov_doc)
+
+        assert report.success is True
+        assert restored["name"]["@invalidatedAt"] == "2025-06-01T00:00:00Z"
+        assert restored["name"]["@invalidationReason"] == "Corrected"
+
+
+class TestInvalidationRdfStar:
+    """@invalidatedAt/@invalidationReason in RDF-star N-Triples."""
+
+    def test_invalidation_in_ntriples(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate(
+                "Old",
+                confidence=0.3,
+                invalidated_at="2025-06-01T00:00:00Z",
+                invalidation_reason="Superseded",
+            ),
+        }
+        ntriples, report = to_rdf_star_ntriples(doc)
+
+        assert f"{JSONLD_EX_NAMESPACE}invalidatedAt" in ntriples
+        assert "2025-06-01" in ntriples
+        assert f"{JSONLD_EX_NAMESPACE}invalidationReason" in ntriples
+        assert "Superseded" in ntriples
+
+    def test_no_invalidation_absent(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate("Alice", confidence=0.95),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+
+        assert "invalidatedAt" not in ntriples
+        assert "invalidationReason" not in ntriples
+
+
+# ═══════════════════════════════════════════════════════════════════
 # SHACL TESTS
 # ═══════════════════════════════════════════════════════════════════
 
