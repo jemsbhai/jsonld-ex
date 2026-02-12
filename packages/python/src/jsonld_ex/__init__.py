@@ -63,6 +63,7 @@ from jsonld_ex.temporal import (
     temporal_diff,
     TemporalDiffResult,
 )
+from jsonld_ex.batch import annotate_batch, validate_batch, filter_by_confidence_batch
 from jsonld_ex.dataset import (
     create_dataset_metadata,
     validate_dataset_metadata,
@@ -164,6 +165,10 @@ __all__ = [
     "DATASET_CONTEXT",
     "CROISSANT_CONTEXT",
     "DATASET_SHAPE",
+    # Batch API
+    "annotate_batch",
+    "validate_batch",
+    "filter_by_confidence_batch",
     # CBOR-LD serialization (requires cbor2)
     "to_cbor",
     "from_cbor",
