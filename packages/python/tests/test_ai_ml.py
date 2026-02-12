@@ -164,3 +164,160 @@ class TestConfidenceEdgeCases:
     def test_annotate_none_value(self):
         result = annotate(None, confidence=0.5)
         assert result["@value"] is None
+
+
+# -- GAP-MM1: Multimodal annotations -----------------------------------------
+
+
+class TestMultimodalAnnotations:
+    """@mediaType, @contentUrl, @contentHash for non-text data."""
+
+    def test_annotate_with_media_type(self):
+        result = annotate(None, confidence=0.85, media_type="image/png")
+        assert result["@mediaType"] == "image/png"
+        assert result["@confidence"] == 0.85
+
+    def test_annotate_with_content_url(self):
+        result = annotate(None, confidence=0.9, content_url="s3://bucket/img.png")
+        assert result["@contentUrl"] == "s3://bucket/img.png"
+
+    def test_annotate_with_content_hash(self):
+        result = annotate(
+            None,
+            confidence=0.95,
+            content_hash="sha256-abc123def456",
+        )
+        assert result["@contentHash"] == "sha256-abc123def456"
+
+    def test_annotate_full_multimodal(self):
+        result = annotate(
+            None,
+            confidence=0.88,
+            media_type="image/jpeg",
+            content_url="https://cdn.example.org/photo.jpg",
+            content_hash="sha256-deadbeef",
+            source="https://model.example.org/v3",
+            method="object-detection",
+        )
+        assert result["@mediaType"] == "image/jpeg"
+        assert result["@contentUrl"] == "https://cdn.example.org/photo.jpg"
+        assert result["@contentHash"] == "sha256-deadbeef"
+        assert result["@source"] == "https://model.example.org/v3"
+        assert result["@method"] == "object-detection"
+
+    def test_get_provenance_multimodal(self):
+        node = {
+            "@value": None,
+            "@confidence": 0.85,
+            "@mediaType": "image/png",
+            "@contentUrl": "s3://bucket/img.png",
+            "@contentHash": "sha256-abc",
+        }
+        prov = get_provenance(node)
+        assert prov.media_type == "image/png"
+        assert prov.content_url == "s3://bucket/img.png"
+        assert prov.content_hash == "sha256-abc"
+
+
+# -- GAP-ML1: Language-specific confidence ------------------------------------
+
+
+class TestLanguageConfidence:
+    """annotate() works with @language-tagged values."""
+
+    def test_annotate_preserves_language_dict(self):
+        """When value is a dict with @value/@language, annotate merges."""
+        lang_val = {"@value": "\u6771\u4eac\u30bf\u30ef\u30fc", "@language": "ja"}
+        result = annotate(lang_val, confidence=0.70)
+        # The value is the language dict itself
+        assert result["@value"] == lang_val
+        assert result["@confidence"] == 0.70
+
+    def test_annotate_string_with_language_params(self):
+        """Simple string annotation with confidence."""
+        result = annotate("Tokyo Tower", confidence=0.95)
+        assert result["@value"] == "Tokyo Tower"
+        assert result["@confidence"] == 0.95
+
+
+# -- GAP-ML2: Translation provenance ------------------------------------------
+
+
+class TestTranslationProvenance:
+    """@translatedFrom, @translationModel for translation tracking."""
+
+    def test_annotate_with_translated_from(self):
+        result = annotate(
+            "Tokyo Tower",
+            confidence=0.92,
+            translated_from="ja",
+        )
+        assert result["@translatedFrom"] == "ja"
+
+    def test_annotate_with_translation_model(self):
+        result = annotate(
+            "Tokyo Tower",
+            confidence=0.92,
+            translated_from="ja",
+            translation_model="gpt-4-turbo",
+        )
+        assert result["@translatedFrom"] == "ja"
+        assert result["@translationModel"] == "gpt-4-turbo"
+
+    def test_get_provenance_translation(self):
+        node = {
+            "@value": "Tokyo Tower",
+            "@confidence": 0.92,
+            "@translatedFrom": "ja",
+            "@translationModel": "gpt-4-turbo",
+        }
+        prov = get_provenance(node)
+        assert prov.translated_from == "ja"
+        assert prov.translation_model == "gpt-4-turbo"
+
+
+# -- GAP-IOT1: Measurement uncertainty ----------------------------------------
+
+
+class TestMeasurementUncertainty:
+    """@measurementUncertainty and @unit for sensor/IoT data."""
+
+    def test_annotate_with_uncertainty(self):
+        result = annotate(
+            23.5,
+            confidence=0.99,
+            measurement_uncertainty=0.5,
+            unit="celsius",
+        )
+        assert result["@value"] == 23.5
+        assert result["@measurementUncertainty"] == 0.5
+        assert result["@unit"] == "celsius"
+
+    def test_uncertainty_distinct_from_confidence(self):
+        """@measurementUncertainty is numeric same-unit; @confidence is 0-1."""
+        result = annotate(
+            100.0,
+            confidence=0.95,
+            measurement_uncertainty=2.3,
+            unit="kPa",
+        )
+        assert result["@confidence"] == 0.95
+        assert result["@measurementUncertainty"] == 2.3
+        assert result["@unit"] == "kPa"
+
+    def test_get_provenance_uncertainty(self):
+        node = {
+            "@value": 23.5,
+            "@confidence": 0.99,
+            "@measurementUncertainty": 0.5,
+            "@unit": "celsius",
+        }
+        prov = get_provenance(node)
+        assert prov.measurement_uncertainty == 0.5
+        assert prov.unit == "celsius"
+
+    def test_uncertainty_without_confidence(self):
+        result = annotate(23.5, measurement_uncertainty=0.5, unit="celsius")
+        assert "@confidence" not in result
+        assert result["@measurementUncertainty"] == 0.5
+        assert result["@unit"] == "celsius"

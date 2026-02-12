@@ -20,6 +20,16 @@ class ProvenanceMetadata:
     extracted_at: Optional[str] = None
     method: Optional[str] = None
     human_verified: Optional[bool] = None
+    # Multimodal (GAP-MM1)
+    media_type: Optional[str] = None
+    content_url: Optional[str] = None
+    content_hash: Optional[str] = None
+    # Translation provenance (GAP-ML2)
+    translated_from: Optional[str] = None
+    translation_model: Optional[str] = None
+    # Measurement uncertainty (GAP-IOT1)
+    measurement_uncertainty: Optional[float] = None
+    unit: Optional[str] = None
 
 
 def annotate(
@@ -29,6 +39,16 @@ def annotate(
     extracted_at: Optional[str] = None,
     method: Optional[str] = None,
     human_verified: Optional[bool] = None,
+    # Multimodal (GAP-MM1)
+    media_type: Optional[str] = None,
+    content_url: Optional[str] = None,
+    content_hash: Optional[str] = None,
+    # Translation provenance (GAP-ML2)
+    translated_from: Optional[str] = None,
+    translation_model: Optional[str] = None,
+    # Measurement uncertainty (GAP-IOT1)
+    measurement_uncertainty: Optional[float] = None,
+    unit: Optional[str] = None,
 ) -> dict[str, Any]:
     """Create an annotated JSON-LD value with provenance metadata."""
     result: dict[str, Any] = {"@value": value}
@@ -44,6 +64,23 @@ def annotate(
         result["@method"] = method
     if human_verified is not None:
         result["@humanVerified"] = human_verified
+    # Multimodal
+    if media_type is not None:
+        result["@mediaType"] = media_type
+    if content_url is not None:
+        result["@contentUrl"] = content_url
+    if content_hash is not None:
+        result["@contentHash"] = content_hash
+    # Translation
+    if translated_from is not None:
+        result["@translatedFrom"] = translated_from
+    if translation_model is not None:
+        result["@translationModel"] = translation_model
+    # Measurement
+    if measurement_uncertainty is not None:
+        result["@measurementUncertainty"] = measurement_uncertainty
+    if unit is not None:
+        result["@unit"] = unit
 
     return result
 
@@ -82,6 +119,16 @@ def get_provenance(node: Any) -> ProvenanceMetadata:
         extracted_at=_extract_field(node, "extractedAt", "@extractedAt"),
         method=_extract_field(node, "method", "@method"),
         human_verified=_extract_field(node, "humanVerified", "@humanVerified"),
+        # Multimodal
+        media_type=_extract_field(node, "mediaType", "@mediaType"),
+        content_url=_extract_field(node, "contentUrl", "@contentUrl"),
+        content_hash=_extract_field(node, "contentHash", "@contentHash"),
+        # Translation
+        translated_from=_extract_field(node, "translatedFrom", "@translatedFrom"),
+        translation_model=_extract_field(node, "translationModel", "@translationModel"),
+        # Measurement
+        measurement_uncertainty=_extract_field(node, "measurementUncertainty", "@measurementUncertainty"),
+        unit=_extract_field(node, "unit", "@unit"),
     )
 
 
