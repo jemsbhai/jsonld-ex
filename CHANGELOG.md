@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.5] — 2026-02-12
+
+### Added
+
+**IoT Sensor Metadata**
+- Aggregation metadata: `@aggregationMethod`, `@aggregationWindow`, `@aggregationCount`
+- Calibration metadata: `@calibratedAt`, `@calibrationMethod`, `@calibrationAuthority`
+
+**Provenance Extensions**
+- Delegation chains: `@delegatedBy` with PROV-O `prov:actedOnBehalfOf` bidirectional mapping + RDF-star
+- Invalidation/retraction: `@invalidatedAt`, `@invalidationReason` with PROV-O `prov:wasInvalidatedBy` bidirectional mapping + RDF-star
+- `filter_by_confidence(exclude_invalidated=True)` parameter for filtering invalidated assertions
+
+**Test Coverage**
+- Multi-embedding document tests (GAP-MM2)
+- Content addressing `@contentHash` tests (GAP-MM3)
+
+### Migration from 0.3.0
+No breaking changes. All new parameters have backward-compatible defaults. `filter_by_confidence()` defaults to `exclude_invalidated=False` preserving existing behavior.
+
 ## [0.3.0] — 2026-02-11
 
 ### Added
