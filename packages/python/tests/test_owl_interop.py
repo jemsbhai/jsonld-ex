@@ -248,6 +248,188 @@ class TestFromProvO:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# GAP-P2: @derivedFrom ↔ prov:wasDerivedFrom ROUND-TRIP
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestDerivedFromProvO:
+    """@derivedFrom ↔ prov:wasDerivedFrom bidirectional mapping."""
+
+    def test_to_prov_o_single_derived_from(self):
+        """@derivedFrom (single IRI) → prov:wasDerivedFrom on Entity."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Person",
+            "@id": "http://example.org/merged-alice",
+            "name": annotate(
+                "Alice Smith",
+                confidence=0.95,
+                source="https://model.example.org/er-v1",
+                derived_from="https://example.org/record/42",
+            ),
+        }
+        prov_doc, report = to_prov_o(doc)
+        graph = prov_doc["@graph"]
+
+        entities = [n for n in graph if n.get("@type") == f"{PROV}Entity"]
+        assert len(entities) == 1
+        entity = entities[0]
+
+        derived = entity.get(f"{PROV}wasDerivedFrom")
+        assert derived is not None
+        # Single source → single reference
+        assert derived == {"@id": "https://example.org/record/42"}
+
+    def test_to_prov_o_multiple_derived_from(self):
+        """@derivedFrom (list of IRIs) → list of prov:wasDerivedFrom."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Person",
+            "@id": "http://example.org/fused-entity",
+            "name": annotate(
+                "Bob Jones",
+                confidence=0.90,
+                derived_from=[
+                    "https://example.org/src/a",
+                    "https://example.org/src/b",
+                ],
+            ),
+        }
+        prov_doc, report = to_prov_o(doc)
+        graph = prov_doc["@graph"]
+
+        entities = [n for n in graph if n.get("@type") == f"{PROV}Entity"]
+        entity = entities[0]
+
+        derived = entity.get(f"{PROV}wasDerivedFrom")
+        assert isinstance(derived, list)
+        assert len(derived) == 2
+        ids = {d["@id"] for d in derived}
+        assert ids == {"https://example.org/src/a", "https://example.org/src/b"}
+
+    def test_to_prov_o_no_derived_from(self):
+        """Without @derivedFrom, no prov:wasDerivedFrom should appear."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Person",
+            "@id": "http://example.org/alice",
+            "name": annotate("Alice", confidence=0.95),
+        }
+        prov_doc, _ = to_prov_o(doc)
+        graph = prov_doc["@graph"]
+
+        entities = [n for n in graph if n.get("@type") == f"{PROV}Entity"]
+        entity = entities[0]
+        assert f"{PROV}wasDerivedFrom" not in entity
+
+    def test_round_trip_single_derived_from(self):
+        """jsonld-ex → PROV-O → jsonld-ex preserves single @derivedFrom."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Person",
+            "@id": "http://example.org/merged",
+            "name": annotate(
+                "Alice Smith",
+                confidence=0.95,
+                source="https://model.example.org/er",
+                derived_from="https://example.org/record/42",
+            ),
+        }
+        prov_doc, _ = to_prov_o(doc)
+        restored, report = from_prov_o(prov_doc)
+
+        assert report.success is True
+        assert restored["name"]["@value"] == "Alice Smith"
+        assert restored["name"]["@confidence"] == 0.95
+        assert restored["name"]["@derivedFrom"] == "https://example.org/record/42"
+
+    def test_round_trip_multiple_derived_from(self):
+        """jsonld-ex → PROV-O → jsonld-ex preserves list @derivedFrom."""
+        sources = ["https://example.org/a", "https://example.org/b"]
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Person",
+            "@id": "http://example.org/fused",
+            "name": annotate(
+                "Fused Name",
+                confidence=0.85,
+                derived_from=sources,
+            ),
+        }
+        prov_doc, _ = to_prov_o(doc)
+        restored, report = from_prov_o(prov_doc)
+
+        assert report.success is True
+        restored_sources = restored["name"]["@derivedFrom"]
+        assert isinstance(restored_sources, list)
+        assert set(restored_sources) == set(sources)
+
+    def test_derived_from_triple_count(self):
+        """@derivedFrom adds triples to PROV-O output."""
+        without = {
+            "@context": "http://schema.org/",
+            "@type": "Person",
+            "@id": "http://example.org/x",
+            "name": annotate("X", confidence=0.9),
+        }
+        with_derived = {
+            "@context": "http://schema.org/",
+            "@type": "Person",
+            "@id": "http://example.org/x",
+            "name": annotate(
+                "X", confidence=0.9,
+                derived_from="https://example.org/src",
+            ),
+        }
+        _, report_without = to_prov_o(without)
+        _, report_with = to_prov_o(with_derived)
+
+        assert report_with.triples_output > report_without.triples_output
+
+
+class TestDerivedFromRdfStar:
+    """@derivedFrom in RDF-star N-Triples output."""
+
+    def test_single_derived_from_in_ntriples(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate(
+                "Alice",
+                confidence=0.95,
+                derived_from="https://example.org/record/42",
+            ),
+        }
+        ntriples, report = to_rdf_star_ntriples(doc)
+
+        assert f"{JSONLD_EX_NAMESPACE}derivedFrom" in ntriples
+        assert "example.org/record/42" in ntriples
+
+    def test_multiple_derived_from_in_ntriples(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate(
+                "Fused",
+                confidence=0.85,
+                derived_from=["https://example.org/a", "https://example.org/b"],
+            ),
+        }
+        ntriples, report = to_rdf_star_ntriples(doc)
+
+        assert f"{JSONLD_EX_NAMESPACE}derivedFrom" in ntriples
+        assert "example.org/a" in ntriples
+        assert "example.org/b" in ntriples
+
+    def test_no_derived_from_absent(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate("Alice", confidence=0.95),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+
+        assert "derivedFrom" not in ntriples
+
+
+# ═══════════════════════════════════════════════════════════════════
 # SHACL TESTS
 # ═══════════════════════════════════════════════════════════════════
 
@@ -961,3 +1143,159 @@ class TestShaclToShapeExtended:
         assert restored["http://example.org/tags"]["@maxCount"] == 10
         assert restored["http://example.org/status"]["@in"] == ["active", "archived"]
         assert restored["http://example.org/start"]["@lessThan"] == "http://example.org/end"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# GAP-V7: @if/@then/@else ↔ SHACL ROUND-TRIP
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestIfThenElseShacl:
+    """@if/@then/@else ↔ SHACL conditional mapping."""
+
+    def test_if_then_to_shacl(self):
+        """@if/@then maps to sh:or([sh:not(if), then])."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/value": {
+                "@if": {"@type": "xsd:string"},
+                "@then": {"@minLength": 3},
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        props = shacl["@graph"][0][f"{SHACL}property"]
+        prop = props[0]
+
+        # Should have sh:or with two branches
+        sh_or = prop.get(f"{SHACL}or")
+        assert sh_or is not None
+        branches = sh_or["@list"]
+        assert len(branches) == 2
+
+        # First branch: sh:not(if_constraints)
+        assert f"{SHACL}not" in branches[0]
+        # Second branch: then_constraints
+        assert f"{SHACL}minLength" in branches[1]
+
+    def test_if_then_else_to_shacl(self):
+        """@if/@then/@else maps to sh:or([sh:and([if, then]), sh:and([sh:not(if), else])])."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/value": {
+                "@if": {"@type": "xsd:string"},
+                "@then": {"@minLength": 1},
+                "@else": {"@minimum": 0},
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        props = shacl["@graph"][0][f"{SHACL}property"]
+        prop = props[0]
+
+        sh_or = prop.get(f"{SHACL}or")
+        assert sh_or is not None
+        branches = sh_or["@list"]
+        assert len(branches) == 2
+
+        # First branch: sh:and([if, then])
+        assert f"{SHACL}and" in branches[0]
+        # Second branch: sh:and([sh:not(if), else])
+        assert f"{SHACL}and" in branches[1]
+
+    def test_if_then_round_trip(self):
+        """@if/@then survives shape_to_shacl → shacl_to_shape."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/value": {
+                "@if": {"@type": "xsd:string"},
+                "@then": {"@minLength": 3},
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        restored, warnings = shacl_to_shape(shacl)
+
+        prop = restored["http://example.org/value"]
+        assert "@if" in prop
+        assert "@then" in prop
+        assert prop["@if"]["@type"] == "xsd:string"
+        assert prop["@then"]["@minLength"] == 3
+
+    def test_if_then_else_round_trip(self):
+        """@if/@then/@else survives shape_to_shacl → shacl_to_shape."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/value": {
+                "@if": {"@type": "xsd:string"},
+                "@then": {"@minLength": 1},
+                "@else": {"@minimum": 0},
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        restored, warnings = shacl_to_shape(shacl)
+
+        prop = restored["http://example.org/value"]
+        assert "@if" in prop
+        assert "@then" in prop
+        assert "@else" in prop
+        assert prop["@if"]["@type"] == "xsd:string"
+        assert prop["@then"]["@minLength"] == 1
+        assert prop["@else"]["@minimum"] == 0
+
+
+# ═══════════════════════════════════════════════════════════════════
+# GAP-OWL1: @extends ↔ SHACL ROUND-TRIP
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestExtendsShacl:
+    """@extends ↔ SHACL inheritance mapping."""
+
+    def test_extends_to_shacl_emits_parent(self):
+        """@extends emits parent as separate NodeShape + sh:node reference."""
+        parent = {
+            "@type": "http://example.org/Person",
+            "http://example.org/name": {"@required": True},
+        }
+        child = {
+            "@type": "http://example.org/Employee",
+            "@extends": parent,
+            "http://example.org/dept": {"@required": True},
+        }
+        shacl = shape_to_shacl(child)
+        graph = shacl["@graph"]
+
+        # Should have 2 shapes: parent + child
+        assert len(graph) == 2
+        child_shape = graph[0]
+        parent_shape = graph[1]
+
+        # Child references parent via sh:node
+        assert f"{SHACL}node" in child_shape
+
+        # Parent is a valid NodeShape
+        assert parent_shape["@type"] == f"{SHACL}NodeShape"
+
+    def test_extends_round_trip(self):
+        """@extends survives shape_to_shacl → shacl_to_shape."""
+        parent = {
+            "@type": "http://example.org/Person",
+            "http://example.org/name": {
+                "@required": True,
+                "@type": "xsd:string",
+            },
+        }
+        child = {
+            "@type": "http://example.org/Employee",
+            "@extends": parent,
+            "http://example.org/dept": {"@required": True},
+        }
+        shacl = shape_to_shacl(child)
+        restored, warnings = shacl_to_shape(shacl)
+
+        assert restored["@type"] == "http://example.org/Employee"
+        assert "@extends" in restored
+        ext = restored["@extends"]
+        # Parent shape should have been reconstructed
+        assert ext["@type"] == "http://example.org/Person"
+        assert ext["http://example.org/name"]["@required"] is True
+        # Child's own property preserved
+        assert restored["http://example.org/dept"]["@required"] is True

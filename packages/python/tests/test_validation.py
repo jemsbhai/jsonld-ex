@@ -971,3 +971,372 @@ class TestSeverityLevels:
         result = validate_node(node, shape)
         assert result.valid
         assert len(result.warnings) >= 1
+
+
+# -- GAP-V7: Conditional constraints (@if/@then/@else) ------------------------
+
+
+class TestIfThenElse:
+    """@if/@then/@else conditional validation."""
+
+    # -- Basic @if/@then (vacuous truth) --------------------------------------
+
+    def test_if_true_then_passes(self):
+        """If condition met and then-branch satisfied → valid."""
+        shape = {
+            "@type": "Thing",
+            "value": {
+                "@if": {"@type": "xsd:string"},
+                "@then": {"@minLength": 3},
+            },
+        }
+        node = {"@type": "Thing", "value": "hello"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_if_true_then_fails(self):
+        """If condition met but then-branch violated → invalid."""
+        shape = {
+            "@type": "Thing",
+            "value": {
+                "@if": {"@type": "xsd:string"},
+                "@then": {"@minLength": 10},
+            },
+        }
+        node = {"@type": "Thing", "value": "hi"}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "conditional" for e in result.errors)
+
+    def test_if_false_vacuous_truth(self):
+        """If condition NOT met → skip then → valid (vacuous truth)."""
+        shape = {
+            "@type": "Thing",
+            "value": {
+                "@if": {"@type": "xsd:string"},
+                "@then": {"@minLength": 100},  # Would fail if evaluated
+            },
+        }
+        node = {"@type": "Thing", "value": 42}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    # -- @if/@then/@else ------------------------------------------------------
+
+    def test_if_true_then_passes_else_ignored(self):
+        """Condition met → then evaluated, else ignored."""
+        shape = {
+            "@type": "Thing",
+            "value": {
+                "@if": {"@type": "xsd:string"},
+                "@then": {"@minLength": 1},
+                "@else": {"@minimum": 0},
+            },
+        }
+        node = {"@type": "Thing", "value": "hello"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_if_false_else_passes(self):
+        """Condition NOT met → else evaluated and passes."""
+        shape = {
+            "@type": "Thing",
+            "value": {
+                "@if": {"@type": "xsd:string"},
+                "@then": {"@minLength": 1},
+                "@else": {"@minimum": 0},
+            },
+        }
+        node = {"@type": "Thing", "value": 42}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_if_false_else_fails(self):
+        """Condition NOT met → else evaluated and fails."""
+        shape = {
+            "@type": "Thing",
+            "value": {
+                "@if": {"@type": "xsd:string"},
+                "@then": {"@minLength": 1},
+                "@else": {"@minimum": 0},
+            },
+        }
+        node = {"@type": "Thing", "value": -5}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "conditional" for e in result.errors)
+
+    # -- @if with multiple constraints ----------------------------------------
+
+    def test_if_compound_condition(self):
+        """@if with multiple constraints (all must pass for condition to be met)."""
+        shape = {
+            "@type": "Thing",
+            "value": {
+                "@if": {"@type": "xsd:integer", "@minimum": 10},
+                "@then": {"@maximum": 100},
+            },
+        }
+        # value=50: if passes (int >= 10), then passes (<=100)
+        assert validate_node({"@type": "Thing", "value": 50}, shape).valid
+        # value=200: if passes (int >= 10), then fails (>100)
+        assert not validate_node({"@type": "Thing", "value": 200}, shape).valid
+        # value=5: if fails (int but < 10), vacuous truth
+        assert validate_node({"@type": "Thing", "value": 5}, shape).valid
+        # value="hello": if fails (not int), vacuous truth
+        assert validate_node({"@type": "Thing", "value": "hello"}, shape).valid
+
+    # -- @if/@then coexists with other constraints ----------------------------
+
+    def test_if_then_with_required(self):
+        """@if/@then alongside @required — both enforced."""
+        shape = {
+            "@type": "Thing",
+            "value": {
+                "@required": True,
+                "@if": {"@type": "xsd:string"},
+                "@then": {"@pattern": "^[A-Z]"},
+            },
+        }
+        # Present and condition met and then passes
+        assert validate_node({"@type": "Thing", "value": "Hello"}, shape).valid
+        # Present and condition met but then fails
+        assert not validate_node({"@type": "Thing", "value": "hello"}, shape).valid
+        # Missing → @required fails regardless
+        assert not validate_node({"@type": "Thing"}, shape).valid
+
+    # -- Severity on conditional ----------------------------------------------
+
+    def test_if_then_with_severity_warning(self):
+        """@severity on a conditional constraint routes to warnings."""
+        shape = {
+            "@type": "Thing",
+            "value": {
+                "@if": {"@type": "xsd:string"},
+                "@then": {"@minLength": 10},
+                "@severity": "warning",
+            },
+        }
+        node = {"@type": "Thing", "value": "hi"}
+        result = validate_node(node, shape)
+        assert result.valid  # warning, not error
+        assert len(result.warnings) >= 1
+
+    # -- Edge cases -----------------------------------------------------------
+
+    def test_if_then_absent_value(self):
+        """Absent property with @if/@then (no @required) → valid."""
+        shape = {
+            "@type": "Thing",
+            "value": {
+                "@if": {"@type": "xsd:string"},
+                "@then": {"@minLength": 5},
+            },
+        }
+        node = {"@type": "Thing"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_then_without_if_ignored(self):
+        """@then without @if should be silently ignored (no crash)."""
+        shape = {
+            "@type": "Thing",
+            "value": {
+                "@then": {"@minLength": 5},
+            },
+        }
+        node = {"@type": "Thing", "value": "hi"}
+        result = validate_node(node, shape)
+        assert result.valid  # @then alone has no effect
+
+    def test_else_without_if_ignored(self):
+        """@else without @if should be silently ignored."""
+        shape = {
+            "@type": "Thing",
+            "value": {
+                "@else": {"@minimum": 0},
+            },
+        }
+        node = {"@type": "Thing", "value": -5}
+        result = validate_node(node, shape)
+        assert result.valid  # @else alone has no effect
+
+
+# -- GAP-OWL1: Shape inheritance (@extends) -----------------------------------
+
+
+class TestShapeInheritance:
+    """@extends for shape inheritance."""
+
+    # -- Inline @extends (parent is a dict) ------------------------------------
+
+    def test_inherits_parent_constraints(self):
+        """Child inherits all parent property constraints."""
+        parent = {
+            "@type": "Person",
+            "name": {"@required": True, "@type": "xsd:string"},
+        }
+        child = {
+            "@type": "Person",
+            "@extends": parent,
+            "age": {"@type": "xsd:integer"},
+        }
+        # Valid: has name (from parent) and age (from child)
+        node = {"@type": "Person", "name": "Alice", "age": 30}
+        assert validate_node(node, child).valid
+
+        # Invalid: missing name (required by parent)
+        node_no_name = {"@type": "Person", "age": 30}
+        assert not validate_node(node_no_name, child).valid
+
+    def test_child_overrides_parent_property(self):
+        """Child constraints override parent for same property key."""
+        parent = {
+            "@type": "Thing",
+            "value": {"@minimum": 0, "@maximum": 100},
+        }
+        child = {
+            "@type": "Thing",
+            "@extends": parent,
+            "value": {"@maximum": 50},  # Override maximum, keep minimum
+        }
+        # value=40: passes (min 0 from parent, max 50 from child)
+        assert validate_node({"@type": "Thing", "value": 40}, child).valid
+        # value=75: fails (exceeds child's max 50)
+        assert not validate_node({"@type": "Thing", "value": 75}, child).valid
+        # value=-1: fails (below parent's min 0)
+        assert not validate_node({"@type": "Thing", "value": -1}, child).valid
+
+    def test_child_adds_new_properties(self):
+        """Child can add properties that parent doesn't define."""
+        parent = {
+            "@type": "Thing",
+            "name": {"@required": True},
+        }
+        child = {
+            "@type": "Thing",
+            "@extends": parent,
+            "email": {"@required": True, "@pattern": "^[^@]+@[^@]+$"},
+        }
+        assert not validate_node({"@type": "Thing", "name": "A"}, child).valid
+        assert validate_node(
+            {"@type": "Thing", "name": "A", "email": "a@b.com"}, child
+        ).valid
+
+    # -- Named @extends (string reference + registry) -------------------------
+
+    def test_named_reference_with_registry(self):
+        """@extends as string resolves via shape_registry."""
+        registry = {
+            "PersonShape": {
+                "@type": "Person",
+                "name": {"@required": True},
+            },
+        }
+        child = {
+            "@type": "Person",
+            "@extends": "PersonShape",
+            "age": {"@type": "xsd:integer"},
+        }
+        node = {"@type": "Person", "name": "Alice", "age": 30}
+        assert validate_node(node, child, shape_registry=registry).valid
+
+        node_no_name = {"@type": "Person", "age": 30}
+        assert not validate_node(node_no_name, child, shape_registry=registry).valid
+
+    def test_named_reference_missing_warns(self):
+        """@extends with unknown name → validation proceeds without parent."""
+        child = {
+            "@type": "Thing",
+            "@extends": "NonExistentShape",
+            "value": {"@type": "xsd:string"},
+        }
+        result = validate_node(
+            {"@type": "Thing", "value": "hello"}, child, shape_registry={}
+        )
+        assert result.valid
+        assert any("NonExistentShape" in w.message for w in result.warnings)
+
+    # -- Multiple inheritance (list) ------------------------------------------
+
+    def test_multiple_inheritance(self):
+        """@extends as list merges all parents."""
+        named_shape = {
+            "@type": "Thing",
+            "name": {"@required": True},
+        }
+        timed_shape = {
+            "@type": "Thing",
+            "createdAt": {"@required": True},
+        }
+        child = {
+            "@type": "Thing",
+            "@extends": [named_shape, timed_shape],
+            "status": {"@in": ["active", "archived"]},
+        }
+        # Missing both inherited required fields
+        assert not validate_node({"@type": "Thing", "status": "active"}, child).valid
+        # Has everything
+        assert validate_node(
+            {"@type": "Thing", "name": "X", "createdAt": "2025-01-01", "status": "active"},
+            child,
+        ).valid
+
+    # -- Chained inheritance (grandparent → parent → child) -------------------
+
+    def test_chained_inheritance(self):
+        """@extends chains resolve transitively."""
+        grandparent = {
+            "@type": "Thing",
+            "id": {"@required": True},
+        }
+        parent = {
+            "@type": "Thing",
+            "@extends": grandparent,
+            "name": {"@required": True},
+        }
+        child = {
+            "@type": "Thing",
+            "@extends": parent,
+            "email": {"@required": True},
+        }
+        # Must have id (grandparent) + name (parent) + email (child)
+        assert not validate_node(
+            {"@type": "Thing", "name": "A", "email": "a@b"}, child
+        ).valid  # missing id
+        assert validate_node(
+            {"@type": "Thing", "id": "1", "name": "A", "email": "a@b"}, child
+        ).valid
+
+    # -- @extends doesn't affect @type matching -------------------------------
+
+    def test_child_type_used_for_matching(self):
+        """Child's @type is used, not parent's, when they differ."""
+        parent = {
+            "@type": "Person",
+            "name": {"@required": True},
+        }
+        child = {
+            "@type": "Employee",
+            "@extends": parent,
+            "department": {"@required": True},
+        }
+        # Type must match child
+        assert not validate_node(
+            {"@type": "Person", "name": "A", "department": "Eng"}, child
+        ).valid
+        assert validate_node(
+            {"@type": "Employee", "name": "A", "department": "Eng"}, child
+        ).valid
+
+    # -- Edge: @extends with no parent constraints ----------------------------
+
+    def test_extends_empty_parent(self):
+        """@extends an empty shape → child works standalone."""
+        child = {
+            "@type": "Thing",
+            "@extends": {"@type": "Thing"},
+            "value": {"@required": True},
+        }
+        assert not validate_node({"@type": "Thing"}, child).valid
+        assert validate_node({"@type": "Thing", "value": "x"}, child).valid

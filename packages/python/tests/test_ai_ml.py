@@ -321,3 +321,72 @@ class TestMeasurementUncertainty:
         assert "@confidence" not in result
         assert result["@measurementUncertainty"] == 0.5
         assert result["@unit"] == "celsius"
+
+
+# -- GAP-P2: Derivation tracking (@derivedFrom) ------------------------------
+
+
+class TestDerivedFrom:
+    """@derivedFrom for lineage/derivation tracking."""
+
+    def test_annotate_single_source(self):
+        result = annotate(
+            "merged entity",
+            confidence=0.85,
+            derived_from="https://example.org/entity/42",
+        )
+        assert result["@derivedFrom"] == "https://example.org/entity/42"
+        assert result["@confidence"] == 0.85
+
+    def test_annotate_multiple_sources(self):
+        sources = [
+            "https://example.org/entity/1",
+            "https://example.org/entity/2",
+            "https://example.org/entity/3",
+        ]
+        result = annotate("fused value", confidence=0.90, derived_from=sources)
+        assert result["@derivedFrom"] == sources
+
+    def test_annotate_derived_from_without_confidence(self):
+        result = annotate("derived value", derived_from="https://example.org/src")
+        assert result["@derivedFrom"] == "https://example.org/src"
+        assert "@confidence" not in result
+
+    def test_annotate_derived_from_with_full_provenance(self):
+        result = annotate(
+            "John Smith",
+            confidence=0.95,
+            source="https://model.example.org/ner-v2",
+            method="entity-resolution",
+            derived_from=[
+                "https://source-a.org/record/123",
+                "https://source-b.org/record/456",
+            ],
+        )
+        assert result["@confidence"] == 0.95
+        assert result["@source"] == "https://model.example.org/ner-v2"
+        assert result["@method"] == "entity-resolution"
+        assert len(result["@derivedFrom"]) == 2
+
+    def test_get_provenance_derived_from_single(self):
+        node = {
+            "@value": "test",
+            "@confidence": 0.8,
+            "@derivedFrom": "https://example.org/src",
+        }
+        prov = get_provenance(node)
+        assert prov.derived_from == "https://example.org/src"
+
+    def test_get_provenance_derived_from_list(self):
+        sources = ["https://example.org/a", "https://example.org/b"]
+        node = {
+            "@value": "test",
+            "@derivedFrom": sources,
+        }
+        prov = get_provenance(node)
+        assert prov.derived_from == sources
+
+    def test_get_provenance_derived_from_absent(self):
+        node = {"@value": "test", "@confidence": 0.5}
+        prov = get_provenance(node)
+        assert prov.derived_from is None

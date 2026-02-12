@@ -126,6 +126,7 @@ def to_prov_o(doc: dict[str, Any]) -> tuple[dict[str, Any], ConversionReport]:
                     prov.extracted_at is not None,
                     prov.method is not None,
                     prov.human_verified is not None,
+                    prov.derived_from is not None,
                 ])
 
                 if has_annotations:
@@ -180,6 +181,17 @@ def to_prov_o(doc: dict[str, Any]) -> tuple[dict[str, Any], ConversionReport]:
 
                         graph_nodes.append(activity)
                         output_triples += 3  # activity type + label + wasGeneratedBy
+
+                    if prov.derived_from is not None:
+                        sources = prov.derived_from
+                        if isinstance(sources, str):
+                            entity[f"{PROV}wasDerivedFrom"] = {"@id": sources}
+                            output_triples += 1
+                        elif isinstance(sources, list):
+                            entity[f"{PROV}wasDerivedFrom"] = [
+                                {"@id": s} for s in sources
+                            ]
+                            output_triples += len(sources)
 
                     if prov.human_verified is True:
                         verifier_id = f"_:human-verifier-{uuid.uuid4().hex[:8]}"
@@ -429,6 +441,19 @@ def _entity_to_annotation(
             if label is not None:
                 result["@method"] = label if not isinstance(label, dict) else label.get("@value", label)
 
+    # DerivedFrom (from prov:wasDerivedFrom)
+    derived = entity.get(f"{PROV}wasDerivedFrom") or entity.get("prov:wasDerivedFrom")
+    if derived is not None:
+        if isinstance(derived, list):
+            result["@derivedFrom"] = [
+                d.get("@id") if isinstance(d, dict) else d
+                for d in derived
+            ]
+        elif isinstance(derived, dict):
+            result["@derivedFrom"] = derived.get("@id", derived)
+        else:
+            result["@derivedFrom"] = derived
+
     return result
 
 
@@ -534,6 +559,32 @@ def shape_to_shacl(
         if "@not" in constraint:
             sh_property[f"{SHACL}not"] = _constraint_to_shacl(constraint["@not"])
 
+        # -- Conditional: @if/@then/@else (GAP-V7) ----------------------------
+        if "@if" in constraint:
+            if_shacl = _constraint_to_shacl(constraint["@if"])
+            then_shacl = _constraint_to_shacl(constraint.get("@then", {}))
+            has_else = "@else" in constraint
+
+            if has_else:
+                else_shacl = _constraint_to_shacl(constraint["@else"])
+                # (P ∧ Q) ∨ (¬P ∧ R)
+                sh_property[f"{SHACL}or"] = {
+                    "@list": [
+                        {f"{SHACL}and": {"@list": [if_shacl, then_shacl]}},
+                        {f"{SHACL}and": {"@list": [{f"{SHACL}not": if_shacl}, else_shacl]}},
+                    ],
+                    f"{JSONLD_EX}conditionalType": "if-then-else",
+                }
+            else:
+                # ¬P ∨ Q
+                sh_property[f"{SHACL}or"] = {
+                    "@list": [
+                        {f"{SHACL}not": if_shacl},
+                        then_shacl,
+                    ],
+                    f"{JSONLD_EX}conditionalType": "if-then",
+                }
+
         # -- Cross-property constraints ---------------------------------------
         if "@lessThan" in constraint:
             sh_property[f"{SHACL}lessThan"] = {"@id": constraint["@lessThan"]}
@@ -556,9 +607,32 @@ def shape_to_shacl(
         f"{SHACL}property": properties,
     }
 
+    extra_shapes: list[dict[str, Any]] = []
+
+    # -- @extends → sh:node + parent NodeShape(s) (GAP-OWL1) -----------------
+    extends_raw = shape.get("@extends")
+    if extends_raw is not None:
+        parents = extends_raw if isinstance(extends_raw, list) else [extends_raw]
+        parent_ids: list[str] = []
+        for parent in parents:
+            if isinstance(parent, dict):
+                parent_shacl = shape_to_shacl(parent)
+                parent_graph = parent_shacl.get("@graph", [])
+                if parent_graph:
+                    parent_node = parent_graph[0]
+                    parent_ids.append(parent_node["@id"])
+                    extra_shapes.extend(parent_graph)
+
+        if len(parent_ids) == 1:
+            shacl_shape[f"{SHACL}node"] = {"@id": parent_ids[0]}
+            shacl_shape[f"{JSONLD_EX}extends"] = {"@id": parent_ids[0]}
+        elif parent_ids:
+            shacl_shape[f"{SHACL}node"] = [{"@id": pid} for pid in parent_ids]
+            shacl_shape[f"{JSONLD_EX}extends"] = [{"@id": pid} for pid in parent_ids]
+
     return {
         "@context": shacl_context,
-        "@graph": [shacl_shape],
+        "@graph": [shacl_shape] + extra_shapes,
     }
 
 
@@ -693,9 +767,38 @@ def shacl_to_shape(shacl_doc: dict[str, Any]) -> tuple[dict[str, Any], list[str]
             elif isinstance(sh_in, list):
                 constraint["@in"] = sh_in
 
-        # sh:or / sh:and / sh:not → @or / @and / @not
+        # -- Conditional (@if/@then/@else) detection (GAP-V7) ----------------
         sh_or = prop.get(f"{SHACL}or") or prop.get("sh:or")
-        if sh_or is not None:
+        _conditional_handled = False
+        if isinstance(sh_or, dict):
+            cond_type = sh_or.get(f"{JSONLD_EX}conditionalType")
+            if cond_type == "if-then":
+                branches = sh_or.get("@list", [])
+                if len(branches) == 2:
+                    # Branch 0: sh:not(if_constraints) → extract if
+                    not_node = branches[0].get(f"{SHACL}not", {})
+                    constraint["@if"] = _shacl_to_constraint(not_node)
+                    # Branch 1: then_constraints
+                    constraint["@then"] = _shacl_to_constraint(branches[1])
+                    _conditional_handled = True
+            elif cond_type == "if-then-else":
+                branches = sh_or.get("@list", [])
+                if len(branches) == 2:
+                    # Branch 0: sh:and([if, then])
+                    and0 = branches[0].get(f"{SHACL}and", {})
+                    and0_items = and0.get("@list", []) if isinstance(and0, dict) else []
+                    if len(and0_items) == 2:
+                        constraint["@if"] = _shacl_to_constraint(and0_items[0])
+                        constraint["@then"] = _shacl_to_constraint(and0_items[1])
+                    # Branch 1: sh:and([sh:not(if), else])
+                    and1 = branches[1].get(f"{SHACL}and", {})
+                    and1_items = and1.get("@list", []) if isinstance(and1, dict) else []
+                    if len(and1_items) == 2:
+                        constraint["@else"] = _shacl_to_constraint(and1_items[1])
+                    _conditional_handled = True
+
+        # sh:or / sh:and / sh:not → @or / @and / @not
+        if sh_or is not None and not _conditional_handled:
             branches = sh_or.get("@list", sh_or) if isinstance(sh_or, dict) else sh_or
             constraint["@or"] = [_shacl_to_constraint(b) for b in branches]
 
@@ -734,6 +837,38 @@ def shacl_to_shape(shacl_doc: dict[str, Any]) -> tuple[dict[str, Any], list[str]
 
         if constraint:
             result[prop_name] = constraint
+
+    # -- @extends reconstruction (GAP-OWL1) -----------------------------------
+    extends_ref = (
+        shacl_shape.get(f"{JSONLD_EX}extends")
+        or shacl_shape.get("jsonld-ex:extends")
+    )
+    if extends_ref is not None:
+        refs = extends_ref if isinstance(extends_ref, list) else [extends_ref]
+        parent_shapes: list[dict[str, Any]] = []
+        # Build lookup of all shapes by @id
+        shapes_by_id = {s.get("@id"): s for s in shape_nodes if s.get("@id")}
+        # Also include shapes beyond shape_nodes (they may be in the full graph)
+        for node in graph:
+            if isinstance(node, dict) and node.get("@id"):
+                shapes_by_id.setdefault(node["@id"], node)
+
+        for ref in refs:
+            pid = ref.get("@id") if isinstance(ref, dict) else ref
+            parent_node = shapes_by_id.get(pid)
+            if parent_node is not None:
+                # Convert parent NodeShape to jsonld-ex shape
+                parent_doc = {
+                    "@context": shacl_doc.get("@context", {}),
+                    "@graph": [parent_node],
+                }
+                parent_shape, _pw = shacl_to_shape(parent_doc)
+                parent_shapes.append(parent_shape)
+
+        if len(parent_shapes) == 1:
+            result["@extends"] = parent_shapes[0]
+        elif parent_shapes:
+            result["@extends"] = parent_shapes
 
     return result, warnings
 
@@ -853,6 +988,7 @@ def to_rdf_star_ntriples(
                 prov.extracted_at is not None,
                 prov.method is not None,
                 prov.human_verified is not None,
+                prov.derived_from is not None,
             ])
 
             if not has_annotations:
@@ -892,6 +1028,14 @@ def to_rdf_star_ntriples(
                 val = "true" if prov.human_verified else "false"
                 lines.append(f'{embedded} <{JSONLD_EX}humanVerified> "{val}"^^<{XSD}boolean> .')
                 report.triples_output += 1
+
+            if prov.derived_from is not None:
+                sources = prov.derived_from
+                if isinstance(sources, str):
+                    sources = [sources]
+                for src in sources:
+                    lines.append(f'{embedded} <{JSONLD_EX}derivedFrom> <{src}> .')
+                    report.triples_output += 1
 
             report.nodes_converted += 1
         else:
@@ -1078,7 +1222,9 @@ def _shacl_to_constraint(shacl_node: dict[str, Any]) -> dict[str, Any]:
         ("pattern", "@pattern"),
         ("minCount", "@minCount"), ("maxCount", "@maxCount"),
     ]:
-        val = shacl_node.get(f"{SHACL}{shacl_key}") or shacl_node.get(f"sh:{shacl_key}")
+        val = shacl_node.get(f"{SHACL}{shacl_key}")
+        if val is None:
+            val = shacl_node.get(f"sh:{shacl_key}")
         if val is not None:
             result[shape_key] = val
 

@@ -30,6 +30,8 @@ class ProvenanceMetadata:
     # Measurement uncertainty (GAP-IOT1)
     measurement_uncertainty: Optional[float] = None
     unit: Optional[str] = None
+    # Derivation tracking (GAP-P2)
+    derived_from: Optional[str | list[str]] = None
 
 
 def annotate(
@@ -49,6 +51,8 @@ def annotate(
     # Measurement uncertainty (GAP-IOT1)
     measurement_uncertainty: Optional[float] = None,
     unit: Optional[str] = None,
+    # Derivation tracking (GAP-P2)
+    derived_from: Optional[str | list[str]] = None,
 ) -> dict[str, Any]:
     """Create an annotated JSON-LD value with provenance metadata."""
     result: dict[str, Any] = {"@value": value}
@@ -81,6 +85,9 @@ def annotate(
         result["@measurementUncertainty"] = measurement_uncertainty
     if unit is not None:
         result["@unit"] = unit
+    # Derivation
+    if derived_from is not None:
+        result["@derivedFrom"] = derived_from
 
     return result
 
@@ -129,6 +136,8 @@ def get_provenance(node: Any) -> ProvenanceMetadata:
         # Measurement
         measurement_uncertainty=_extract_field(node, "measurementUncertainty", "@measurementUncertainty"),
         unit=_extract_field(node, "unit", "@unit"),
+        # Derivation
+        derived_from=_extract_field(node, "derivedFrom", "@derivedFrom"),
     )
 
 

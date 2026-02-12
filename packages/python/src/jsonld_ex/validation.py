@@ -32,7 +32,12 @@ class ValidationResult:
 XSD = "http://www.w3.org/2001/XMLSchema#"
 
 
-def validate_node(node: dict[str, Any], shape: dict[str, Any]) -> ValidationResult:
+def validate_node(
+    node: dict[str, Any],
+    shape: dict[str, Any],
+    *,
+    shape_registry: dict[str, dict[str, Any]] | None = None,
+) -> ValidationResult:
     """Validate a JSON-LD node against a shape definition."""
     errors: list[ValidationError] = []
     warnings: list[ValidationWarning] = []
@@ -40,6 +45,13 @@ def validate_node(node: dict[str, Any], shape: dict[str, Any]) -> ValidationResu
     if not isinstance(node, dict):
         errors.append(ValidationError(".", "type", "Node must be a dict"))
         return ValidationResult(False, errors, warnings)
+
+    # -- Resolve @extends (GAP-OWL1) ------------------------------------------
+    if "@extends" in shape:
+        shape, extend_warnings = _resolve_extends(
+            shape, shape_registry or {},
+        )
+        warnings.extend(extend_warnings)
 
     # Type check
     if "@type" in shape:
@@ -152,6 +164,97 @@ def validate_document(
     return ValidationResult(len(all_errors) == 0, all_errors, all_warnings)
 
 
+# -- Shape inheritance (@extends, GAP-OWL1) -----------------------------------
+
+
+def _resolve_extends(
+    shape: dict[str, Any],
+    registry: dict[str, dict[str, Any]],
+    _seen: frozenset[int] | None = None,
+) -> tuple[dict[str, Any], list[ValidationWarning]]:
+    """Resolve ``@extends`` by deep-merging parent constraints into *shape*.
+
+    Returns a new shape dict (original is not mutated) and any warnings
+    produced during resolution (e.g. missing named references).
+
+    Merge semantics (per-property, recursive):
+      - Parent provides base constraint keys.
+      - Child keys override parent keys at the same property.
+      - Properties only in parent are inherited as-is.
+    """
+    warnings: list[ValidationWarning] = []
+    _seen = _seen or frozenset()
+
+    # Guard against circular inheritance
+    shape_id = id(shape)
+    if shape_id in _seen:
+        return shape, warnings
+    _seen = _seen | {shape_id}
+
+    extends = shape.get("@extends")
+    if extends is None:
+        return shape, warnings
+
+    # Normalise to list
+    parents_raw = extends if isinstance(extends, list) else [extends]
+
+    # Resolve each parent
+    parents: list[dict[str, Any]] = []
+    for ref in parents_raw:
+        if isinstance(ref, dict):
+            # Inline parent — recursively resolve its own @extends
+            resolved, pw = _resolve_extends(ref, registry, _seen)
+            warnings.extend(pw)
+            parents.append(resolved)
+        elif isinstance(ref, str):
+            if ref in registry:
+                resolved, pw = _resolve_extends(registry[ref], registry, _seen)
+                warnings.extend(pw)
+                parents.append(resolved)
+            else:
+                warnings.append(ValidationWarning(
+                    "@extends", "unresolved",
+                    f"Shape reference '{ref}' not found in registry",
+                ))
+        # Other types silently ignored
+
+    # Build merged shape: stack parents left-to-right, then child on top
+    merged: dict[str, Any] = {}
+    for parent in parents:
+        _merge_shape_into(merged, parent)
+    _merge_shape_into(merged, shape)
+
+    # Remove @extends from merged result (already resolved)
+    merged.pop("@extends", None)
+    return merged, warnings
+
+
+def _merge_shape_into(
+    target: dict[str, Any],
+    source: dict[str, Any],
+) -> None:
+    """Merge *source* shape into *target* in-place.
+
+    For property constraint dicts, keys from *source* are applied first,
+    then *target*'s existing keys override (child wins).
+    For non-dict values (like ``@type``), *source* overwrites *target*.
+    """
+    for key, val in source.items():
+        if key == "@extends":
+            continue  # Already resolved
+        if (
+            key in target
+            and isinstance(target[key], dict)
+            and isinstance(val, dict)
+        ):
+            # Deep merge: source (later writer) overrides target for same keys
+            merged_prop = {**target[key], **val}
+            target[key] = merged_prop
+        else:
+            # Source (later writer) wins for top-level keys (e.g. @type)
+            target[key] = val
+
+
 # -- Severity routing ---------------------------------------------------------
 
 
@@ -227,6 +330,38 @@ def _check_constraints(
                 f"Value {raw!r} must NOT satisfy {inner}",
                 raw,
             ))
+
+    # -- Conditional: @if / @then / @else (GAP-V7) ----------------------------
+    if "@if" in constraint:
+        if_constraints = constraint["@if"]
+        if_errors = _check_constraints(prop, raw, if_constraints, node)
+        if not if_errors:
+            # Condition met → evaluate @then
+            if "@then" in constraint:
+                then_errors = _check_constraints(
+                    prop, raw, constraint["@then"], node,
+                )
+                if then_errors:
+                    errors.append(ValidationError(
+                        prop, "conditional",
+                        f"Value {raw!r} met @if condition but failed "
+                        f"@then: {then_errors[0].message}",
+                        raw,
+                    ))
+        else:
+            # Condition NOT met → evaluate @else if present (vacuous truth
+            # when @else absent)
+            if "@else" in constraint:
+                else_errors = _check_constraints(
+                    prop, raw, constraint["@else"], node,
+                )
+                if else_errors:
+                    errors.append(ValidationError(
+                        prop, "conditional",
+                        f"Value {raw!r} failed @else branch: "
+                        f"{else_errors[0].message}",
+                        raw,
+                    ))
 
     # -- Cross-property constraints -------------------------------------------
     if node is not None:
