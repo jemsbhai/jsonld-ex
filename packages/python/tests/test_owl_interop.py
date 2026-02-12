@@ -508,3 +508,456 @@ class TestComparisons:
         # 3 annotated properties → PROV-O should create even more nodes
         assert comparison.alternative_triples > comparison.jsonld_ex_triples
         assert comparison.triple_reduction_pct > 30  # at least 30% reduction
+
+
+# ═══════════════════════════════════════════════════════════════════
+# SHACL EXTENDED CONSTRAINT ROUND-TRIP TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestShapeToShaclExtended:
+    """Tests for new constraint types in shape_to_shacl()."""
+
+    # -- @minCount / @maxCount ------------------------------------------------
+
+    def test_min_count_mapping(self):
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/tags": {
+                "@minCount": 2,
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        props = shacl["@graph"][0][f"{SHACL}property"]
+        tag_prop = props[0]
+        assert tag_prop[f"{SHACL}minCount"] == 2
+
+    def test_max_count_mapping(self):
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/tags": {
+                "@maxCount": 5,
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        props = shacl["@graph"][0][f"{SHACL}property"]
+        tag_prop = props[0]
+        assert tag_prop[f"{SHACL}maxCount"] == 5
+
+    def test_min_and_max_count_together(self):
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/authors": {
+                "@minCount": 1,
+                "@maxCount": 10,
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        props = shacl["@graph"][0][f"{SHACL}property"]
+        prop = props[0]
+        assert prop[f"{SHACL}minCount"] == 1
+        assert prop[f"{SHACL}maxCount"] == 10
+
+    def test_required_and_min_count_no_double_min_count(self):
+        """@required + @minCount should use the explicit @minCount, not duplicate."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/name": {
+                "@required": True,
+                "@minCount": 3,
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        props = shacl["@graph"][0][f"{SHACL}property"]
+        prop = props[0]
+        # @minCount=3 takes precedence; @required should not add a second minCount=1
+        assert prop[f"{SHACL}minCount"] == 3
+
+    # -- @in / @enum ----------------------------------------------------------
+
+    def test_in_mapping(self):
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/status": {
+                "@in": ["draft", "published", "retracted"],
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        props = shacl["@graph"][0][f"{SHACL}property"]
+        prop = props[0]
+        sh_in = prop[f"{SHACL}in"]
+        assert isinstance(sh_in, dict)
+        assert sh_in["@list"] == ["draft", "published", "retracted"]
+
+    def test_in_with_numeric_values(self):
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/priority": {
+                "@in": [1, 2, 3],
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        props = shacl["@graph"][0][f"{SHACL}property"]
+        prop = props[0]
+        assert prop[f"{SHACL}in"]["@list"] == [1, 2, 3]
+
+    # -- @or / @and / @not ----------------------------------------------------
+
+    def test_or_mapping(self):
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/value": {
+                "@or": [
+                    {"@type": "xsd:string"},
+                    {"@type": "xsd:integer"},
+                ],
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        props = shacl["@graph"][0][f"{SHACL}property"]
+        prop = props[0]
+        sh_or = prop[f"{SHACL}or"]
+        assert isinstance(sh_or, dict)
+        assert "@list" in sh_or
+        assert len(sh_or["@list"]) == 2
+
+    def test_and_mapping(self):
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/code": {
+                "@and": [
+                    {"@type": "xsd:string"},
+                    {"@pattern": "^[A-Z]{3}$"},
+                ],
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        props = shacl["@graph"][0][f"{SHACL}property"]
+        prop = props[0]
+        sh_and = prop[f"{SHACL}and"]
+        assert isinstance(sh_and, dict)
+        assert "@list" in sh_and
+        assert len(sh_and["@list"]) == 2
+
+    def test_not_mapping(self):
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/status": {
+                "@not": {"@in": ["deleted", "banned"]},
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        props = shacl["@graph"][0][f"{SHACL}property"]
+        prop = props[0]
+        sh_not = prop[f"{SHACL}not"]
+        assert isinstance(sh_not, dict)
+        # sh:not wraps a single constraint shape
+        assert f"{SHACL}in" in sh_not
+
+    # -- Cross-property constraints -------------------------------------------
+
+    def test_less_than_mapping(self):
+        shape = {
+            "@type": "http://example.org/Event",
+            "http://example.org/startDate": {
+                "@lessThan": "http://example.org/endDate",
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        props = shacl["@graph"][0][f"{SHACL}property"]
+        prop = props[0]
+        assert prop[f"{SHACL}lessThan"]["@id"] == "http://example.org/endDate"
+
+    def test_less_than_or_equals_mapping(self):
+        shape = {
+            "@type": "http://example.org/Range",
+            "http://example.org/low": {
+                "@lessThanOrEquals": "http://example.org/high",
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        props = shacl["@graph"][0][f"{SHACL}property"]
+        prop = props[0]
+        assert prop[f"{SHACL}lessThanOrEquals"]["@id"] == "http://example.org/high"
+
+    def test_equals_mapping(self):
+        shape = {
+            "@type": "http://example.org/Account",
+            "http://example.org/confirmEmail": {
+                "@equals": "http://example.org/email",
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        props = shacl["@graph"][0][f"{SHACL}property"]
+        prop = props[0]
+        assert prop[f"{SHACL}equals"]["@id"] == "http://example.org/email"
+
+    def test_disjoint_mapping(self):
+        shape = {
+            "@type": "http://example.org/Pair",
+            "http://example.org/primary": {
+                "@disjoint": "http://example.org/secondary",
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        props = shacl["@graph"][0][f"{SHACL}property"]
+        prop = props[0]
+        assert prop[f"{SHACL}disjoint"]["@id"] == "http://example.org/secondary"
+
+    # -- Combined constraints -------------------------------------------------
+
+    def test_combined_new_and_old_constraints(self):
+        """All constraint types in a single shape should all appear in SHACL."""
+        shape = {
+            "@type": "http://example.org/Record",
+            "http://example.org/name": {
+                "@required": True,
+                "@type": "xsd:string",
+                "@minLength": 1,
+                "@maxLength": 100,
+            },
+            "http://example.org/tags": {
+                "@minCount": 1,
+                "@maxCount": 10,
+            },
+            "http://example.org/status": {
+                "@in": ["active", "archived"],
+            },
+            "http://example.org/start": {
+                "@lessThan": "http://example.org/end",
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        props = shacl["@graph"][0][f"{SHACL}property"]
+        assert len(props) == 4
+
+
+class TestShaclToShapeExtended:
+    """Tests for new constraint types in shacl_to_shape() (reverse direction)."""
+
+    # -- @minCount / @maxCount ------------------------------------------------
+
+    def test_min_count_round_trip(self):
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/tags": {"@minCount": 2},
+        }
+        shacl = shape_to_shacl(shape)
+        restored, warnings = shacl_to_shape(shacl)
+        assert restored["http://example.org/tags"]["@minCount"] == 2
+
+    def test_max_count_round_trip(self):
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/tags": {"@maxCount": 5},
+        }
+        shacl = shape_to_shacl(shape)
+        restored, warnings = shacl_to_shape(shacl)
+        assert restored["http://example.org/tags"]["@maxCount"] == 5
+
+    def test_min_count_1_becomes_required(self):
+        """SHACL sh:minCount=1 should still map to @required (backward compat)."""
+        shacl_doc = {
+            "@graph": [{
+                "@id": "_:s",
+                "@type": f"{SHACL}NodeShape",
+                f"{SHACL}targetClass": {"@id": "http://example.org/Thing"},
+                f"{SHACL}property": [{
+                    f"{SHACL}path": {"@id": "http://example.org/name"},
+                    f"{SHACL}minCount": 1,
+                }],
+            }],
+        }
+        restored, _ = shacl_to_shape(shacl_doc)
+        assert restored["http://example.org/name"]["@required"] is True
+
+    def test_min_count_gt_1_becomes_min_count(self):
+        """SHACL sh:minCount > 1 should map to @minCount, not @required."""
+        shacl_doc = {
+            "@graph": [{
+                "@id": "_:s",
+                "@type": f"{SHACL}NodeShape",
+                f"{SHACL}targetClass": {"@id": "http://example.org/Thing"},
+                f"{SHACL}property": [{
+                    f"{SHACL}path": {"@id": "http://example.org/authors"},
+                    f"{SHACL}minCount": 3,
+                }],
+            }],
+        }
+        restored, _ = shacl_to_shape(shacl_doc)
+        prop = restored["http://example.org/authors"]
+        assert prop["@minCount"] == 3
+        # Should NOT also set @required when @minCount > 1
+        assert "@required" not in prop
+
+    def test_max_count_from_shacl(self):
+        shacl_doc = {
+            "@graph": [{
+                "@id": "_:s",
+                "@type": f"{SHACL}NodeShape",
+                f"{SHACL}targetClass": {"@id": "http://example.org/Thing"},
+                f"{SHACL}property": [{
+                    f"{SHACL}path": {"@id": "http://example.org/tags"},
+                    f"{SHACL}maxCount": 10,
+                }],
+            }],
+        }
+        restored, _ = shacl_to_shape(shacl_doc)
+        assert restored["http://example.org/tags"]["@maxCount"] == 10
+
+    # -- @in ------------------------------------------------------------------
+
+    def test_in_round_trip(self):
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/status": {
+                "@in": ["draft", "published", "retracted"],
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        restored, warnings = shacl_to_shape(shacl)
+        assert restored["http://example.org/status"]["@in"] == ["draft", "published", "retracted"]
+
+    def test_in_from_shacl_list(self):
+        shacl_doc = {
+            "@graph": [{
+                "@id": "_:s",
+                "@type": f"{SHACL}NodeShape",
+                f"{SHACL}targetClass": {"@id": "http://example.org/Thing"},
+                f"{SHACL}property": [{
+                    f"{SHACL}path": {"@id": "http://example.org/color"},
+                    f"{SHACL}in": {"@list": ["red", "green", "blue"]},
+                }],
+            }],
+        }
+        restored, warnings = shacl_to_shape(shacl_doc)
+        assert restored["http://example.org/color"]["@in"] == ["red", "green", "blue"]
+        # sh:in should no longer produce a warning
+        assert not any("sh:in" in w for w in warnings)
+
+    # -- @or / @and / @not ----------------------------------------------------
+
+    def test_or_round_trip(self):
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/value": {
+                "@or": [
+                    {"@type": "xsd:string"},
+                    {"@type": "xsd:integer"},
+                ],
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        restored, warnings = shacl_to_shape(shacl)
+        prop = restored["http://example.org/value"]
+        assert "@or" in prop
+        assert len(prop["@or"]) == 2
+
+    def test_and_round_trip(self):
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/code": {
+                "@and": [
+                    {"@type": "xsd:string"},
+                    {"@pattern": "^[A-Z]{3}$"},
+                ],
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        restored, warnings = shacl_to_shape(shacl)
+        prop = restored["http://example.org/code"]
+        assert "@and" in prop
+        assert len(prop["@and"]) == 2
+
+    def test_not_round_trip(self):
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/status": {
+                "@not": {"@in": ["deleted", "banned"]},
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        restored, warnings = shacl_to_shape(shacl)
+        prop = restored["http://example.org/status"]
+        assert "@not" in prop
+        assert prop["@not"]["@in"] == ["deleted", "banned"]
+
+    # -- Cross-property -------------------------------------------------------
+
+    def test_less_than_round_trip(self):
+        shape = {
+            "@type": "http://example.org/Event",
+            "http://example.org/startDate": {
+                "@lessThan": "http://example.org/endDate",
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        restored, warnings = shacl_to_shape(shacl)
+        assert restored["http://example.org/startDate"]["@lessThan"] == "http://example.org/endDate"
+
+    def test_less_than_or_equals_round_trip(self):
+        shape = {
+            "@type": "http://example.org/Range",
+            "http://example.org/low": {
+                "@lessThanOrEquals": "http://example.org/high",
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        restored, warnings = shacl_to_shape(shacl)
+        assert restored["http://example.org/low"]["@lessThanOrEquals"] == "http://example.org/high"
+
+    def test_equals_round_trip(self):
+        shape = {
+            "@type": "http://example.org/Account",
+            "http://example.org/confirmEmail": {
+                "@equals": "http://example.org/email",
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        restored, warnings = shacl_to_shape(shacl)
+        assert restored["http://example.org/confirmEmail"]["@equals"] == "http://example.org/email"
+
+    def test_disjoint_round_trip(self):
+        shape = {
+            "@type": "http://example.org/Pair",
+            "http://example.org/primary": {
+                "@disjoint": "http://example.org/secondary",
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        restored, warnings = shacl_to_shape(shacl)
+        assert restored["http://example.org/primary"]["@disjoint"] == "http://example.org/secondary"
+
+    # -- Full round-trip with mixed constraints --------------------------------
+
+    def test_full_round_trip_mixed(self):
+        """A shape with old + new constraints should round-trip faithfully."""
+        shape = {
+            "@type": "http://example.org/Record",
+            "http://example.org/name": {
+                "@required": True,
+                "@type": "xsd:string",
+                "@minLength": 1,
+            },
+            "http://example.org/tags": {
+                "@minCount": 2,
+                "@maxCount": 10,
+            },
+            "http://example.org/status": {
+                "@in": ["active", "archived"],
+            },
+            "http://example.org/start": {
+                "@lessThan": "http://example.org/end",
+            },
+        }
+        shacl = shape_to_shacl(shape)
+        restored, warnings = shacl_to_shape(shacl)
+
+        assert restored["@type"] == "http://example.org/Record"
+        assert restored["http://example.org/name"]["@required"] is True
+        assert restored["http://example.org/name"]["@type"] == "xsd:string"
+        assert restored["http://example.org/name"]["@minLength"] == 1
+        assert restored["http://example.org/tags"]["@minCount"] == 2
+        assert restored["http://example.org/tags"]["@maxCount"] == 10
+        assert restored["http://example.org/status"]["@in"] == ["active", "archived"]
+        assert restored["http://example.org/start"]["@lessThan"] == "http://example.org/end"

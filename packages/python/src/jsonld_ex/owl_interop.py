@@ -481,28 +481,71 @@ def shape_to_shacl(
             f"{SHACL}path": {"@id": prop_name},
         }
 
-        if constraint.get("@required"):
+        # -- Cardinality: @required / @minCount / @maxCount -------------------
+        # If @minCount is explicitly set, use it (takes precedence over @required).
+        # Otherwise, @required maps to sh:minCount 1.
+        if "@minCount" in constraint:
+            sh_property[f"{SHACL}minCount"] = constraint["@minCount"]
+        elif constraint.get("@required"):
             sh_property[f"{SHACL}minCount"] = 1
 
+        if "@maxCount" in constraint:
+            sh_property[f"{SHACL}maxCount"] = constraint["@maxCount"]
+
+        # -- Datatype ---------------------------------------------------------
         xsd_type = constraint.get("@type")
         if xsd_type:
             resolved = xsd_type.replace("xsd:", XSD) if xsd_type.startswith("xsd:") else xsd_type
             sh_property[f"{SHACL}datatype"] = {"@id": resolved}
 
+        # -- Numeric range ----------------------------------------------------
         if "@minimum" in constraint:
             sh_property[f"{SHACL}minInclusive"] = constraint["@minimum"]
 
         if "@maximum" in constraint:
             sh_property[f"{SHACL}maxInclusive"] = constraint["@maximum"]
 
+        # -- String length ----------------------------------------------------
         if "@minLength" in constraint:
             sh_property[f"{SHACL}minLength"] = constraint["@minLength"]
 
         if "@maxLength" in constraint:
             sh_property[f"{SHACL}maxLength"] = constraint["@maxLength"]
 
+        # -- Enumeration: @in → sh:in (RDF list) ------------------------------
+        if "@in" in constraint:
+            sh_property[f"{SHACL}in"] = {"@list": constraint["@in"]}
+
+        # -- Pattern ----------------------------------------------------------
         if "@pattern" in constraint:
             sh_property[f"{SHACL}pattern"] = constraint["@pattern"]
+
+        # -- Logical combinators: @or / @and / @not ---------------------------
+        if "@or" in constraint:
+            sh_property[f"{SHACL}or"] = {
+                "@list": [_constraint_to_shacl(branch) for branch in constraint["@or"]],
+            }
+
+        if "@and" in constraint:
+            sh_property[f"{SHACL}and"] = {
+                "@list": [_constraint_to_shacl(branch) for branch in constraint["@and"]],
+            }
+
+        if "@not" in constraint:
+            sh_property[f"{SHACL}not"] = _constraint_to_shacl(constraint["@not"])
+
+        # -- Cross-property constraints ---------------------------------------
+        if "@lessThan" in constraint:
+            sh_property[f"{SHACL}lessThan"] = {"@id": constraint["@lessThan"]}
+
+        if "@lessThanOrEquals" in constraint:
+            sh_property[f"{SHACL}lessThanOrEquals"] = {"@id": constraint["@lessThanOrEquals"]}
+
+        if "@equals" in constraint:
+            sh_property[f"{SHACL}equals"] = {"@id": constraint["@equals"]}
+
+        if "@disjoint" in constraint:
+            sh_property[f"{SHACL}disjoint"] = {"@id": constraint["@disjoint"]}
 
         properties.append(sh_property)
 
@@ -587,10 +630,19 @@ def shacl_to_shape(shacl_doc: dict[str, Any]) -> tuple[dict[str, Any], list[str]
 
         constraint: dict[str, Any] = {}
 
-        # sh:minCount → @required
+        # sh:minCount → @required (=1) or @minCount (>1)
         min_count = prop.get(f"{SHACL}minCount") or prop.get("sh:minCount")
-        if min_count is not None and int(min_count) >= 1:
-            constraint["@required"] = True
+        if min_count is not None:
+            mc = int(min_count)
+            if mc == 1:
+                constraint["@required"] = True
+            elif mc > 1:
+                constraint["@minCount"] = mc
+
+        # sh:maxCount → @maxCount
+        max_count = prop.get(f"{SHACL}maxCount") or prop.get("sh:maxCount")
+        if max_count is not None:
+            constraint["@maxCount"] = int(max_count)
 
         # sh:datatype → @type
         datatype = prop.get(f"{SHACL}datatype") or prop.get("sh:datatype")
@@ -633,13 +685,44 @@ def shacl_to_shape(shacl_doc: dict[str, Any]) -> tuple[dict[str, Any], list[str]
         if pattern is not None:
             constraint["@pattern"] = pattern
 
+        # sh:in → @in
+        sh_in = prop.get(f"{SHACL}in") or prop.get("sh:in")
+        if sh_in is not None:
+            if isinstance(sh_in, dict) and "@list" in sh_in:
+                constraint["@in"] = sh_in["@list"]
+            elif isinstance(sh_in, list):
+                constraint["@in"] = sh_in
+
+        # sh:or / sh:and / sh:not → @or / @and / @not
+        sh_or = prop.get(f"{SHACL}or") or prop.get("sh:or")
+        if sh_or is not None:
+            branches = sh_or.get("@list", sh_or) if isinstance(sh_or, dict) else sh_or
+            constraint["@or"] = [_shacl_to_constraint(b) for b in branches]
+
+        sh_and = prop.get(f"{SHACL}and") or prop.get("sh:and")
+        if sh_and is not None:
+            branches = sh_and.get("@list", sh_and) if isinstance(sh_and, dict) else sh_and
+            constraint["@and"] = [_shacl_to_constraint(b) for b in branches]
+
+        sh_not = prop.get(f"{SHACL}not") or prop.get("sh:not")
+        if sh_not is not None:
+            constraint["@not"] = _shacl_to_constraint(sh_not)
+
+        # Cross-property constraints
+        for shacl_key, shape_key in [
+            ("lessThan", "@lessThan"), ("lessThanOrEquals", "@lessThanOrEquals"),
+            ("equals", "@equals"), ("disjoint", "@disjoint"),
+        ]:
+            val = prop.get(f"{SHACL}{shacl_key}") or prop.get(f"sh:{shacl_key}")
+            if val is not None:
+                constraint[shape_key] = val.get("@id") if isinstance(val, dict) else val
+
         # Warn on unsupported SHACL features
         unsupported_keys = [
             (f"{SHACL}sparql", "sh:sparql"),
             (f"{SHACL}qualifiedValueShape", "sh:qualifiedValueShape"),
             (f"{SHACL}class", "sh:class"),
             (f"{SHACL}node", "sh:node"),
-            (f"{SHACL}in", "sh:in"),
             (f"{SHACL}hasValue", "sh:hasValue"),
             (f"{SHACL}uniqueLang", "sh:uniqueLang"),
         ]
@@ -919,6 +1002,120 @@ def compare_with_shacl(shape: dict[str, Any]) -> VerbosityComparison:
 
 
 # ── Internal Helpers ───────────────────────────────────────────────
+
+
+def _constraint_to_shacl(constraint: dict[str, Any]) -> dict[str, Any]:
+    """Convert a single jsonld-ex constraint dict to a SHACL property shape fragment.
+
+    Used by logical combinators (@or/@and/@not) to convert each branch.
+    """
+    result: dict[str, Any] = {}
+
+    xsd_type = constraint.get("@type")
+    if xsd_type:
+        resolved = xsd_type.replace("xsd:", XSD) if xsd_type.startswith("xsd:") else xsd_type
+        result[f"{SHACL}datatype"] = {"@id": resolved}
+
+    if "@minimum" in constraint:
+        result[f"{SHACL}minInclusive"] = constraint["@minimum"]
+    if "@maximum" in constraint:
+        result[f"{SHACL}maxInclusive"] = constraint["@maximum"]
+    if "@minLength" in constraint:
+        result[f"{SHACL}minLength"] = constraint["@minLength"]
+    if "@maxLength" in constraint:
+        result[f"{SHACL}maxLength"] = constraint["@maxLength"]
+    if "@pattern" in constraint:
+        result[f"{SHACL}pattern"] = constraint["@pattern"]
+    if "@in" in constraint:
+        result[f"{SHACL}in"] = {"@list": constraint["@in"]}
+    if "@minCount" in constraint:
+        result[f"{SHACL}minCount"] = constraint["@minCount"]
+    if "@maxCount" in constraint:
+        result[f"{SHACL}maxCount"] = constraint["@maxCount"]
+
+    # Cross-property
+    for key, shacl_key in [
+        ("@lessThan", "lessThan"), ("@lessThanOrEquals", "lessThanOrEquals"),
+        ("@equals", "equals"), ("@disjoint", "disjoint"),
+    ]:
+        if key in constraint:
+            result[f"{SHACL}{shacl_key}"] = {"@id": constraint[key]}
+
+    # Recursive logical combinators
+    if "@or" in constraint:
+        result[f"{SHACL}or"] = {
+            "@list": [_constraint_to_shacl(b) for b in constraint["@or"]],
+        }
+    if "@and" in constraint:
+        result[f"{SHACL}and"] = {
+            "@list": [_constraint_to_shacl(b) for b in constraint["@and"]],
+        }
+    if "@not" in constraint:
+        result[f"{SHACL}not"] = _constraint_to_shacl(constraint["@not"])
+
+    return result
+
+
+def _shacl_to_constraint(shacl_node: dict[str, Any]) -> dict[str, Any]:
+    """Convert a SHACL property shape fragment back to a jsonld-ex constraint dict.
+
+    Inverse of :func:`_constraint_to_shacl`.  Used by logical combinator
+    round-trips (@or/@and/@not).
+    """
+    result: dict[str, Any] = {}
+
+    datatype = shacl_node.get(f"{SHACL}datatype") or shacl_node.get("sh:datatype")
+    if datatype is not None:
+        dt_iri = datatype.get("@id") if isinstance(datatype, dict) else datatype
+        if dt_iri.startswith(XSD):
+            result["@type"] = "xsd:" + dt_iri[len(XSD):]
+        else:
+            result["@type"] = dt_iri
+
+    for shacl_key, shape_key in [
+        ("minInclusive", "@minimum"), ("maxInclusive", "@maximum"),
+        ("minLength", "@minLength"), ("maxLength", "@maxLength"),
+        ("pattern", "@pattern"),
+        ("minCount", "@minCount"), ("maxCount", "@maxCount"),
+    ]:
+        val = shacl_node.get(f"{SHACL}{shacl_key}") or shacl_node.get(f"sh:{shacl_key}")
+        if val is not None:
+            result[shape_key] = val
+
+    # sh:in
+    sh_in = shacl_node.get(f"{SHACL}in") or shacl_node.get("sh:in")
+    if sh_in is not None:
+        if isinstance(sh_in, dict) and "@list" in sh_in:
+            result["@in"] = sh_in["@list"]
+        elif isinstance(sh_in, list):
+            result["@in"] = sh_in
+
+    # Cross-property
+    for shacl_key, shape_key in [
+        ("lessThan", "@lessThan"), ("lessThanOrEquals", "@lessThanOrEquals"),
+        ("equals", "@equals"), ("disjoint", "@disjoint"),
+    ]:
+        val = shacl_node.get(f"{SHACL}{shacl_key}") or shacl_node.get(f"sh:{shacl_key}")
+        if val is not None:
+            result[shape_key] = val.get("@id") if isinstance(val, dict) else val
+
+    # Recursive logical combinators
+    sh_or = shacl_node.get(f"{SHACL}or") or shacl_node.get("sh:or")
+    if sh_or is not None:
+        branches = sh_or.get("@list", sh_or) if isinstance(sh_or, dict) else sh_or
+        result["@or"] = [_shacl_to_constraint(b) for b in branches]
+
+    sh_and = shacl_node.get(f"{SHACL}and") or shacl_node.get("sh:and")
+    if sh_and is not None:
+        branches = sh_and.get("@list", sh_and) if isinstance(sh_and, dict) else sh_and
+        result["@and"] = [_shacl_to_constraint(b) for b in branches]
+
+    sh_not = shacl_node.get(f"{SHACL}not") or shacl_node.get("sh:not")
+    if sh_not is not None:
+        result["@not"] = _shacl_to_constraint(sh_not)
+
+    return result
+
 
 def _format_literal(value: Any) -> str:
     """Format a Python value as an N-Triples literal."""
