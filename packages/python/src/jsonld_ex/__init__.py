@@ -77,6 +77,12 @@ from jsonld_ex.dataset import (
     CROISSANT_CONTEXT,
     DATASET_SHAPE,
 )
+from jsonld_ex.context import (
+    context_diff,
+    check_compatibility,
+    ContextDiff,
+    CompatibilityResult,
+)
 
 # Optional modules — import only if dependencies are available
 try:
@@ -180,4 +186,9 @@ __all__ = [
     "derive_mqtt_topic",
     "derive_mqtt_qos",
     "derive_mqtt_qos_detailed",
+    # Context versioning
+    "context_diff",
+    "check_compatibility",
+    "ContextDiff",
+    "CompatibilityResult",
 ]
