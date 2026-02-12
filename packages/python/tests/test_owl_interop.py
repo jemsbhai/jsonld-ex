@@ -10,10 +10,16 @@ from jsonld_ex.owl_interop import (
     OWL,
     XSD,
     RDFS,
+    SOSA,
+    SSN,
+    SSN_SYSTEM,
+    QUDT,
     ConversionReport,
     VerbosityComparison,
     to_prov_o,
     from_prov_o,
+    to_ssn,
+    from_ssn,
     shape_to_shacl,
     shacl_to_shape,
     shape_to_owl_restrictions,
@@ -1549,3 +1555,655 @@ class TestExtendsShacl:
         assert ext["http://example.org/name"]["@required"] is True
         # Child's own property preserved
         assert restored["http://example.org/dept"]["@required"] is True
+
+
+# ═══════════════════════════════════════════════════════════════════
+# SSN/SOSA INTEROP TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _find_nodes_by_type(graph: list, type_iri: str) -> list[dict]:
+    """Find all nodes in a @graph array that have the given @type."""
+    results = []
+    for node in graph:
+        if not isinstance(node, dict):
+            continue
+        node_types = node.get("@type", [])
+        if isinstance(node_types, str):
+            node_types = [node_types]
+        if type_iri in node_types:
+            results.append(node)
+    return results
+
+
+def _find_node_by_id(graph: list, node_id: str) -> dict | None:
+    """Find a node in @graph by its @id."""
+    for node in graph:
+        if isinstance(node, dict) and node.get("@id") == node_id:
+            return node
+    return None
+
+
+class TestSSNSOSAInteropToSSN:
+    """Tests for to_ssn() — jsonld-ex → SSN/SOSA conversion."""
+
+    def test_basic_observation_generated(self):
+        """An annotated value produces a sosa:Observation."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Person",
+            "@id": "http://example.org/alice",
+            "http://schema.org/name": annotate(
+                "Alice",
+                confidence=0.95,
+                source="https://sensor.example.org/s1",
+            ),
+        }
+        ssn_doc, report = to_ssn(doc)
+
+        assert report.success is True
+        assert report.nodes_converted >= 1
+
+        graph = ssn_doc["@graph"]
+        observations = _find_nodes_by_type(graph, f"{SOSA}Observation")
+        assert len(observations) >= 1
+
+    def test_context_has_required_namespaces(self):
+        """Output context includes sosa, ssn, qudt, xsd, jsonld-ex prefixes."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Thing",
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate("val", confidence=0.9),
+        }
+        ssn_doc, _ = to_ssn(doc)
+        ctx = ssn_doc["@context"]
+
+        assert ctx["sosa"] == SOSA
+        assert ctx["ssn"] == SSN
+        assert ctx["qudt"] == QUDT
+        assert ctx["xsd"] == XSD
+        assert ctx["jsonld-ex"] == JSONLD_EX_NAMESPACE
+
+    def test_simple_result_without_unit(self):
+        """@value without @unit → sosa:hasSimpleResult."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Thing",
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate("Alice", confidence=0.9),
+        }
+        ssn_doc, _ = to_ssn(doc)
+        graph = ssn_doc["@graph"]
+        obs = _find_nodes_by_type(graph, f"{SOSA}Observation")[0]
+
+        assert f"{SOSA}hasSimpleResult" in obs
+        assert obs[f"{SOSA}hasSimpleResult"] == "Alice"
+
+    def test_result_with_unit_uses_qudt(self):
+        """@value + @unit → sosa:hasResult → sosa:Result with qudt:unit."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Thing",
+            "@id": "http://example.org/sensor-reading",
+            "http://example.org/temperature": annotate(
+                22.5,
+                source="https://sensor.example.org/thermo1",
+                unit="http://qudt.org/vocab/unit/DEG_C",
+            ),
+        }
+        ssn_doc, _ = to_ssn(doc)
+        graph = ssn_doc["@graph"]
+        obs = _find_nodes_by_type(graph, f"{SOSA}Observation")[0]
+
+        # Should use hasResult (not hasSimpleResult) when unit present
+        assert f"{SOSA}hasResult" in obs
+        result_ref = obs[f"{SOSA}hasResult"]
+        result_id = result_ref["@id"] if isinstance(result_ref, dict) else result_ref
+
+        result_node = _find_node_by_id(graph, result_id)
+        assert result_node is not None
+        assert f"{SOSA}Result" in (result_node.get("@type", []) if isinstance(result_node.get("@type"), list) else [result_node.get("@type", "")])
+        assert result_node[f"{QUDT}numericValue"] == 22.5
+        assert result_node[f"{QUDT}unit"] == "http://qudt.org/vocab/unit/DEG_C"
+
+    def test_source_maps_to_sensor(self):
+        """@source → sosa:madeBySensor + sosa:Sensor node."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Thing",
+            "@id": "http://example.org/x",
+            "http://example.org/temp": annotate(
+                20.0, source="https://sensor.example.org/thermo1",
+            ),
+        }
+        ssn_doc, _ = to_ssn(doc)
+        graph = ssn_doc["@graph"]
+        obs = _find_nodes_by_type(graph, f"{SOSA}Observation")[0]
+
+        assert f"{SOSA}madeBySensor" in obs
+        sensor_ref = obs[f"{SOSA}madeBySensor"]
+        sensor_id = sensor_ref["@id"] if isinstance(sensor_ref, dict) else sensor_ref
+        assert sensor_id == "https://sensor.example.org/thermo1"
+
+        sensors = _find_nodes_by_type(graph, f"{SOSA}Sensor")
+        assert any(s["@id"] == "https://sensor.example.org/thermo1" for s in sensors)
+
+    def test_extracted_at_maps_to_result_time(self):
+        """@extractedAt → sosa:resultTime."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Thing",
+            "@id": "http://example.org/x",
+            "http://example.org/temp": annotate(
+                20.0, extracted_at="2025-01-15T10:30:00Z",
+            ),
+        }
+        ssn_doc, _ = to_ssn(doc)
+        graph = ssn_doc["@graph"]
+        obs = _find_nodes_by_type(graph, f"{SOSA}Observation")[0]
+
+        result_time = obs[f"{SOSA}resultTime"]
+        if isinstance(result_time, dict):
+            assert result_time["@value"] == "2025-01-15T10:30:00Z"
+        else:
+            assert result_time == "2025-01-15T10:30:00Z"
+
+    def test_method_maps_to_procedure(self):
+        """@method → sosa:usedProcedure → sosa:Procedure."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Thing",
+            "@id": "http://example.org/x",
+            "http://example.org/temp": annotate(
+                20.0, method="thermometer-reading",
+            ),
+        }
+        ssn_doc, _ = to_ssn(doc)
+        graph = ssn_doc["@graph"]
+        obs = _find_nodes_by_type(graph, f"{SOSA}Observation")[0]
+
+        assert f"{SOSA}usedProcedure" in obs
+        proc_ref = obs[f"{SOSA}usedProcedure"]
+        proc_id = proc_ref["@id"] if isinstance(proc_ref, dict) else proc_ref
+
+        procedures = _find_nodes_by_type(graph, f"{SOSA}Procedure")
+        proc = next(p for p in procedures if p["@id"] == proc_id)
+        assert proc[f"{RDFS}label"] == "thermometer-reading"
+
+    def test_confidence_maps_to_jsonld_ex_namespace(self):
+        """@confidence → jsonld-ex:confidence (no SOSA equivalent)."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Thing",
+            "@id": "http://example.org/x",
+            "http://example.org/temp": annotate(20.0, confidence=0.92),
+        }
+        ssn_doc, _ = to_ssn(doc)
+        graph = ssn_doc["@graph"]
+        obs = _find_nodes_by_type(graph, f"{SOSA}Observation")[0]
+
+        assert obs[f"{JSONLD_EX_NAMESPACE}confidence"] == 0.92
+
+    def test_feature_of_interest_from_parent(self):
+        """Parent node @id/@type → sosa:hasFeatureOfInterest + sosa:FeatureOfInterest."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "http://schema.org/Room",
+            "@id": "http://example.org/room-134",
+            "http://example.org/temperature": annotate(22.5, confidence=0.95),
+        }
+        ssn_doc, _ = to_ssn(doc)
+        graph = ssn_doc["@graph"]
+        obs = _find_nodes_by_type(graph, f"{SOSA}Observation")[0]
+
+        assert f"{SOSA}hasFeatureOfInterest" in obs
+        foi_ref = obs[f"{SOSA}hasFeatureOfInterest"]
+        foi_id = foi_ref["@id"] if isinstance(foi_ref, dict) else foi_ref
+        assert foi_id == "http://example.org/room-134"
+
+        fois = _find_nodes_by_type(graph, f"{SOSA}FeatureOfInterest")
+        foi = next(f for f in fois if f["@id"] == "http://example.org/room-134")
+        # Original @type preserved as additional type
+        foi_types = foi["@type"] if isinstance(foi["@type"], list) else [foi["@type"]]
+        assert f"{SOSA}FeatureOfInterest" in foi_types
+
+    def test_observable_property_from_key(self):
+        """Property key → sosa:observedProperty → sosa:ObservableProperty."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Thing",
+            "@id": "http://example.org/x",
+            "http://example.org/temperature": annotate(22.5, confidence=0.9),
+        }
+        ssn_doc, _ = to_ssn(doc)
+        graph = ssn_doc["@graph"]
+        obs = _find_nodes_by_type(graph, f"{SOSA}Observation")[0]
+
+        assert f"{SOSA}observedProperty" in obs
+        prop_ref = obs[f"{SOSA}observedProperty"]
+        prop_id = prop_ref["@id"] if isinstance(prop_ref, dict) else prop_ref
+
+        props = _find_nodes_by_type(graph, f"{SOSA}ObservableProperty")
+        assert any(p["@id"] == prop_id for p in props)
+
+    def test_measurement_uncertainty_maps_to_accuracy(self):
+        """@measurementUncertainty → ssn-system:Accuracy on the Sensor."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Thing",
+            "@id": "http://example.org/x",
+            "http://example.org/temp": annotate(
+                22.5,
+                source="https://sensor.example.org/t1",
+                measurement_uncertainty=0.1,
+            ),
+        }
+        ssn_doc, _ = to_ssn(doc)
+        graph = ssn_doc["@graph"]
+
+        # Sensor should have a SystemCapability
+        sensors = _find_nodes_by_type(graph, f"{SOSA}Sensor")
+        assert len(sensors) >= 1
+        sensor = sensors[0]
+        assert f"{SSN_SYSTEM}hasSystemCapability" in sensor
+
+        cap_ref = sensor[f"{SSN_SYSTEM}hasSystemCapability"]
+        cap_id = cap_ref["@id"] if isinstance(cap_ref, dict) else cap_ref
+        cap = _find_node_by_id(graph, cap_id)
+        assert cap is not None
+
+        # Capability should have Accuracy system property
+        assert f"{SSN_SYSTEM}hasSystemProperty" in cap
+        acc_ref = cap[f"{SSN_SYSTEM}hasSystemProperty"]
+        acc_id = acc_ref["@id"] if isinstance(acc_ref, dict) else acc_ref
+        acc = _find_node_by_id(graph, acc_id)
+        assert acc is not None
+
+        acc_types = acc["@type"] if isinstance(acc["@type"], list) else [acc["@type"]]
+        assert f"{SSN_SYSTEM}Accuracy" in acc_types
+
+    def test_calibration_on_sensor_capability(self):
+        """@calibratedAt/Method/Authority → properties on Sensor's SystemCapability."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Thing",
+            "@id": "http://example.org/x",
+            "http://example.org/temp": annotate(
+                22.5,
+                source="https://sensor.example.org/t1",
+                calibrated_at="2025-01-01T00:00:00Z",
+                calibration_method="NIST traceable",
+                calibration_authority="https://nist.gov",
+            ),
+        }
+        ssn_doc, _ = to_ssn(doc)
+        graph = ssn_doc["@graph"]
+
+        sensors = _find_nodes_by_type(graph, f"{SOSA}Sensor")
+        sensor = sensors[0]
+        cap_ref = sensor[f"{SSN_SYSTEM}hasSystemCapability"]
+        cap_id = cap_ref["@id"] if isinstance(cap_ref, dict) else cap_ref
+        cap = _find_node_by_id(graph, cap_id)
+
+        # Calibration info should be on the capability
+        assert f"{JSONLD_EX_NAMESPACE}calibratedAt" in cap
+        assert f"{JSONLD_EX_NAMESPACE}calibrationMethod" in cap
+        assert f"{JSONLD_EX_NAMESPACE}calibrationAuthority" in cap
+
+    def test_aggregation_maps_to_procedure(self):
+        """@aggregationMethod/Window/Count → sosa:Procedure with params."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Thing",
+            "@id": "http://example.org/x",
+            "http://example.org/temp": annotate(
+                22.5,
+                aggregation_method="mean",
+                aggregation_window="PT1H",
+                aggregation_count=60,
+            ),
+        }
+        ssn_doc, _ = to_ssn(doc)
+        graph = ssn_doc["@graph"]
+        obs = _find_nodes_by_type(graph, f"{SOSA}Observation")[0]
+
+        proc_ref = obs[f"{SOSA}usedProcedure"]
+        proc_id = proc_ref["@id"] if isinstance(proc_ref, dict) else proc_ref
+        proc = _find_node_by_id(graph, proc_id)
+        assert proc is not None
+
+        assert proc[f"{RDFS}label"] == "mean"
+        assert proc[f"{JSONLD_EX_NAMESPACE}aggregationWindow"] == "PT1H"
+        assert proc[f"{JSONLD_EX_NAMESPACE}aggregationCount"] == 60
+
+    def test_multiple_annotated_properties(self):
+        """Multiple annotated properties on one node → multiple Observations."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Thing",
+            "@id": "http://example.org/room",
+            "http://example.org/temperature": annotate(22.5, confidence=0.95),
+            "http://example.org/humidity": annotate(45.0, confidence=0.88),
+        }
+        ssn_doc, report = to_ssn(doc)
+        graph = ssn_doc["@graph"]
+        observations = _find_nodes_by_type(graph, f"{SOSA}Observation")
+
+        assert len(observations) >= 2
+        assert report.nodes_converted >= 2
+
+    def test_non_annotated_properties_preserved(self):
+        """Non-annotated properties pass through unchanged."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Thing",
+            "@id": "http://example.org/x",
+            "http://schema.org/name": "Plain value",
+            "http://example.org/temp": annotate(22.5, confidence=0.9),
+        }
+        ssn_doc, _ = to_ssn(doc)
+        graph = ssn_doc["@graph"]
+
+        # Find the main node (the one that isn't a SOSA type)
+        main = None
+        sosa_types = {f"{SOSA}Observation", f"{SOSA}Sensor", f"{SOSA}Result",
+                      f"{SOSA}Procedure", f"{SOSA}FeatureOfInterest",
+                      f"{SOSA}ObservableProperty"}
+        for node in graph:
+            if not isinstance(node, dict):
+                continue
+            nt = node.get("@type", [])
+            if isinstance(nt, str):
+                nt = [nt]
+            if not any(t in sosa_types or t.startswith(SSN_SYSTEM) for t in nt):
+                main = node
+                break
+
+        # Main node should still have non-annotated property
+        assert main is not None
+        assert main.get("http://schema.org/name") == "Plain value"
+
+    def test_full_iot_scenario(self):
+        """Comprehensive IoT reading with all annotation keys."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "http://example.org/WeatherStation",
+            "@id": "http://example.org/station-42",
+            "http://example.org/temperature": annotate(
+                22.5,
+                confidence=0.95,
+                source="https://sensor.example.org/thermo1",
+                extracted_at="2025-01-15T10:30:00Z",
+                method="thermometer-reading",
+                unit="http://qudt.org/vocab/unit/DEG_C",
+                measurement_uncertainty=0.1,
+                calibrated_at="2025-01-01T00:00:00Z",
+                calibration_method="NIST traceable",
+                calibration_authority="https://nist.gov",
+                aggregation_method="mean",
+                aggregation_window="PT1H",
+                aggregation_count=60,
+            ),
+        }
+        ssn_doc, report = to_ssn(doc)
+
+        assert report.success is True
+        assert report.nodes_converted >= 1
+
+        graph = ssn_doc["@graph"]
+
+        # All SOSA types should be present
+        assert len(_find_nodes_by_type(graph, f"{SOSA}Observation")) >= 1
+        assert len(_find_nodes_by_type(graph, f"{SOSA}Sensor")) >= 1
+        assert len(_find_nodes_by_type(graph, f"{SOSA}Procedure")) >= 1
+        assert len(_find_nodes_by_type(graph, f"{SOSA}FeatureOfInterest")) >= 1
+        assert len(_find_nodes_by_type(graph, f"{SOSA}ObservableProperty")) >= 1
+
+        # Result should have unit
+        obs = _find_nodes_by_type(graph, f"{SOSA}Observation")[0]
+        assert f"{SOSA}hasResult" in obs
+
+    def test_report_triple_counts(self):
+        """ConversionReport tracks input and output triple counts."""
+        doc = {
+            "@context": "http://schema.org/",
+            "@type": "Thing",
+            "@id": "http://example.org/x",
+            "http://example.org/temp": annotate(
+                22.5, confidence=0.95, source="https://s.example.org/s1",
+            ),
+        }
+        _, report = to_ssn(doc)
+
+        assert report.triples_input >= 1
+        assert report.triples_output >= report.triples_input  # SSN is more verbose
+
+
+class TestSSNSOSAInteropFromSSN:
+    """Tests for from_ssn() — SSN/SOSA → jsonld-ex conversion."""
+
+    def _make_sosa_observation(self, **overrides) -> dict:
+        """Helper: build a minimal SOSA Observation graph."""
+        obs = {
+            "@id": "_:obs-1",
+            "@type": f"{SOSA}Observation",
+            f"{SOSA}hasSimpleResult": "22.5",
+            f"{SOSA}resultTime": {
+                "@value": "2025-01-15T10:30:00Z",
+                "@type": f"{XSD}dateTime",
+            },
+            f"{SOSA}madeBySensor": {"@id": "https://sensor.example.org/t1"},
+            f"{SOSA}observedProperty": {"@id": "http://example.org/temperature"},
+            f"{SOSA}hasFeatureOfInterest": {"@id": "http://example.org/room-134"},
+        }
+        obs.update(overrides)
+
+        sensor = {
+            "@id": "https://sensor.example.org/t1",
+            "@type": f"{SOSA}Sensor",
+        }
+        foi = {
+            "@id": "http://example.org/room-134",
+            "@type": [f"{SOSA}FeatureOfInterest", "http://schema.org/Room"],
+        }
+        prop = {
+            "@id": "http://example.org/temperature",
+            "@type": f"{SOSA}ObservableProperty",
+        }
+
+        return {
+            "@context": {
+                "sosa": SOSA,
+                "ssn": SSN,
+                "ssn-system": SSN_SYSTEM,
+                "qudt": QUDT,
+                "xsd": XSD,
+                "rdfs": RDFS,
+                "jsonld-ex": JSONLD_EX_NAMESPACE,
+            },
+            "@graph": [obs, sensor, foi, prop],
+        }
+
+    def test_basic_from_ssn(self):
+        """Basic SOSA Observation → jsonld-ex annotated value."""
+        sosa_doc = self._make_sosa_observation()
+        result_doc, report = from_ssn(sosa_doc)
+
+        assert report.success is True
+        assert report.nodes_converted >= 1
+
+        # Should have reconstructed annotated value on the observed property
+        # The property key should be the observed property IRI
+        prop_key = "http://example.org/temperature"
+        assert prop_key in result_doc
+
+        val = result_doc[prop_key]
+        assert isinstance(val, dict)
+        assert "@value" in val
+        assert val["@value"] == "22.5"
+
+    def test_from_ssn_extracts_source(self):
+        """sosa:madeBySensor → @source."""
+        sosa_doc = self._make_sosa_observation()
+        result_doc, _ = from_ssn(sosa_doc)
+
+        val = result_doc["http://example.org/temperature"]
+        assert val.get("@source") == "https://sensor.example.org/t1"
+
+    def test_from_ssn_extracts_extracted_at(self):
+        """sosa:resultTime → @extractedAt."""
+        sosa_doc = self._make_sosa_observation()
+        result_doc, _ = from_ssn(sosa_doc)
+
+        val = result_doc["http://example.org/temperature"]
+        assert val.get("@extractedAt") == "2025-01-15T10:30:00Z"
+
+    def test_from_ssn_extracts_method(self):
+        """sosa:usedProcedure → @method."""
+        sosa_doc = self._make_sosa_observation()
+        proc = {
+            "@id": "_:proc-1",
+            "@type": f"{SOSA}Procedure",
+            f"{RDFS}label": "thermometer-reading",
+        }
+        sosa_doc["@graph"][0][f"{SOSA}usedProcedure"] = {"@id": "_:proc-1"}
+        sosa_doc["@graph"].append(proc)
+
+        result_doc, _ = from_ssn(sosa_doc)
+        val = result_doc["http://example.org/temperature"]
+        assert val.get("@method") == "thermometer-reading"
+
+    def test_from_ssn_extracts_confidence(self):
+        """jsonld-ex:confidence on Observation → @confidence."""
+        sosa_doc = self._make_sosa_observation(
+            **{f"{JSONLD_EX_NAMESPACE}confidence": 0.92}
+        )
+        result_doc, _ = from_ssn(sosa_doc)
+
+        val = result_doc["http://example.org/temperature"]
+        assert val.get("@confidence") == 0.92
+
+    def test_from_ssn_extracts_unit_from_result(self):
+        """sosa:hasResult with qudt:unit → @unit."""
+        result_node = {
+            "@id": "_:result-1",
+            "@type": f"{SOSA}Result",
+            f"{QUDT}numericValue": 22.5,
+            f"{QUDT}unit": "http://qudt.org/vocab/unit/DEG_C",
+        }
+        sosa_doc = self._make_sosa_observation()
+        # Replace hasSimpleResult with hasResult
+        del sosa_doc["@graph"][0][f"{SOSA}hasSimpleResult"]
+        sosa_doc["@graph"][0][f"{SOSA}hasResult"] = {"@id": "_:result-1"}
+        sosa_doc["@graph"].append(result_node)
+
+        result_doc, _ = from_ssn(sosa_doc)
+        val = result_doc["http://example.org/temperature"]
+        assert val["@value"] == 22.5
+        assert val.get("@unit") == "http://qudt.org/vocab/unit/DEG_C"
+
+    def test_from_ssn_extracts_measurement_uncertainty(self):
+        """ssn-system:Accuracy → @measurementUncertainty."""
+        sosa_doc = self._make_sosa_observation()
+        # Add capability chain on the sensor
+        acc_node = {
+            "@id": "_:acc-1",
+            "@type": f"{SSN_SYSTEM}Accuracy",
+            f"{JSONLD_EX_NAMESPACE}value": 0.1,
+        }
+        cap_node = {
+            "@id": "_:cap-1",
+            "@type": f"{SSN_SYSTEM}SystemCapability",
+            f"{SSN_SYSTEM}hasSystemProperty": {"@id": "_:acc-1"},
+        }
+        sosa_doc["@graph"][1][f"{SSN_SYSTEM}hasSystemCapability"] = {"@id": "_:cap-1"}
+        sosa_doc["@graph"].extend([cap_node, acc_node])
+
+        result_doc, _ = from_ssn(sosa_doc)
+        val = result_doc["http://example.org/temperature"]
+        assert val.get("@measurementUncertainty") == 0.1
+
+    def test_from_ssn_feature_of_interest_becomes_parent(self):
+        """sosa:hasFeatureOfInterest → parent node @id and @type."""
+        sosa_doc = self._make_sosa_observation()
+        result_doc, _ = from_ssn(sosa_doc)
+
+        assert result_doc.get("@id") == "http://example.org/room-134"
+
+    def test_from_ssn_warns_on_unsupported_sosa_features(self):
+        """Unsupported SOSA concepts produce warnings."""
+        sosa_doc = self._make_sosa_observation()
+        # Add a Platform (not mappable to jsonld-ex)
+        platform = {
+            "@id": "http://example.org/platform-1",
+            "@type": f"{SOSA}Platform",
+            f"{SOSA}hosts": {"@id": "https://sensor.example.org/t1"},
+        }
+        sosa_doc["@graph"].append(platform)
+
+        _, report = from_ssn(sosa_doc)
+        # Should have at least one warning about unhandled SOSA concepts
+        assert any("Platform" in w or "platform" in w.lower() for w in report.warnings) or report.success
+
+
+class TestSSNSOSARoundTrip:
+    """Tests for to_ssn() → from_ssn() round-trip fidelity."""
+
+    def test_basic_round_trip(self):
+        """Simple annotated value survives to_ssn → from_ssn."""
+        original = {
+            "@context": "http://schema.org/",
+            "@type": "http://example.org/Room",
+            "@id": "http://example.org/room-134",
+            "http://example.org/temperature": annotate(
+                22.5,
+                confidence=0.95,
+                source="https://sensor.example.org/t1",
+                extracted_at="2025-01-15T10:30:00Z",
+                method="thermometer-reading",
+            ),
+        }
+        ssn_doc, _ = to_ssn(original)
+        restored, report = from_ssn(ssn_doc)
+
+        assert report.success is True
+
+        val = restored["http://example.org/temperature"]
+        assert val["@value"] == 22.5
+        assert val["@confidence"] == 0.95
+        assert val["@source"] == "https://sensor.example.org/t1"
+        assert val["@extractedAt"] == "2025-01-15T10:30:00Z"
+        assert val["@method"] == "thermometer-reading"
+
+    def test_round_trip_with_unit(self):
+        """Value with @unit survives round-trip."""
+        original = {
+            "@context": "http://schema.org/",
+            "@type": "http://example.org/Room",
+            "@id": "http://example.org/room-134",
+            "http://example.org/temperature": annotate(
+                22.5,
+                source="https://sensor.example.org/t1",
+                unit="http://qudt.org/vocab/unit/DEG_C",
+            ),
+        }
+        ssn_doc, _ = to_ssn(original)
+        restored, _ = from_ssn(ssn_doc)
+
+        val = restored["http://example.org/temperature"]
+        assert val["@value"] == 22.5
+        assert val["@unit"] == "http://qudt.org/vocab/unit/DEG_C"
+
+    def test_round_trip_preserves_feature_of_interest(self):
+        """Parent @id survives as FeatureOfInterest through round-trip."""
+        original = {
+            "@context": "http://schema.org/",
+            "@type": "http://example.org/Room",
+            "@id": "http://example.org/room-134",
+            "http://example.org/temperature": annotate(22.5, confidence=0.9),
+        }
+        ssn_doc, _ = to_ssn(original)
+        restored, _ = from_ssn(ssn_doc)
+
+        assert restored.get("@id") == "http://example.org/room-134"

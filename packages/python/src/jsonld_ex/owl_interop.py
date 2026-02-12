@@ -34,6 +34,10 @@ XSD = "http://www.w3.org/2001/XMLSchema#"
 RDFS = "http://www.w3.org/2000/01/rdf-schema#"
 RDF = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
 JSONLD_EX = JSONLD_EX_NAMESPACE  # http://www.w3.org/ns/jsonld-ex/
+SOSA = "http://www.w3.org/ns/sosa/"
+SSN = "http://www.w3.org/ns/ssn/"
+SSN_SYSTEM = "http://www.w3.org/ns/ssn/systems/"
+QUDT = "http://qudt.org/schema/qudt/"
 
 
 # ── Data Structures ────────────────────────────────────────────────
@@ -1147,6 +1151,519 @@ def to_rdf_star_ntriples(
             report.triples_output += 1
 
     return "\n".join(lines), report
+
+
+# ═══════════════════════════════════════════════════════════════════
+# SSN/SOSA MAPPING
+# ═══════════════════════════════════════════════════════════════════
+
+def to_ssn(doc: dict[str, Any]) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex annotated document to SSN/SOSA observation graph.
+
+    Maps jsonld-ex IoT annotations to W3C SOSA core classes:
+        @value                → sosa:hasSimpleResult (or sosa:hasResult + qudt if @unit)
+        @source               → sosa:madeBySensor → sosa:Sensor
+        @extractedAt          → sosa:resultTime
+        @method               → sosa:usedProcedure → sosa:Procedure
+        @confidence           → jsonld-ex:confidence (no SOSA equivalent)
+        @unit                 → qudt:unit on sosa:Result
+        @measurementUncertainty → ssn-system:Accuracy on Sensor capability
+        @calibratedAt/Method/Authority → properties on ssn-system:SystemCapability
+        @aggregationMethod/Window/Count → sosa:Procedure parameters
+        parent @id/@type      → sosa:hasFeatureOfInterest → sosa:FeatureOfInterest
+        property key          → sosa:observedProperty → sosa:ObservableProperty
+
+    Args:
+        doc: A JSON-LD document with jsonld-ex annotations.
+
+    Returns:
+        Tuple of (SSN/SOSA JSON-LD document, ConversionReport).
+    """
+    report = ConversionReport(success=True)
+    graph_nodes: list[dict[str, Any]] = []
+    input_triples = 0
+    output_triples = 0
+
+    # Build output context
+    ssn_context: dict[str, Any] = {
+        "sosa": SOSA,
+        "ssn": SSN,
+        "ssn-system": SSN_SYSTEM,
+        "qudt": QUDT,
+        "xsd": XSD,
+        "rdfs": RDFS,
+        "jsonld-ex": JSONLD_EX,
+    }
+
+    # Preserve original context entries
+    original_ctx = doc.get("@context", {})
+    if isinstance(original_ctx, str):
+        ssn_context["_original"] = original_ctx
+    elif isinstance(original_ctx, dict):
+        for k, v in original_ctx.items():
+            if k not in ssn_context:
+                ssn_context[k] = v
+    elif isinstance(original_ctx, list):
+        for item in original_ctx:
+            if isinstance(item, dict):
+                for k, v in item.items():
+                    if k not in ssn_context:
+                        ssn_context[k] = v
+
+    parent_id = doc.get("@id", f"_:node-{uuid.uuid4().hex[:8]}")
+    parent_type = doc.get("@type")
+
+    # Create FeatureOfInterest from parent node
+    foi_id = parent_id
+    foi_node: dict[str, Any] = {
+        "@id": foi_id,
+        "@type": [f"{SOSA}FeatureOfInterest"],
+    }
+    if parent_type:
+        types = parent_type if isinstance(parent_type, list) else [parent_type]
+        foi_node["@type"] = [f"{SOSA}FeatureOfInterest"] + [
+            t for t in types if t != f"{SOSA}FeatureOfInterest"
+        ]
+    output_triples += 1  # type triple
+
+    # Track whether we actually emitted any observations
+    has_observations = False
+
+    # Build main node for non-annotated properties
+    main_node: dict[str, Any] = {}
+    if "@id" in doc:
+        main_node["@id"] = doc["@id"]
+    if "@type" in doc:
+        main_node["@type"] = doc["@type"]
+
+    # Track sensors we've already created (dedup by @source IRI)
+    sensors_created: dict[str, dict[str, Any]] = {}
+
+    for key, value in doc.items():
+        if key.startswith("@"):
+            continue
+
+        if not (isinstance(value, dict) and "@value" in value):
+            # Non-annotated property — preserve on main node
+            main_node[key] = value
+            continue
+
+        prov = get_provenance(value)
+        has_annotations = any([
+            prov.confidence is not None,
+            prov.source is not None,
+            prov.extracted_at is not None,
+            prov.method is not None,
+            prov.human_verified is not None,
+            prov.measurement_uncertainty is not None,
+            prov.unit is not None,
+            prov.calibrated_at is not None,
+            prov.calibration_method is not None,
+            prov.calibration_authority is not None,
+            prov.aggregation_method is not None,
+            prov.aggregation_window is not None,
+            prov.aggregation_count is not None,
+        ])
+
+        if not has_annotations:
+            main_node[key] = value
+            continue
+
+        input_triples += 1
+        has_observations = True
+
+        # ── Create sosa:Observation ───────────────────────────────
+        obs_id = f"_:obs-{uuid.uuid4().hex[:8]}"
+        obs: dict[str, Any] = {
+            "@id": obs_id,
+            "@type": f"{SOSA}Observation",
+        }
+        output_triples += 1  # type
+
+        # FeatureOfInterest
+        obs[f"{SOSA}hasFeatureOfInterest"] = {"@id": foi_id}
+        output_triples += 1
+
+        # ObservableProperty from key
+        prop_id = key
+        obs[f"{SOSA}observedProperty"] = {"@id": prop_id}
+        output_triples += 1
+
+        obs_prop_node: dict[str, Any] = {
+            "@id": prop_id,
+            "@type": f"{SOSA}ObservableProperty",
+        }
+        graph_nodes.append(obs_prop_node)
+        output_triples += 1  # type
+
+        # ── Result ───────────────────────────────────────────
+        if prov.unit is not None:
+            # Structured result with QUDT unit
+            result_id = f"_:result-{uuid.uuid4().hex[:8]}"
+            result_node: dict[str, Any] = {
+                "@id": result_id,
+                "@type": f"{SOSA}Result",
+                f"{QUDT}numericValue": value["@value"],
+                f"{QUDT}unit": prov.unit,
+            }
+            obs[f"{SOSA}hasResult"] = {"@id": result_id}
+            graph_nodes.append(result_node)
+            output_triples += 4  # type + numericValue + unit + hasResult
+        else:
+            obs[f"{SOSA}hasSimpleResult"] = value["@value"]
+            output_triples += 1
+
+        # ── resultTime ───────────────────────────────────────
+        if prov.extracted_at is not None:
+            obs[f"{SOSA}resultTime"] = {
+                "@value": prov.extracted_at,
+                "@type": f"{XSD}dateTime",
+            }
+            output_triples += 1
+
+        # ── Confidence (jsonld-ex namespace, no SOSA equivalent) ───
+        if prov.confidence is not None:
+            obs[f"{JSONLD_EX}confidence"] = prov.confidence
+            output_triples += 1
+
+        # ── Sensor from @source ──────────────────────────────
+        sensor_node: dict[str, Any] | None = None
+        if prov.source is not None:
+            obs[f"{SOSA}madeBySensor"] = {"@id": prov.source}
+            output_triples += 1
+
+            if prov.source not in sensors_created:
+                sensor_node = {
+                    "@id": prov.source,
+                    "@type": f"{SOSA}Sensor",
+                }
+                sensors_created[prov.source] = sensor_node
+                output_triples += 1  # type
+            else:
+                sensor_node = sensors_created[prov.source]
+
+        # ── Procedure from @method or @aggregationMethod ────────
+        proc_label = prov.aggregation_method or prov.method
+        if proc_label is not None:
+            proc_id = f"_:proc-{uuid.uuid4().hex[:8]}"
+            proc_node: dict[str, Any] = {
+                "@id": proc_id,
+                "@type": f"{SOSA}Procedure",
+                f"{RDFS}label": proc_label,
+            }
+            output_triples += 2  # type + label
+
+            if prov.aggregation_window is not None:
+                proc_node[f"{JSONLD_EX}aggregationWindow"] = prov.aggregation_window
+                output_triples += 1
+            if prov.aggregation_count is not None:
+                proc_node[f"{JSONLD_EX}aggregationCount"] = prov.aggregation_count
+                output_triples += 1
+
+            obs[f"{SOSA}usedProcedure"] = {"@id": proc_id}
+            graph_nodes.append(proc_node)
+            output_triples += 1  # usedProcedure link
+
+        # ── SystemCapability on Sensor ────────────────────────
+        has_sys_cap = any([
+            prov.measurement_uncertainty is not None,
+            prov.calibrated_at is not None,
+            prov.calibration_method is not None,
+            prov.calibration_authority is not None,
+        ])
+        if has_sys_cap and sensor_node is not None:
+            cap_id = f"_:cap-{uuid.uuid4().hex[:8]}"
+            cap_node: dict[str, Any] = {
+                "@id": cap_id,
+                "@type": f"{SSN_SYSTEM}SystemCapability",
+            }
+            output_triples += 1  # type
+
+            # Accuracy
+            if prov.measurement_uncertainty is not None:
+                acc_id = f"_:acc-{uuid.uuid4().hex[:8]}"
+                acc_node: dict[str, Any] = {
+                    "@id": acc_id,
+                    "@type": f"{SSN_SYSTEM}Accuracy",
+                    f"{JSONLD_EX}value": prov.measurement_uncertainty,
+                }
+                cap_node[f"{SSN_SYSTEM}hasSystemProperty"] = {"@id": acc_id}
+                graph_nodes.append(acc_node)
+                output_triples += 3  # type + value + hasSystemProperty link
+
+            # Calibration properties
+            if prov.calibrated_at is not None:
+                cap_node[f"{JSONLD_EX}calibratedAt"] = prov.calibrated_at
+                output_triples += 1
+            if prov.calibration_method is not None:
+                cap_node[f"{JSONLD_EX}calibrationMethod"] = prov.calibration_method
+                output_triples += 1
+            if prov.calibration_authority is not None:
+                cap_node[f"{JSONLD_EX}calibrationAuthority"] = prov.calibration_authority
+                output_triples += 1
+
+            sensor_node[f"{SSN_SYSTEM}hasSystemCapability"] = {"@id": cap_id}
+            graph_nodes.append(cap_node)
+            output_triples += 1  # hasSystemCapability link
+
+        graph_nodes.append(obs)
+        report.nodes_converted += 1
+
+    # Add sensor nodes (deduped)
+    for s in sensors_created.values():
+        graph_nodes.append(s)
+
+    # Add FOI if we emitted observations
+    if has_observations:
+        graph_nodes.append(foi_node)
+
+    # Add main node (non-annotated properties)
+    if main_node:
+        graph_nodes.insert(0, main_node)
+
+    report.triples_input = input_triples
+    report.triples_output = output_triples
+
+    return {"@context": ssn_context, "@graph": graph_nodes}, report
+
+
+def from_ssn(ssn_doc: dict[str, Any]) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert SSN/SOSA observation graph back to jsonld-ex annotations.
+
+    Parses SOSA Observation nodes and extracts annotation fields that
+    map to jsonld-ex keys.  Information not representable in jsonld-ex
+    (e.g. sosa:Platform, ssn:Deployment) is logged as warnings.
+
+    Args:
+        ssn_doc: A JSON-LD document using SSN/SOSA vocabulary.
+
+    Returns:
+        Tuple of (jsonld-ex annotated document, ConversionReport).
+    """
+    report = ConversionReport(success=True)
+
+    graph = ssn_doc.get("@graph", [])
+    if not isinstance(graph, list):
+        graph = [graph]
+
+    # Index all nodes by @id
+    nodes_by_id: dict[str, dict] = {}
+    for node in graph:
+        if isinstance(node, dict) and "@id" in node:
+            nodes_by_id[node["@id"]] = node
+
+    # Find Observation nodes
+    obs_type = f"{SOSA}Observation"
+    observations: list[dict] = []
+    for node in graph:
+        if not isinstance(node, dict):
+            continue
+        nt = node.get("@type", [])
+        if isinstance(nt, str):
+            nt = [nt]
+        if obs_type in nt:
+            observations.append(node)
+
+    if not observations:
+        report.success = False
+        report.errors.append("No sosa:Observation found in graph")
+        return ssn_doc, report
+
+    # Determine parent node from FeatureOfInterest of first observation
+    result_doc: dict[str, Any] = {"@context": ssn_doc.get("@context", {})}
+
+    first_obs = observations[0]
+    foi_ref = (
+        first_obs.get(f"{SOSA}hasFeatureOfInterest")
+        or first_obs.get("sosa:hasFeatureOfInterest")
+    )
+    if foi_ref is not None:
+        foi_id = foi_ref.get("@id") if isinstance(foi_ref, dict) else foi_ref
+        result_doc["@id"] = foi_id
+        # Try to recover original @type from FOI node
+        foi_node = nodes_by_id.get(foi_id)
+        if foi_node is not None:
+            foi_types = foi_node.get("@type", [])
+            if isinstance(foi_types, str):
+                foi_types = [foi_types]
+            non_sosa_types = [
+                t for t in foi_types if t != f"{SOSA}FeatureOfInterest"
+            ]
+            if non_sosa_types:
+                result_doc["@type"] = (
+                    non_sosa_types[0] if len(non_sosa_types) == 1
+                    else non_sosa_types
+                )
+
+    # Convert each observation to an annotated property
+    for obs in observations:
+        annotated = _observation_to_annotation(obs, nodes_by_id, report)
+        if annotated is not None:
+            prop_key, ann_value = annotated
+            result_doc[prop_key] = ann_value
+            report.nodes_converted += 1
+
+    # Warn on unsupported SOSA node types present in the graph
+    unsupported_sosa_types = [
+        (f"{SOSA}Platform", "Platform"),
+        (f"{SOSA}Actuator", "Actuator"),
+        (f"{SOSA}Actuation", "Actuation"),
+        (f"{SOSA}Sample", "Sample"),
+        (f"{SOSA}Sampling", "Sampling"),
+        (f"{SOSA}Sampler", "Sampler"),
+    ]
+    for node in graph:
+        if not isinstance(node, dict):
+            continue
+        nt = node.get("@type", [])
+        if isinstance(nt, str):
+            nt = [nt]
+        for type_iri, label in unsupported_sosa_types:
+            if type_iri in nt:
+                report.warnings.append(
+                    f"SOSA {label} node '{node.get('@id', 'anonymous')}' "
+                    f"has no jsonld-ex equivalent (dropped)"
+                )
+
+    return result_doc, report
+
+
+def _observation_to_annotation(
+    obs: dict[str, Any],
+    all_nodes: dict[str, dict[str, Any]],
+    report: ConversionReport,
+) -> tuple[str, dict[str, Any]] | None:
+    """Convert a single SOSA Observation to a (property_key, annotated_value) pair."""
+
+    # Determine the property key from sosa:observedProperty
+    obs_prop = (
+        obs.get(f"{SOSA}observedProperty")
+        or obs.get("sosa:observedProperty")
+    )
+    if obs_prop is None:
+        report.warnings.append(
+            f"Observation '{obs.get('@id', '?')}' has no sosa:observedProperty — skipped"
+        )
+        return None
+    prop_key = obs_prop.get("@id") if isinstance(obs_prop, dict) else obs_prop
+
+    # Extract value from hasSimpleResult or hasResult
+    result_value: Any = None
+    unit: str | None = None
+
+    simple = (
+        obs.get(f"{SOSA}hasSimpleResult")
+        or obs.get("sosa:hasSimpleResult")
+    )
+    structured = (
+        obs.get(f"{SOSA}hasResult")
+        or obs.get("sosa:hasResult")
+    )
+
+    if structured is not None:
+        result_id = structured.get("@id") if isinstance(structured, dict) else structured
+        result_node = all_nodes.get(result_id) if result_id else None
+        if result_node is not None:
+            result_value = (
+                result_node.get(f"{QUDT}numericValue")
+                or result_node.get("qudt:numericValue")
+            )
+            unit = (
+                result_node.get(f"{QUDT}unit")
+                or result_node.get("qudt:unit")
+            )
+    elif simple is not None:
+        result_value = simple
+
+    if result_value is None:
+        report.warnings.append(
+            f"Observation '{obs.get('@id', '?')}' has no result value — skipped"
+        )
+        return None
+
+    # Build annotated value
+    annotated: dict[str, Any] = {"@value": result_value}
+
+    if unit is not None:
+        annotated["@unit"] = unit
+
+    # Confidence
+    conf = (
+        obs.get(f"{JSONLD_EX}confidence")
+        or obs.get("jsonld-ex:confidence")
+    )
+    if conf is not None:
+        annotated["@confidence"] = conf if not isinstance(conf, dict) else conf.get("@value", conf)
+
+    # Source from madeBySensor
+    sensor_ref = (
+        obs.get(f"{SOSA}madeBySensor")
+        or obs.get("sosa:madeBySensor")
+    )
+    if sensor_ref is not None:
+        sensor_id = sensor_ref.get("@id") if isinstance(sensor_ref, dict) else sensor_ref
+        annotated["@source"] = sensor_id
+
+        # Check sensor for SystemCapability → Accuracy
+        sensor_node = all_nodes.get(sensor_id)
+        if sensor_node is not None:
+            cap_ref = (
+                sensor_node.get(f"{SSN_SYSTEM}hasSystemCapability")
+                or sensor_node.get("ssn-system:hasSystemCapability")
+            )
+            if cap_ref is not None:
+                cap_id = cap_ref.get("@id") if isinstance(cap_ref, dict) else cap_ref
+                cap_node = all_nodes.get(cap_id)
+                if cap_node is not None:
+                    # Extract Accuracy
+                    sys_prop_ref = (
+                        cap_node.get(f"{SSN_SYSTEM}hasSystemProperty")
+                        or cap_node.get("ssn-system:hasSystemProperty")
+                    )
+                    if sys_prop_ref is not None:
+                        sp_id = sys_prop_ref.get("@id") if isinstance(sys_prop_ref, dict) else sys_prop_ref
+                        sp_node = all_nodes.get(sp_id)
+                        if sp_node is not None:
+                            sp_types = sp_node.get("@type", [])
+                            if isinstance(sp_types, str):
+                                sp_types = [sp_types]
+                            if f"{SSN_SYSTEM}Accuracy" in sp_types:
+                                acc_val = (
+                                    sp_node.get(f"{JSONLD_EX}value")
+                                    or sp_node.get("jsonld-ex:value")
+                                )
+                                if acc_val is not None:
+                                    annotated["@measurementUncertainty"] = acc_val
+
+    # ExtractedAt from resultTime
+    result_time = (
+        obs.get(f"{SOSA}resultTime")
+        or obs.get("sosa:resultTime")
+    )
+    if result_time is not None:
+        if isinstance(result_time, dict) and "@value" in result_time:
+            annotated["@extractedAt"] = result_time["@value"]
+        else:
+            annotated["@extractedAt"] = result_time
+
+    # Method from usedProcedure
+    proc_ref = (
+        obs.get(f"{SOSA}usedProcedure")
+        or obs.get("sosa:usedProcedure")
+    )
+    if proc_ref is not None:
+        proc_id = proc_ref.get("@id") if isinstance(proc_ref, dict) else proc_ref
+        proc_node = all_nodes.get(proc_id)
+        if proc_node is not None:
+            label = (
+                proc_node.get(f"{RDFS}label")
+                or proc_node.get("rdfs:label")
+            )
+            if label is not None:
+                method_str = label if not isinstance(label, dict) else label.get("@value", label)
+                annotated["@method"] = method_str
+
+    return prop_key, annotated
 
 
 # ═══════════════════════════════════════════════════════════════════
