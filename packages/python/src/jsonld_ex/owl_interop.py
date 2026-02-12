@@ -962,9 +962,19 @@ def shape_to_owl_restrictions(
     """Convert jsonld-ex @shape to OWL class restrictions.
 
     Mapping:
-        @required           → owl:minCardinality 1
-        @type (xsd)         → owl:allValuesFrom + xsd:datatype
-        @minimum/@maximum   → owl:onDataRange with xsd:minInclusive/maxInclusive
+        @required               → owl:minCardinality 1
+        @minCount               → owl:minCardinality (takes precedence over @required)
+        @maxCount               → owl:maxCardinality
+        @type (xsd)             → owl:allValuesFrom + xsd:datatype
+        @minimum/@maximum       → owl:DatatypeRestriction + xsd:minInclusive/maxInclusive
+        @minLength/@maxLength   → owl:DatatypeRestriction + xsd:minLength/maxLength
+        @pattern                → owl:DatatypeRestriction + xsd:pattern
+        @in                     → owl:allValuesFrom + owl:oneOf
+
+    When @type is combined with any facets above, they merge into a single
+    OWL 2 DatatypeRestriction (§7.5 of the OWL 2 Structural Specification).
+    When facets appear without @type, the base datatype defaults to
+    xsd:string (for string facets) or xsd:decimal (for numeric facets).
 
     Args:
         shape: A jsonld-ex @shape definition dict.
@@ -985,31 +995,185 @@ def shape_to_owl_restrictions(
     }
 
     restrictions = []
+    unmappable_annotations: list[dict[str, Any]] = []
 
     for prop_name, constraint in shape.items():
         if prop_name.startswith("@") or not isinstance(constraint, dict):
             continue
 
-        # @required → owl:minCardinality
-        if constraint.get("@required"):
+        # Cardinality: @required / @minCount / @maxCount
+        # @minCount takes precedence over @required when both are present.
+        min_card = constraint.get("@minCount")
+        if min_card is None and constraint.get("@required"):
+            min_card = 1
+
+        if min_card is not None:
             restrictions.append({
                 "@type": f"{OWL}Restriction",
                 f"{OWL}onProperty": {"@id": prop_name},
                 f"{OWL}minCardinality": {
-                    "@value": 1,
+                    "@value": min_card,
                     "@type": f"{XSD}nonNegativeInteger",
                 },
             })
 
-        # @type → owl:allValuesFrom
-        xsd_type = constraint.get("@type")
-        if xsd_type:
-            resolved = xsd_type.replace("xsd:", XSD) if xsd_type.startswith("xsd:") else xsd_type
+        if "@maxCount" in constraint:
             restrictions.append({
                 "@type": f"{OWL}Restriction",
                 f"{OWL}onProperty": {"@id": prop_name},
-                f"{OWL}allValuesFrom": {"@id": resolved},
+                f"{OWL}maxCardinality": {
+                    "@value": constraint["@maxCount"],
+                    "@type": f"{XSD}nonNegativeInteger",
+                },
             })
+
+        # @type and/or XSD facets → owl:allValuesFrom
+        # When @type is combined with constraining facets, they merge into
+        # a single OWL 2 DatatypeRestriction (§7.5 of the structural spec).
+        # Supported facets: @minimum/@maximum (numeric), @minLength/@maxLength
+        # (string length), @pattern (regex).
+        xsd_type = constraint.get("@type")
+
+        # Collect all XSD constraining facets present on this property
+        facets: list[dict[str, Any]] = []
+        if "@minimum" in constraint:
+            facets.append({f"{XSD}minInclusive": constraint["@minimum"]})
+        if "@maximum" in constraint:
+            facets.append({f"{XSD}maxInclusive": constraint["@maximum"]})
+        if "@minLength" in constraint:
+            facets.append({f"{XSD}minLength": constraint["@minLength"]})
+        if "@maxLength" in constraint:
+            facets.append({f"{XSD}maxLength": constraint["@maxLength"]})
+        if "@pattern" in constraint:
+            facets.append({f"{XSD}pattern": constraint["@pattern"]})
+
+        if xsd_type:
+            resolved = xsd_type.replace("xsd:", XSD) if xsd_type.startswith("xsd:") else xsd_type
+
+            if facets:
+                # Combined: type + facets → DatatypeRestriction
+                restrictions.append({
+                    "@type": f"{OWL}Restriction",
+                    f"{OWL}onProperty": {"@id": prop_name},
+                    f"{OWL}allValuesFrom": {
+                        "@type": f"{RDFS}Datatype",
+                        f"{OWL}onDatatype": {"@id": resolved},
+                        f"{OWL}withRestrictions": {"@list": facets},
+                    },
+                })
+            else:
+                # Simple type restriction (no facets)
+                restrictions.append({
+                    "@type": f"{OWL}Restriction",
+                    f"{OWL}onProperty": {"@id": prop_name},
+                    f"{OWL}allValuesFrom": {"@id": resolved},
+                })
+        elif facets:
+            # Facets without explicit @type → default to xsd:string for
+            # string facets (minLength/maxLength/pattern), xsd:decimal
+            # for numeric facets (minimum/maximum).
+            has_string_facets = any(
+                f"{XSD}{k}" in f
+                for f in facets
+                for k in ("minLength", "maxLength", "pattern")
+            )
+            default_dt = f"{XSD}string" if has_string_facets else f"{XSD}decimal"
+
+            restrictions.append({
+                "@type": f"{OWL}Restriction",
+                f"{OWL}onProperty": {"@id": prop_name},
+                f"{OWL}allValuesFrom": {
+                    "@type": f"{RDFS}Datatype",
+                    f"{OWL}onDatatype": {"@id": default_dt},
+                    f"{OWL}withRestrictions": {"@list": facets},
+                },
+            })
+
+        # @in → owl:allValuesFrom + owl:oneOf (enumerated datarange)
+        if "@in" in constraint:
+            restrictions.append({
+                "@type": f"{OWL}Restriction",
+                f"{OWL}onProperty": {"@id": prop_name},
+                f"{OWL}allValuesFrom": {
+                    "@type": f"{RDFS}Datatype",
+                    f"{OWL}oneOf": {"@list": constraint["@in"]},
+                },
+            })
+
+        # @or/@and/@not → OWL 2 DataRange expressions (§7 of OWL 2 spec)
+        # @or  → owl:allValuesFrom with owl:unionOf
+        # @and → owl:allValuesFrom with owl:intersectionOf
+        # @not → owl:allValuesFrom with owl:datatypeComplementOf
+        if "@or" in constraint:
+            members = [_constraint_to_owl_datarange(b) for b in constraint["@or"]]
+            restrictions.append({
+                "@type": f"{OWL}Restriction",
+                f"{OWL}onProperty": {"@id": prop_name},
+                f"{OWL}allValuesFrom": {
+                    "@type": f"{RDFS}Datatype",
+                    f"{OWL}unionOf": {"@list": members},
+                },
+            })
+
+        if "@and" in constraint:
+            members = [_constraint_to_owl_datarange(b) for b in constraint["@and"]]
+            restrictions.append({
+                "@type": f"{OWL}Restriction",
+                f"{OWL}onProperty": {"@id": prop_name},
+                f"{OWL}allValuesFrom": {
+                    "@type": f"{RDFS}Datatype",
+                    f"{OWL}intersectionOf": {"@list": members},
+                },
+            })
+
+        if "@not" in constraint:
+            complement = _constraint_to_owl_datarange(constraint["@not"])
+            restrictions.append({
+                "@type": f"{OWL}Restriction",
+                f"{OWL}onProperty": {"@id": prop_name},
+                f"{OWL}allValuesFrom": {
+                    "@type": f"{RDFS}Datatype",
+                    f"{OWL}datatypeComplementOf": complement,
+                },
+            })
+
+        # Task 7: Unmappable constraints → preserve in jex: namespace
+        # These constraints have no OWL property-restriction equivalent.
+        _UNMAPPABLE_KEYS = {
+            "@lessThan": "lessThan",
+            "@lessThanOrEquals": "lessThanOrEquals",
+            "@equals": "equals",
+            "@disjoint": "disjoint",
+            "@severity": "severity",
+        }
+        for shape_key, jex_local in _UNMAPPABLE_KEYS.items():
+            if shape_key in constraint:
+                unmappable_annotations.append({
+                    "property": prop_name,
+                    "key": f"{JSONLD_EX}{jex_local}",
+                    "value": constraint[shape_key],
+                })
+
+        # @if/@then/@else → no OWL equivalent, preserve entire conditional
+        if "@if" in constraint:
+            cond: dict[str, Any] = {"@if": constraint["@if"]}
+            if "@then" in constraint:
+                cond["@then"] = constraint["@then"]
+            if "@else" in constraint:
+                cond["@else"] = constraint["@else"]
+            unmappable_annotations.append({
+                "property": prop_name,
+                "key": f"{JSONLD_EX}conditional",
+                "value": cond,
+            })
+
+    # Task 6: @extends → rdfs:subClassOf parent class IRI(s)
+    extends_raw = shape.get("@extends")
+    if extends_raw is not None:
+        parents = extends_raw if isinstance(extends_raw, list) else [extends_raw]
+        for parent in parents:
+            parent_iri = parent if isinstance(parent, str) else parent.get("@type", parent)
+            restrictions.append({"@id": parent_iri})
 
     # Build OWL class with restrictions as superclasses
     owl_class: dict[str, Any] = {
@@ -1018,6 +1182,10 @@ def shape_to_owl_restrictions(
     }
     if restrictions:
         owl_class[f"{RDFS}subClassOf"] = restrictions if len(restrictions) > 1 else restrictions[0]
+
+    # Attach unmappable constraint annotations on the OWL class
+    for ann in unmappable_annotations:
+        owl_class[ann["key"]] = ann["value"]
 
     return {
         "@context": owl_context,
@@ -1756,6 +1924,83 @@ def compare_with_shacl(shape: dict[str, Any]) -> VerbosityComparison:
 
 
 # ── Internal Helpers ───────────────────────────────────────────────
+
+
+def _constraint_to_owl_datarange(constraint: dict[str, Any]) -> dict[str, Any]:
+    """Convert a single jsonld-ex constraint branch to an OWL 2 DataRange.
+
+    Used by @or/@and/@not to recursively convert each branch into the
+    appropriate OWL 2 data range expression (§7 of the OWL 2 Structural
+    Specification).
+
+    Returns:
+        - Simple IRI ref ``{"@id": xsd:...}`` when only @type is present.
+        - DatatypeRestriction ``{"@type": rdfs:Datatype, owl:onDatatype: ...,
+          owl:withRestrictions: ...}`` when @type + facets are present.
+        - Facet-only DatatypeRestriction (defaults to xsd:string or xsd:decimal)
+          when only facets are present.
+        - Nested DataRange for recursive @or/@and/@not.
+    """
+    xsd_type = constraint.get("@type")
+
+    # Collect XSD constraining facets
+    facets: list[dict[str, Any]] = []
+    if "@minimum" in constraint:
+        facets.append({f"{XSD}minInclusive": constraint["@minimum"]})
+    if "@maximum" in constraint:
+        facets.append({f"{XSD}maxInclusive": constraint["@maximum"]})
+    if "@minLength" in constraint:
+        facets.append({f"{XSD}minLength": constraint["@minLength"]})
+    if "@maxLength" in constraint:
+        facets.append({f"{XSD}maxLength": constraint["@maxLength"]})
+    if "@pattern" in constraint:
+        facets.append({f"{XSD}pattern": constraint["@pattern"]})
+
+    # Recursive combinators
+    if "@or" in constraint:
+        members = [_constraint_to_owl_datarange(b) for b in constraint["@or"]]
+        return {
+            "@type": f"{RDFS}Datatype",
+            f"{OWL}unionOf": {"@list": members},
+        }
+    if "@and" in constraint:
+        members = [_constraint_to_owl_datarange(b) for b in constraint["@and"]]
+        return {
+            "@type": f"{RDFS}Datatype",
+            f"{OWL}intersectionOf": {"@list": members},
+        }
+    if "@not" in constraint:
+        complement = _constraint_to_owl_datarange(constraint["@not"])
+        return {
+            "@type": f"{RDFS}Datatype",
+            f"{OWL}datatypeComplementOf": complement,
+        }
+
+    if xsd_type:
+        resolved = xsd_type.replace("xsd:", XSD) if xsd_type.startswith("xsd:") else xsd_type
+        if facets:
+            return {
+                "@type": f"{RDFS}Datatype",
+                f"{OWL}onDatatype": {"@id": resolved},
+                f"{OWL}withRestrictions": {"@list": facets},
+            }
+        return {"@id": resolved}
+
+    if facets:
+        has_string_facets = any(
+            f"{XSD}{k}" in f
+            for f in facets
+            for k in ("minLength", "maxLength", "pattern")
+        )
+        default_dt = f"{XSD}string" if has_string_facets else f"{XSD}decimal"
+        return {
+            "@type": f"{RDFS}Datatype",
+            f"{OWL}onDatatype": {"@id": default_dt},
+            f"{OWL}withRestrictions": {"@list": facets},
+        }
+
+    # Fallback: return empty datatype node
+    return {"@type": f"{RDFS}Datatype"}
 
 
 def _constraint_to_shacl(constraint: dict[str, Any]) -> dict[str, Any]:

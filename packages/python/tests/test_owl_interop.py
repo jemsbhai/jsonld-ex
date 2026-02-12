@@ -14,6 +14,7 @@ from jsonld_ex.owl_interop import (
     SSN,
     SSN_SYSTEM,
     QUDT,
+    JSONLD_EX,
     ConversionReport,
     VerbosityComparison,
     to_prov_o,
@@ -844,6 +845,646 @@ class TestShapeToOwl:
     def test_no_type_raises(self):
         with pytest.raises(ValueError, match="@type"):
             shape_to_owl_restrictions({"name": {"@required": True}})
+
+    def test_minimum_maximum_with_type_produces_datatype_restriction(self):
+        """@type + @minimum/@maximum → combined DatatypeRestriction."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/age": {
+                "@type": "xsd:integer",
+                "@minimum": 0,
+                "@maximum": 150,
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        restriction = cls[f"{RDFS}subClassOf"]
+        # Single restriction (combined, not two separate ones)
+        if isinstance(restriction, list):
+            restriction = restriction[0]
+
+        avf = restriction[f"{OWL}allValuesFrom"]
+        # Should be a DatatypeRestriction, not a simple IRI
+        assert isinstance(avf, dict)
+        assert avf["@type"] == f"{RDFS}Datatype"
+        assert avf[f"{OWL}onDatatype"]["@id"] == f"{XSD}integer"
+
+        facets = avf[f"{OWL}withRestrictions"]["@list"]
+        assert len(facets) == 2
+        assert any(f"{XSD}minInclusive" in f for f in facets)
+        assert any(f"{XSD}maxInclusive" in f for f in facets)
+        min_facet = next(f for f in facets if f"{XSD}minInclusive" in f)
+        max_facet = next(f for f in facets if f"{XSD}maxInclusive" in f)
+        assert min_facet[f"{XSD}minInclusive"] == 0
+        assert max_facet[f"{XSD}maxInclusive"] == 150
+
+    def test_minimum_only_without_type_defaults_to_decimal(self):
+        """@minimum without @type → DatatypeRestriction on xsd:decimal."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/score": {
+                "@minimum": 0,
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        restriction = cls[f"{RDFS}subClassOf"]
+        if isinstance(restriction, list):
+            restriction = restriction[0]
+
+        avf = restriction[f"{OWL}allValuesFrom"]
+        assert avf["@type"] == f"{RDFS}Datatype"
+        assert avf[f"{OWL}onDatatype"]["@id"] == f"{XSD}decimal"
+
+        facets = avf[f"{OWL}withRestrictions"]["@list"]
+        assert len(facets) == 1
+        assert facets[0][f"{XSD}minInclusive"] == 0
+
+    def test_maximum_only_without_type_defaults_to_decimal(self):
+        """@maximum without @type → DatatypeRestriction on xsd:decimal."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/score": {
+                "@maximum": 100,
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        restriction = cls[f"{RDFS}subClassOf"]
+        if isinstance(restriction, list):
+            restriction = restriction[0]
+
+        avf = restriction[f"{OWL}allValuesFrom"]
+        assert avf[f"{OWL}onDatatype"]["@id"] == f"{XSD}decimal"
+        facets = avf[f"{OWL}withRestrictions"]["@list"]
+        assert len(facets) == 1
+        assert facets[0][f"{XSD}maxInclusive"] == 100
+
+    def test_minimum_maximum_without_type(self):
+        """@minimum + @maximum without @type → both facets, xsd:decimal base."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/score": {
+                "@minimum": 0,
+                "@maximum": 100,
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        restriction = cls[f"{RDFS}subClassOf"]
+        if isinstance(restriction, list):
+            restriction = restriction[0]
+
+        avf = restriction[f"{OWL}allValuesFrom"]
+        assert avf[f"{OWL}onDatatype"]["@id"] == f"{XSD}decimal"
+        facets = avf[f"{OWL}withRestrictions"]["@list"]
+        assert len(facets) == 2
+
+    def test_mincount_produces_min_cardinality(self):
+        """@minCount → owl:minCardinality with explicit value."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/tags": {
+                "@minCount": 2,
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        restriction = cls[f"{RDFS}subClassOf"]
+        if isinstance(restriction, list):
+            restriction = restriction[0]
+        assert restriction[f"{OWL}minCardinality"]["@value"] == 2
+
+    def test_maxcount_produces_max_cardinality(self):
+        """@maxCount → owl:maxCardinality."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/tags": {
+                "@maxCount": 5,
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        restriction = cls[f"{RDFS}subClassOf"]
+        if isinstance(restriction, list):
+            restriction = restriction[0]
+        assert restriction[f"{OWL}maxCardinality"]["@value"] == 5
+
+    def test_mincount_maxcount_together(self):
+        """@minCount + @maxCount → two separate restrictions."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/tags": {
+                "@minCount": 1,
+                "@maxCount": 10,
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        restrictions = cls[f"{RDFS}subClassOf"]
+        assert isinstance(restrictions, list)
+        assert len(restrictions) == 2
+        has_min = any(f"{OWL}minCardinality" in r for r in restrictions)
+        has_max = any(f"{OWL}maxCardinality" in r for r in restrictions)
+        assert has_min and has_max
+
+    def test_mincount_overrides_required(self):
+        """@minCount takes precedence over @required."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/tags": {
+                "@required": True,
+                "@minCount": 3,
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        restrictions = cls[f"{RDFS}subClassOf"]
+        if not isinstance(restrictions, list):
+            restrictions = [restrictions]
+        min_cards = [
+            r for r in restrictions if f"{OWL}minCardinality" in r
+        ]
+        # Should be exactly ONE minCardinality restriction with value 3 (not 1)
+        assert len(min_cards) == 1
+        assert min_cards[0][f"{OWL}minCardinality"]["@value"] == 3
+
+    def test_in_produces_one_of(self):
+        """@in → owl:allValuesFrom + owl:oneOf."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/status": {
+                "@in": ["active", "inactive", "pending"],
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        restriction = cls[f"{RDFS}subClassOf"]
+        if isinstance(restriction, list):
+            restriction = restriction[0]
+        avf = restriction[f"{OWL}allValuesFrom"]
+        assert avf["@type"] == f"{RDFS}Datatype"
+        assert avf[f"{OWL}oneOf"]["@list"] == ["active", "inactive", "pending"]
+
+    def test_in_with_numeric_values(self):
+        """@in with numeric values → owl:oneOf with numbers."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/priority": {
+                "@in": [1, 2, 3, 5, 8],
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        restriction = cls[f"{RDFS}subClassOf"]
+        if isinstance(restriction, list):
+            restriction = restriction[0]
+        one_of = restriction[f"{OWL}allValuesFrom"][f"{OWL}oneOf"]["@list"]
+        assert one_of == [1, 2, 3, 5, 8]
+
+    def test_in_combined_with_type_produces_both_restrictions(self):
+        """@in + @type → separate allValuesFrom (type) and oneOf restrictions."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/status": {
+                "@type": "xsd:string",
+                "@in": ["active", "inactive"],
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        restrictions = cls[f"{RDFS}subClassOf"]
+        assert isinstance(restrictions, list)
+        assert len(restrictions) == 2
+        has_type = any(
+            f"{OWL}allValuesFrom" in r
+            and isinstance(r[f"{OWL}allValuesFrom"], dict)
+            and r[f"{OWL}allValuesFrom"].get("@id") == f"{XSD}string"
+            for r in restrictions
+        )
+        has_oneof = any(
+            f"{OWL}allValuesFrom" in r
+            and isinstance(r[f"{OWL}allValuesFrom"], dict)
+            and f"{OWL}oneOf" in r[f"{OWL}allValuesFrom"]
+            for r in restrictions
+        )
+        assert has_type and has_oneof
+
+    def test_minlength_maxlength_with_type(self):
+        """@type + @minLength/@maxLength → DatatypeRestriction with string facets."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/name": {
+                "@type": "xsd:string",
+                "@minLength": 1,
+                "@maxLength": 100,
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        restriction = cls[f"{RDFS}subClassOf"]
+        if isinstance(restriction, list):
+            restriction = restriction[0]
+
+        avf = restriction[f"{OWL}allValuesFrom"]
+        assert avf["@type"] == f"{RDFS}Datatype"
+        assert avf[f"{OWL}onDatatype"]["@id"] == f"{XSD}string"
+        facets = avf[f"{OWL}withRestrictions"]["@list"]
+        assert len(facets) == 2
+        assert any(f"{XSD}minLength" in f for f in facets)
+        assert any(f"{XSD}maxLength" in f for f in facets)
+
+    def test_pattern_with_type(self):
+        """@type + @pattern → DatatypeRestriction with xsd:pattern facet."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/email": {
+                "@type": "xsd:string",
+                "@pattern": "^[^@]+@[^@]+$",
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        restriction = cls[f"{RDFS}subClassOf"]
+        if isinstance(restriction, list):
+            restriction = restriction[0]
+
+        avf = restriction[f"{OWL}allValuesFrom"]
+        assert avf["@type"] == f"{RDFS}Datatype"
+        facets = avf[f"{OWL}withRestrictions"]["@list"]
+        assert len(facets) == 1
+        pattern_facet = facets[0]
+        assert pattern_facet[f"{XSD}pattern"] == "^[^@]+@[^@]+$"
+
+    def test_string_facets_without_type_defaults_to_string(self):
+        """@minLength without @type → DatatypeRestriction on xsd:string."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/code": {
+                "@minLength": 3,
+                "@maxLength": 10,
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        restriction = cls[f"{RDFS}subClassOf"]
+        if isinstance(restriction, list):
+            restriction = restriction[0]
+
+        avf = restriction[f"{OWL}allValuesFrom"]
+        # String facets should default to xsd:string, NOT xsd:decimal
+        assert avf[f"{OWL}onDatatype"]["@id"] == f"{XSD}string"
+
+    def test_all_facets_combined(self):
+        """All five facets on one property → single DatatypeRestriction."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/field": {
+                "@type": "xsd:string",
+                "@minimum": 0,
+                "@maximum": 999,
+                "@minLength": 1,
+                "@maxLength": 50,
+                "@pattern": "^[A-Z]",
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        restriction = cls[f"{RDFS}subClassOf"]
+        if isinstance(restriction, list):
+            restriction = restriction[0]
+
+        avf = restriction[f"{OWL}allValuesFrom"]
+        facets = avf[f"{OWL}withRestrictions"]["@list"]
+        assert len(facets) == 5
+
+    def test_type_only_still_simple_all_values_from(self):
+        """@type alone (no min/max) → simple owl:allValuesFrom (regression)."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/name": {
+                "@type": "xsd:string",
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        restriction = cls[f"{RDFS}subClassOf"]
+        if isinstance(restriction, list):
+            restriction = restriction[0]
+
+        avf = restriction[f"{OWL}allValuesFrom"]
+        # Should be a simple IRI reference, NOT a DatatypeRestriction dict
+        assert avf == {"@id": f"{XSD}string"}
+
+    def test_person_shape_age_combined_restriction(self, person_shape):
+        """person_shape.age has @type + @minimum + @maximum → combined."""
+        owl = shape_to_owl_restrictions(person_shape)
+        cls = owl["@graph"][0]
+        restrictions = cls[f"{RDFS}subClassOf"]
+        if not isinstance(restrictions, list):
+            restrictions = [restrictions]
+
+        # Find the age restriction (the one with DatatypeRestriction on integer)
+        age_restrictions = [
+            r for r in restrictions
+            if r.get(f"{OWL}onProperty", {}).get("@id") == "http://schema.org/age"
+        ]
+        # Should have exactly ONE restriction for age (combined), not two
+        avf_age = [r for r in age_restrictions if f"{OWL}allValuesFrom" in r]
+        assert len(avf_age) == 1
+
+        avf = avf_age[0][f"{OWL}allValuesFrom"]
+        assert avf["@type"] == f"{RDFS}Datatype"
+        assert avf[f"{OWL}onDatatype"]["@id"] == f"{XSD}integer"
+
+    # -- Task 5: @or/@and/@not → OWL DataRange expressions -------------------
+
+    def test_or_produces_union_of(self):
+        """@or → owl:Restriction with owl:allValuesFrom → owl:unionOf."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/value": {
+                "@or": [
+                    {"@type": "xsd:string"},
+                    {"@type": "xsd:integer"},
+                ],
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        restriction = cls[f"{RDFS}subClassOf"]
+        assert restriction["@type"] == f"{OWL}Restriction"
+        assert restriction[f"{OWL}onProperty"]["@id"] == "http://example.org/value"
+
+        avf = restriction[f"{OWL}allValuesFrom"]
+        assert avf["@type"] == f"{RDFS}Datatype"
+        assert f"{OWL}unionOf" in avf
+
+        members = avf[f"{OWL}unionOf"]["@list"]
+        assert len(members) == 2
+        # Each branch should resolve to a datatype IRI
+        member_ids = [m["@id"] if isinstance(m, dict) and "@id" in m else m for m in members]
+        assert f"{XSD}string" in member_ids
+        assert f"{XSD}integer" in member_ids
+
+    def test_and_produces_intersection_of(self):
+        """@and → owl:Restriction with owl:allValuesFrom → owl:intersectionOf."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/value": {
+                "@and": [
+                    {"@minimum": 0},
+                    {"@maximum": 100},
+                ],
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        # Should have 1 restriction from @and (facet-only branches also
+        # produce individual restrictions, so we look for the intersectionOf)
+        restrictions = cls.get(f"{RDFS}subClassOf", [])
+        if not isinstance(restrictions, list):
+            restrictions = [restrictions]
+
+        # Find the restriction that has intersectionOf
+        intersect_r = [
+            r for r in restrictions
+            if isinstance(r.get(f"{OWL}allValuesFrom"), dict)
+            and f"{OWL}intersectionOf" in r.get(f"{OWL}allValuesFrom", {})
+        ]
+        assert len(intersect_r) == 1
+
+        avf = intersect_r[0][f"{OWL}allValuesFrom"]
+        assert avf["@type"] == f"{RDFS}Datatype"
+        members = avf[f"{OWL}intersectionOf"]["@list"]
+        assert len(members) == 2
+
+    def test_not_produces_complement_of(self):
+        """@not → owl:Restriction with owl:allValuesFrom → owl:complementOf."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/value": {
+                "@not": {"@type": "xsd:boolean"},
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        restriction = cls[f"{RDFS}subClassOf"]
+        assert restriction["@type"] == f"{OWL}Restriction"
+
+        avf = restriction[f"{OWL}allValuesFrom"]
+        assert avf["@type"] == f"{RDFS}Datatype"
+        assert f"{OWL}datatypeComplementOf" in avf
+
+        complement = avf[f"{OWL}datatypeComplementOf"]
+        assert complement["@id"] == f"{XSD}boolean"
+
+    def test_or_with_faceted_branches(self):
+        """@or with branches containing facets → unionOf DatatypeRestrictions."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/code": {
+                "@or": [
+                    {"@type": "xsd:string", "@minLength": 3},
+                    {"@type": "xsd:integer", "@minimum": 100},
+                ],
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        restriction = cls[f"{RDFS}subClassOf"]
+        avf = restriction[f"{OWL}allValuesFrom"]
+        members = avf[f"{OWL}unionOf"]["@list"]
+        assert len(members) == 2
+        # Each member should be a DatatypeRestriction (has onDatatype + withRestrictions)
+        for m in members:
+            assert isinstance(m, dict)
+            assert f"{OWL}onDatatype" in m
+            assert f"{OWL}withRestrictions" in m
+
+    def test_nested_or_and(self):
+        """Nested @or containing @and → recursive data range construction."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/value": {
+                "@or": [
+                    {"@type": "xsd:string"},
+                    {"@and": [
+                        {"@minimum": 0},
+                        {"@maximum": 100},
+                    ]},
+                ],
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        restriction = cls[f"{RDFS}subClassOf"]
+        avf = restriction[f"{OWL}allValuesFrom"]
+        members = avf[f"{OWL}unionOf"]["@list"]
+        assert len(members) == 2
+        # Second member should itself contain intersectionOf
+        nested = members[1]
+        assert f"{OWL}intersectionOf" in nested
+
+    # -- Task 6: @extends → rdfs:subClassOf ----------------------------------
+
+    def test_extends_produces_subclass_of(self):
+        """@extends → rdfs:subClassOf on the OWL class."""
+        shape = {
+            "@type": "http://example.org/Employee",
+            "@extends": "http://example.org/Person",
+            "http://example.org/dept": {"@required": True},
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        # Should have rdfs:subClassOf entries including the parent class
+        sub_of = cls.get(f"{RDFS}subClassOf", [])
+        if not isinstance(sub_of, list):
+            sub_of = [sub_of]
+
+        parent_refs = [
+            s for s in sub_of
+            if isinstance(s, dict) and s.get("@id") == "http://example.org/Person"
+        ]
+        assert len(parent_refs) == 1, "Parent class should appear as rdfs:subClassOf"
+
+    def test_extends_list_produces_multiple_subclass_of(self):
+        """@extends with a list → multiple rdfs:subClassOf entries."""
+        shape = {
+            "@type": "http://example.org/Manager",
+            "@extends": [
+                "http://example.org/Employee",
+                "http://example.org/Leader",
+            ],
+            "http://example.org/reports": {"@minCount": 1},
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        sub_of = cls.get(f"{RDFS}subClassOf", [])
+        if not isinstance(sub_of, list):
+            sub_of = [sub_of]
+
+        parent_refs = [
+            s for s in sub_of
+            if isinstance(s, dict) and "@id" in s and s["@id"].startswith("http://example.org/")
+            and s.get("@type") is None  # plain IRI ref, not a Restriction
+        ]
+        parent_iris = {r["@id"] for r in parent_refs}
+        assert "http://example.org/Employee" in parent_iris
+        assert "http://example.org/Leader" in parent_iris
+
+    def test_extends_combined_with_constraints(self):
+        """@extends + property constraints → both parent ref and restrictions."""
+        shape = {
+            "@type": "http://example.org/Employee",
+            "@extends": "http://example.org/Person",
+            "http://example.org/salary": {
+                "@type": "xsd:decimal",
+                "@minimum": 0,
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        sub_of = cls.get(f"{RDFS}subClassOf", [])
+        if not isinstance(sub_of, list):
+            sub_of = [sub_of]
+
+        # Should have at least one parent ref AND at least one Restriction
+        parent_refs = [s for s in sub_of if isinstance(s, dict) and s.get("@id") == "http://example.org/Person"]
+        restrictions = [s for s in sub_of if isinstance(s, dict) and s.get("@type") == f"{OWL}Restriction"]
+        assert len(parent_refs) >= 1
+        assert len(restrictions) >= 1
+
+    # -- Task 7: Unmappable constraint preservation --------------------------
+
+    def test_unmappable_constraints_preserved_in_jex_namespace(self):
+        """Constraints without OWL equivalents are preserved as jex: annotations."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/startDate": {
+                "@lessThan": "http://example.org/endDate",
+            },
+            "http://example.org/value": {
+                "@equals": "http://example.org/otherValue",
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+
+        # Unmappable constraints should appear as jex: annotations
+        assert f"{JSONLD_EX}lessThan" in cls or any(
+            f"{JSONLD_EX}lessThan" in str(v) for v in cls.values()
+        )
+        assert f"{JSONLD_EX}equals" in cls or any(
+            f"{JSONLD_EX}equals" in str(v) for v in cls.values()
+        )
+
+    def test_unmappable_if_then_else_preserved(self):
+        """@if/@then/@else has no OWL equivalent → preserved as jex: annotation."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/value": {
+                "@if": {"@type": "xsd:string"},
+                "@then": {"@minLength": 1},
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+
+        # Should be preserved somewhere on the class as jex: annotation
+        cls_str = str(cls)
+        assert JSONLD_EX in cls_str, "Conditional constraints should be preserved in jex: namespace"
+
+    def test_unmappable_disjoint_preserved(self):
+        """@disjoint has no direct OWL property restriction equivalent → preserved."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/field1": {
+                "@disjoint": "http://example.org/field2",
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        cls_str = str(cls)
+        assert f"{JSONLD_EX}disjoint" in cls_str
+
+    def test_unmappable_severity_preserved(self):
+        """@severity has no OWL equivalent → preserved as jex: annotation."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/value": {
+                "@required": True,
+                "@severity": "warning",
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        cls_str = str(cls)
+        assert f"{JSONLD_EX}severity" in cls_str
+
+    def test_mappable_and_unmappable_coexist(self):
+        """Shape with both mappable and unmappable constraints handles both."""
+        shape = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/start": {
+                "@type": "xsd:date",
+                "@required": True,
+                "@lessThan": "http://example.org/end",
+            },
+        }
+        owl = shape_to_owl_restrictions(shape)
+        cls = owl["@graph"][0]
+        sub_of = cls.get(f"{RDFS}subClassOf", [])
+        if not isinstance(sub_of, list):
+            sub_of = [sub_of]
+
+        # Should have OWL restrictions for @type and @required
+        restrictions = [s for s in sub_of if isinstance(s, dict) and s.get("@type") == f"{OWL}Restriction"]
+        assert len(restrictions) >= 2, "Should have minCardinality + allValuesFrom restrictions"
+
+        # And unmappable @lessThan should be preserved
+        cls_str = str(cls)
+        assert f"{JSONLD_EX}lessThan" in cls_str
 
 
 # ═══════════════════════════════════════════════════════════════════
