@@ -9,11 +9,11 @@
 import {
   KEYWORD_SHAPE, KEYWORD_REQUIRED, KEYWORD_MINIMUM, KEYWORD_MAXIMUM,
   KEYWORD_MIN_LENGTH, KEYWORD_MAX_LENGTH, KEYWORD_PATTERN,
-} from '../keywords';
+} from '../keywords.js';
 import {
   ShapeDefinition, PropertyShape, ValidationResult,
   ValidationError, ValidationWarning,
-} from '../types';
+} from '../types.js';
 
 // ── Shape Validator ───────────────────────────────────────────────
 

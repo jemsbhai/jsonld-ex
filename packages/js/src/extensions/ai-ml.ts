@@ -26,8 +26,8 @@ import {
   KEYWORD_MEASUREMENT_UNCERTAINTY,
   KEYWORD_UNIT,
   JSONLD_EX_NAMESPACE,
-} from '../keywords';
-import { AnnotatedValue, ProvenanceMetadata } from '../types';
+} from '../keywords.js';
+import { AnnotatedValue, ProvenanceMetadata } from '../types.js';
 
 // ── Context Definition ────────────────────────────────────────────
 

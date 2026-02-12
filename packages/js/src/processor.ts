@@ -8,22 +8,22 @@
  */
 
 import * as jsonld from 'jsonld';
-import { JsonLdExOptions, ResourceLimits, ProvenanceMetadata, ValidationResult, ShapeDefinition } from './types';
+import { JsonLdExOptions, ResourceLimits, ProvenanceMetadata, ValidationResult, ShapeDefinition } from './types.js';
 import {
   annotate, getConfidence, getProvenance, filterByConfidence,
   aggregateConfidence, AI_ML_CONTEXT,
-} from './extensions/ai-ml';
+} from './extensions/ai-ml.js';
 import {
   vectorTermDefinition, validateVector, cosineSimilarity,
   extractVectors, stripVectorsForRdf,
-} from './extensions/vector';
+} from './extensions/vector.js';
 import {
   computeIntegrity, verifyIntegrity, integrityContext,
   isContextAllowed, createSecureDocumentLoader,
   enforceResourceLimits, withTimeout, DEFAULT_RESOURCE_LIMITS,
-} from './extensions/security';
-import { validateNode, validateDocument } from './extensions/validation';
-import { JSONLD_EX_NAMESPACE, EXTENSION_KEYWORDS } from './keywords';
+} from './extensions/security.js';
+import { validateNode, validateDocument } from './extensions/validation.js';
+import { JSONLD_EX_NAMESPACE, EXTENSION_KEYWORDS } from './keywords.js';
 
 export class JsonLdEx {
   private options: JsonLdExOptions;

@@ -8,8 +8,8 @@
  */
 
 import * as crypto from 'crypto';
-import { KEYWORD_INTEGRITY } from '../keywords';
-import { IntegrityContext, ResourceLimits, ContextAllowlist } from '../types';
+import { KEYWORD_INTEGRITY } from '../keywords.js';
+import { IntegrityContext, ResourceLimits, ContextAllowlist } from '../types.js';
 
 // ── Default Resource Limits ───────────────────────────────────────
 
@@ -41,7 +41,7 @@ export function computeIntegrity(
 
   const nodeAlg = algorithm === 'sha256' ? 'sha256'
     : algorithm === 'sha384' ? 'sha384'
-    : 'sha512';
+      : 'sha512';
 
   const hash = crypto.createHash(nodeAlg).update(content, 'utf8').digest('base64');
   return `${algorithm}-${hash}`;
@@ -117,7 +117,7 @@ export function isContextAllowed(
 
   // If allowlist is configured but URL didn't match, deny
   if ((config.allowed && config.allowed.length > 0) ||
-      (config.patterns && config.patterns.length > 0)) {
+    (config.patterns && config.patterns.length > 0)) {
     return false;
   }
 

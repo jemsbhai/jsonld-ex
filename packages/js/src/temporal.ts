@@ -10,8 +10,8 @@ import {
     KEYWORD_VALID_UNTIL,
     KEYWORD_AS_OF,
     JSONLD_EX_NAMESPACE,
-} from './keywords';
-import { TemporalDiffResult, TemporalOptions, TemporalQualifiers } from './types';
+} from './keywords.js';
+import { TemporalDiffResult, TemporalOptions, TemporalQualifiers } from './types.js';
 
 // ── Context Definition ────────────────────────────────────────────
 

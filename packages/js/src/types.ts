@@ -175,9 +175,12 @@ export interface JsonLdExOptions {
  * Report from a merge operation.
  */
 export interface MergeReport {
-  mergedNodeCount: number;
+  nodesMerged: number;
+  propertiesAgreed: number;
+  propertiesConflicted: number;
+  propertiesUnion: number;
   conflicts: MergeConflict[];
-  strategy: string;
+  sourceCount: number;
 }
 
 /**
@@ -185,10 +188,10 @@ export interface MergeReport {
  */
 export interface MergeConflict {
   nodeId: string;
-  property: string;
+  propertyName: string;
   values: any[];
   resolution: string;
-  winner: any;
+  winnerValue: any;
 }
 
 /**
@@ -222,6 +225,16 @@ export interface TemporalDiffResult {
     nodeId: string;
     changes: Record<string, { from: any; to: any }>;
   }>;
+}
+
+/**
+ * Result of a graph difference calculation.
+ */
+export interface GraphDiff {
+  added: any[];
+  removed: any[];
+  modified: any[];
+  unchanged: any[];
 }
 
 // ── Croissant / Dataset Types ─────────────────────────────────────

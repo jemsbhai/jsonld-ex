@@ -7,29 +7,21 @@
 
 ## Status
 
-**Early development (v0.1.0)** — core extension modules are implemented and tested. Feature parity with the [Python package](../python/README.md) is planned but not yet complete.
+**Feature Complete (v0.1.0)** — Core extensions, Subjective Logic, and MCP Server are fully implemented and tested, achieving parity with the Python reference implementation.
 
 ### Implemented Modules
 
-| Module | Functions | Description |
+| Module | Features | Description |
 |--------|-----------|-------------|
-| `ai-ml` | `annotate`, `getConfidence`, `getProvenance`, `filterByConfidence`, `aggregateConfidence` | `@confidence`, `@source`, provenance tracking |
-| `security` | `computeIntegrity`, `verifyIntegrity`, `isContextAllowed`, `createSecureDocumentLoader`, `enforceResourceLimits` | `@integrity` verification, context allowlists, resource limits |
-| `validation` | `validateNode`, `validateDocument` | `@shape` native validation framework |
-| `vector` | `vectorTermDefinition`, `validateVector`, `cosineSimilarity`, `extractVectors`, `stripVectorsForRdf` | `@vector` container support |
-
-### Not Yet Implemented
-
-The following modules are available in the Python package but not yet ported:
-
-- Confidence Algebra (Subjective Logic framework)
-- Confidence Bridge / Decay
-- Inference engine
-- Graph merge / diff
-- Temporal extensions
-- OWL / PROV-O / SHACL interop
-- CBOR-LD / MQTT transport
-- MCP server
+| **AI/ML** | `annotate`, `provenance` | Confidence scores, data lineage, method tracking. |
+| **Confidence** | `Opinion`, `fuse`, `discount` | Subjective Logic algebra for uncertainty propagation. |
+| **Logic** | `decay`, `deduce` | Temporal belief decay and conditional reasoning. |
+| **Inference** | `merge`, `diff`, `conflict` | Graph merging with confidence-aware conflict resolution. |
+| **Temporal** | `validFrom`, `asOf` | Bitemporal versioning and time-slice queries. |
+| **Security** | `integrity`, `allowlist` | Context hashing and resource limits. |
+| **Validation** | `@shape` | Native structure validation without SHACL. |
+| **Vector** | `@vector` | Embeddings and cosine similarity. |
+| **MCP** | `server` | Model Context Protocol server for AI agents. |
 
 ## Installation
 
@@ -39,164 +31,145 @@ npm install @jsonld-ex/core
 
 ## Quick Start
 
-```typescript
-import { JsonLdEx } from '@jsonld-ex/core';
-
-const jex = new JsonLdEx();
-
-// Annotate a value with AI/ML provenance
-const name = jex.annotate("John Smith", {
-  confidence: 0.95,
-  source: "https://ml-model.example.org/ner-v2",
-  method: "NER",
-});
-// { "@value": "John Smith", "@confidence": 0.95, "@source": "...", "@method": "NER" }
-```
-
-## Usage
-
-### AI/ML Annotations
+The **Client API** (`JsonLdExClient`) provides a unified, validated interface for all features.
 
 ```typescript
-import { annotate, getConfidence, getProvenance, filterByConfidence } from '@jsonld-ex/core';
+import client from '@jsonld-ex/core';
 
-// Annotate values with provenance metadata
-const value = annotate("Jane Doe", {
-  confidence: 0.92,
-  source: "https://model.example.org/v3",
-  extractedAt: "2026-01-15T10:30:00Z",
-  method: "NER",
-  humanVerified: false,
+// 1. Annotate data with confidence and provenance
+const fact = client.annotate("Sky is blue", {
+  confidence: 0.99,
+  source: "https://sensor.example.org/cam-1",
+  extractedAt: "2024-03-15T10:00:00Z"
 });
 
-// Extract confidence from annotated values
-const conf = getConfidence(value); // 0.92
+// 2. Merge conflicting knowledge graphs
+const graphA = [{ "@id": "node1", "status": "active" }];
+const graphB = [{ "@id": "node1", "status": "inactive" }];
 
-// Extract full provenance
-const prov = getProvenance(value);
-// { confidence: 0.92, source: "...", extractedAt: "...", method: "NER", humanVerified: false }
-
-// Filter graph nodes by minimum confidence
-const graph = [
-  { "@type": "Person", name: annotate("Alice", { confidence: 0.9 }) },
-  { "@type": "Person", name: annotate("Bob", { confidence: 0.3 }) },
-];
-const highConf = filterByConfidence(graph, "name", 0.8);
-// [{ "@type": "Person", name: { "@value": "Alice", "@confidence": 0.9 } }]
-```
-
-### Security
-
-```typescript
-import { computeIntegrity, verifyIntegrity, isContextAllowed } from '@jsonld-ex/core';
-
-// Compute and verify context integrity
-const ctx = '{"@vocab": "http://schema.org/"}';
-const hash = computeIntegrity(ctx); // "sha256-..."
-const valid = verifyIntegrity(ctx, hash); // true
-
-// Context allowlists
-const allowed = isContextAllowed("https://schema.org/", {
-  allowed: ["https://schema.org/"],
-  blockRemoteContexts: false,
-}); // true
-```
-
-### Validation
-
-```typescript
-import { validateNode } from '@jsonld-ex/core';
-
-const shape = {
-  "@type": "Person",
-  "name": { "@required": true, "@type": "xsd:string", "@minLength": 1 },
-  "email": { "@pattern": "^[^@]+@[^@]+$" },
-  "age": { "@type": "xsd:integer", "@minimum": 0, "@maximum": 150 },
-};
-
-const result = validateNode(
-  { "@type": "Person", "name": "Alice", "age": 30 },
-  shape
-);
-// { valid: true, errors: [], warnings: [] }
-```
-
-### Vector Embeddings
-
-```typescript
-import { vectorTermDefinition, validateVector, cosineSimilarity } from '@jsonld-ex/core';
-
-// Define a vector property in context
-const ctx = vectorTermDefinition("embedding", "http://example.org/embedding", 768);
-// { embedding: { "@id": "...", "@container": "@vector", "@dimensions": 768 } }
-
-// Validate vector values
-const check = validateVector([0.1, -0.2, 0.3], 3);
-// { valid: true, errors: [] }
-
-// Compute similarity
-const sim = cosineSimilarity([1, 0, 0], [0, 1, 0]); // 0.0
-```
-
-### Processor Class
-
-The `JsonLdEx` class wraps [jsonld.js](https://github.com/digitalbazaar/jsonld.js) with security enforcement:
-
-```typescript
-import { JsonLdEx } from '@jsonld-ex/core';
-
-const jex = new JsonLdEx({
-  resourceLimits: {
-    maxDocumentSize: 5 * 1024 * 1024, // 5 MB
-    maxGraphDepth: 50,
-    maxExpansionTime: 10_000, // 10s timeout
-  },
-  contextAllowlist: {
-    allowed: ["https://schema.org/", "https://w3id.org/security/v2"],
-    blockRemoteContexts: false,
-  },
+const { merged, report } = client.merge([graphA, graphB], {
+  conflictStrategy: "highest_confidence"
 });
 
-// All standard JSON-LD operations enforced with limits
-const expanded = await jex.expand(doc);
-const compacted = await jex.compact(doc, ctx);
-const nquads = await jex.toRdf(doc);
+// 3. Propagate confidence through a chain of reasoning
+const result = client.propagate([0.9, 0.8, 0.95], 'multiply');
+// result.score ≈ 0.68
 ```
 
-## Development
+## Advanced Usage
+
+### Subjective Logic (Uncertainty)
+
+Work directly with Subjective Logic opinions (Belief, Disbelief, Uncertainty).
+
+```typescript
+import { Opinion, cumulativeFuse, trustDiscount } from '@jsonld-ex/core';
+
+// Agent A trusts Agent B (trust metric)
+const trustAB = Opinion.fromConfidence(0.9);
+
+// Agent B believes proposition X
+const opinionBX = Opinion.fromConfidence(0.8);
+
+// Agent A's derived opinion on X (Trust Discount)
+const opinionAX = trustDiscount(trustAB, opinionBX);
+console.log(opinionAX.toConfidence()); // ~0.72
+
+// Combine independent opinions (Cumulative Fusion)
+const opinionC = Opinion.fromConfidence(0.6);
+const fused = cumulativeFuse(opinionAX, opinionC);
+```
+
+### Temporal Queries
+
+Manage knowledge over time using bitemporal assertions.
+
+```typescript
+import client from '@jsonld-ex/core';
+
+// Add temporal validity
+const assertion = client.addTemporal({ "status": "open" }, {
+  validFrom: "2024-01-01T00:00:00Z",
+  validUntil: "2024-12-31T23:59:59Z"
+});
+
+// Query graph at specific point in time
+const snapshot = client.queryAtTime(historyGraph, "2024-06-01T00:00:00Z");
+```
+
+### Graph Merging & Diffing
+
+Merge graphs with fine-grained conflict resolution.
+
+```typescript
+import client from '@jsonld-ex/core';
+
+// Calculate semantic difference
+const diff = client.diff(graphV1, graphV2);
+console.log(`Changed: ${diff.modified.length}, Added: ${diff.added.length}`);
+
+// Merge with report
+const { merged, report } = client.merge([sourceA, sourceB], {
+  conflictStrategy: 'weighted_vote',
+  confidenceCombination: 'average'
+});
+```
+
+### MCP Server
+
+Run `jsonld-ex` as a Model Context Protocol (MCP) server to give AI agents access to these tools.
 
 ```bash
-# Install dependencies
-npm install
+# Run directly
+npx @jsonld-ex/core
 
-# Run tests
-npm test
-
-# Build
-npm run build
+# Or via the binary
+./bin/mcp-server.js
 ```
+
+**Available Tools:**
+- `jsonld_annotate`: Create annotated values.
+- `jsonld_merge`: Merge knowledge graphs.
+- `jsonld_diff`: Compare graphs.
+- `jsonld_propagate`: Calculate derived confidence.
+- `jsonld_temporal`: Add temporal qualifiers.
 
 ## Architecture
 
 ```
 src/
-├── index.ts              # Public API exports
-├── processor.ts          # JsonLdEx class (wraps jsonld.js)
-├── types.ts              # TypeScript interfaces
-├── keywords.ts           # Extension keyword constants
-├── jsonld.d.ts           # Type declarations for jsonld.js
-└── extensions/
-    ├── ai-ml.ts          # @confidence, @source, provenance
-    ├── security.ts       # @integrity, allowlists, resource limits
-    ├── validation.ts     # @shape validation framework
-    └── vector.ts         # @vector container, similarity
+├── client.ts             # High-level Façade API
+├── types.ts              # Unified Type Definitions
+├── schemas.ts            # Zod Validation Schemas
+├── processor.ts          # JsonLdEx Processor (Legacy Wrapper)
+├── mcp/
+│   └── server.ts         # MCP Server Implementation
+├── confidence/
+│   ├── algebra.ts        # Subjective Logic Math
+│   ├── decay.ts          # Temporal Decay Functions
+│   └── bridge.ts         # Scalar <-> Opinion Bridge
+├── extensions/
+│   ├── ai-ml.ts          # Provenance & Annotations
+│   ├── vector.ts         # Vector Embeddings
+│   ├── security.ts       # Integrity & Limits
+│   └── validation.ts     # Shape Validation
+└── ...
 ```
 
-## Related
+## Development
 
-- [Python package](../python/README.md) — full-featured reference implementation (14 modules, 832+ tests)
-- [Root project](../../README.md) — project overview and specifications
-- [Extension specs](../../spec/) — formal specification documents
+This project uses **TypeScript** and **ES Modules** (NodeNext).
+
+```bash
+# Install
+npm install
+
+# Test (Jest with generic ESM support)
+npm test
+
+# Build (tsc)
+npm run build
+```
 
 ## License
 

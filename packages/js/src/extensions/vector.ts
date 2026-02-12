@@ -10,8 +10,8 @@
  * - Efficient binary serialization is supported via CBOR-LD integration
  */
 
-import { CONTAINER_VECTOR, KEYWORD_DIMENSIONS, JSONLD_EX_NAMESPACE } from '../keywords';
-import { VectorTermDefinition } from '../types';
+import { CONTAINER_VECTOR, KEYWORD_DIMENSIONS, JSONLD_EX_NAMESPACE } from '../keywords.js';
+import { VectorTermDefinition } from '../types.js';
 
 // ── Context Definition ────────────────────────────────────────────
 

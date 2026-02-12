@@ -6,18 +6,25 @@
  */
 
 // Main processor
-export { JsonLdEx } from './processor';
+export { JsonLdEx } from './processor.js';
 
 // Types
-export * from './types';
+export * from './types.js';
 
 // Keywords and namespace
-export * from './keywords';
+export * from './keywords.js';
 
 // Extensions (for direct access)
-export * from './extensions/ai-ml';
-export * from './extensions/vector';
-export * from './extensions/security';
-export * from './extensions/validation';
-export * from './temporal';
-export * from './cbor';
+export * from './extensions/ai-ml.js';
+export * from './extensions/vector.js';
+export * from './extensions/security.js';
+export * from './extensions/validation.js';
+export * from './temporal.js';
+export * from './cbor.js';
+export * from './schemas.js';
+export * from './client.js';
+export * from './merge.js';
+export * from './inference.js';
+export * from './confidence/algebra.js';
+export * from './confidence/decay.js';
+export * from './confidence/bridge.js';

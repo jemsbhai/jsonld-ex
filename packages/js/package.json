@@ -2,15 +2,19 @@
   "name": "@jsonld-ex/core",
   "version": "0.1.0",
   "description": "JSON-LD 1.2 extensions for AI/ML data exchange, security hardening, and validation",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
     "dist"
   ],
+  "bin": {
+    "jsonld-mcp": "./bin/mcp-server.js"
+  },
   "scripts": {
     "build": "tsc",
-    "test": "jest",
-    "test:watch": "jest --watch",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
     "lint": "eslint src/",
     "benchmark": "ts-node ../benchmarks/run.ts"
   },
@@ -35,9 +39,11 @@
     "url": "https://github.com/jemsbhai/jsonld-ex"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
     "cbor-x": "^1.6.0",
     "jsonld": "^8.3.2",
-    "uuid": "^13.0.0"
+    "uuid": "^13.0.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/jest": "^29.5.12",
