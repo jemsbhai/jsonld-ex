@@ -63,6 +63,19 @@ from jsonld_ex.temporal import (
     temporal_diff,
     TemporalDiffResult,
 )
+from jsonld_ex.dataset import (
+    create_dataset_metadata,
+    validate_dataset_metadata,
+    add_distribution,
+    add_file_set,
+    add_record_set,
+    create_field,
+    to_croissant,
+    from_croissant,
+    DATASET_CONTEXT,
+    CROISSANT_CONTEXT,
+    DATASET_SHAPE,
+)
 
 # Optional modules — import only if dependencies are available
 try:
@@ -139,6 +152,18 @@ __all__ = [
     "query_at_time",
     "temporal_diff",
     "TemporalDiffResult",
+    # Dataset metadata (Croissant interop)
+    "create_dataset_metadata",
+    "validate_dataset_metadata",
+    "add_distribution",
+    "add_file_set",
+    "add_record_set",
+    "create_field",
+    "to_croissant",
+    "from_croissant",
+    "DATASET_CONTEXT",
+    "CROISSANT_CONTEXT",
+    "DATASET_SHAPE",
     # CBOR-LD serialization (requires cbor2)
     "to_cbor",
     "from_cbor",
