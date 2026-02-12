@@ -33,6 +33,29 @@ describe('AI/ML Extensions', () => {
       expect(result['@humanVerified']).toBe(false);
     });
 
+    it('creates an annotated value with multimodal, translation, and measurement fields', () => {
+      const result = annotate('Image Description', {
+        confidence: 0.99,
+        mediaType: 'image/jpeg',
+        contentUrl: 'https://example.org/img.jpg',
+        contentHash: 'sha256:abc123',
+        translatedFrom: 'https://example.org/desc-es',
+        translationModel: 'NeuralTrans-v1',
+        measurementUncertainty: 0.05,
+        unit: 'm',
+      });
+
+      expect(result['@value']).toBe('Image Description');
+      expect(result['@confidence']).toBe(0.99);
+      expect(result['@mediaType']).toBe('image/jpeg');
+      expect(result['@contentUrl']).toBe('https://example.org/img.jpg');
+      expect(result['@contentHash']).toBe('sha256:abc123');
+      expect(result['@translatedFrom']).toBe('https://example.org/desc-es');
+      expect(result['@translationModel']).toBe('NeuralTrans-v1');
+      expect(result['@measurementUncertainty']).toBe(0.05);
+      expect(result['@unit']).toBe('m');
+    });
+
     it('rejects invalid confidence scores', () => {
       expect(() => annotate('x', { confidence: 1.5 })).toThrow(RangeError);
       expect(() => annotate('x', { confidence: -0.1 })).toThrow(RangeError);
@@ -81,6 +104,19 @@ describe('AI/ML Extensions', () => {
       expect(prov.confidence).toBe(0.9);
       expect(prov.source).toBe('https://model.example.org/v1');
       expect(prov.method).toBe('NER');
+    });
+
+    it('extracts new extended provenance fields', () => {
+      const node = {
+        '@value': 'test',
+        '@type': 'image/png',
+        '@contentUrl': 'https://example.org/img.png',
+        '@measurementUncertainty': 0.1,
+      };
+      const prov = getProvenance(node);
+      expect(prov.mediaType).toBe('image/png');
+      expect(prov.contentUrl).toBe('https://example.org/img.png');
+      expect(prov.measurementUncertainty).toBe(0.1);
     });
 
     it('returns empty object for node without provenance', () => {

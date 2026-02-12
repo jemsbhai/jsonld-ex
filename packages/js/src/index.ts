@@ -19,3 +19,5 @@ export * from './extensions/ai-ml';
 export * from './extensions/vector';
 export * from './extensions/security';
 export * from './extensions/validation';
+export * from './temporal';
+export * from './cbor';

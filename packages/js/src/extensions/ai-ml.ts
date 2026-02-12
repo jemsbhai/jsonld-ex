@@ -18,6 +18,13 @@ import {
   KEYWORD_EXTRACTED_AT,
   KEYWORD_METHOD,
   KEYWORD_HUMAN_VERIFIED,
+  KEYWORD_MEDIA_TYPE,
+  KEYWORD_CONTENT_URL,
+  KEYWORD_CONTENT_HASH,
+  KEYWORD_TRANSLATED_FROM,
+  KEYWORD_TRANSLATION_MODEL,
+  KEYWORD_MEASUREMENT_UNCERTAINTY,
+  KEYWORD_UNIT,
   JSONLD_EX_NAMESPACE,
 } from '../keywords';
 import { AnnotatedValue, ProvenanceMetadata } from '../types';
@@ -49,6 +56,34 @@ export const AI_ML_CONTEXT = {
   'humanVerified': {
     '@id': `${JSONLD_EX_NAMESPACE}humanVerified`,
     '@type': 'http://www.w3.org/2001/XMLSchema#boolean',
+  },
+  'mediaType': {
+    '@id': `${JSONLD_EX_NAMESPACE}mediaType`,
+    '@type': 'http://www.w3.org/2001/XMLSchema#string',
+  },
+  'contentUrl': {
+    '@id': `${JSONLD_EX_NAMESPACE}contentUrl`,
+    '@type': '@id',
+  },
+  'contentHash': {
+    '@id': `${JSONLD_EX_NAMESPACE}contentHash`,
+    '@type': 'http://www.w3.org/2001/XMLSchema#string',
+  },
+  'translatedFrom': {
+    '@id': `${JSONLD_EX_NAMESPACE}translatedFrom`,
+    '@type': '@id', // or string depending on usage, usually IRI
+  },
+  'translationModel': {
+    '@id': `${JSONLD_EX_NAMESPACE}translationModel`,
+    '@type': 'http://www.w3.org/2001/XMLSchema#string',
+  },
+  'measurementUncertainty': {
+    '@id': `${JSONLD_EX_NAMESPACE}measurementUncertainty`,
+    '@type': 'http://www.w3.org/2001/XMLSchema#double',
+  },
+  'unit': {
+    '@id': `${JSONLD_EX_NAMESPACE}unit`,
+    '@type': 'http://www.w3.org/2001/XMLSchema#string',
   },
 };
 
@@ -87,7 +122,28 @@ export function annotate(
     result['@method'] = metadata.method;
   }
   if (metadata.humanVerified !== undefined) {
-    result['@humanVerified'] = metadata.humanVerified;
+    result[KEYWORD_HUMAN_VERIFIED] = metadata.humanVerified;
+  }
+  if (metadata.mediaType !== undefined) {
+    result[KEYWORD_MEDIA_TYPE] = metadata.mediaType;
+  }
+  if (metadata.contentUrl !== undefined) {
+    result[KEYWORD_CONTENT_URL] = metadata.contentUrl;
+  }
+  if (metadata.contentHash !== undefined) {
+    result[KEYWORD_CONTENT_HASH] = metadata.contentHash;
+  }
+  if (metadata.translatedFrom !== undefined) {
+    result[KEYWORD_TRANSLATED_FROM] = metadata.translatedFrom;
+  }
+  if (metadata.translationModel !== undefined) {
+    result[KEYWORD_TRANSLATION_MODEL] = metadata.translationModel;
+  }
+  if (metadata.measurementUncertainty !== undefined) {
+    result[KEYWORD_MEASUREMENT_UNCERTAINTY] = metadata.measurementUncertainty;
+  }
+  if (metadata.unit !== undefined) {
+    result[KEYWORD_UNIT] = metadata.unit;
   }
 
   return result;
@@ -134,6 +190,16 @@ export function getProvenance(node: any): ProvenanceMetadata {
   meta.extractedAt = extractField(node, 'extractedAt', KEYWORD_EXTRACTED_AT);
   meta.method = extractField(node, 'method', KEYWORD_METHOD);
   meta.humanVerified = extractField(node, 'humanVerified', KEYWORD_HUMAN_VERIFIED);
+  meta.mediaType = extractField(node, 'mediaType', KEYWORD_MEDIA_TYPE);
+  if (!meta.mediaType && node['@type']) {
+    meta.mediaType = node['@type'];
+  }
+  meta.contentUrl = extractField(node, 'contentUrl', KEYWORD_CONTENT_URL);
+  meta.contentHash = extractField(node, 'contentHash', KEYWORD_CONTENT_HASH);
+  meta.translatedFrom = extractField(node, 'translatedFrom', KEYWORD_TRANSLATED_FROM);
+  meta.translationModel = extractField(node, 'translationModel', KEYWORD_TRANSLATION_MODEL);
+  meta.measurementUncertainty = extractField(node, 'measurementUncertainty', KEYWORD_MEASUREMENT_UNCERTAINTY);
+  meta.unit = extractField(node, 'unit', KEYWORD_UNIT);
 
   // Remove undefined entries
   return Object.fromEntries(

@@ -16,6 +16,16 @@ export interface ProvenanceMetadata {
   method?: string;
   /** Whether a human verified this value */
   humanVerified?: boolean;
+  // Multimodal (GAP-MM1)
+  mediaType?: string;
+  contentUrl?: string;
+  contentHash?: string;
+  // Translation provenance (GAP-ML2)
+  translatedFrom?: string;
+  translationModel?: string;
+  // Measurement uncertainty (GAP-IOT1)
+  measurementUncertainty?: number;
+  unit?: string;
 }
 
 /** A JSON-LD value annotated with provenance */
@@ -27,7 +37,17 @@ export interface AnnotatedValue {
   '@method'?: string;
   '@humanVerified'?: boolean;
   '@type'?: string;
+  '@mediaType'?: string;
   '@language'?: string;
+  // Multimodal
+  '@contentUrl'?: string;
+  '@contentHash'?: string;
+  // Translation
+  '@translatedFrom'?: string;
+  '@translationModel'?: string;
+  // Measurement
+  '@measurementUncertainty'?: number;
+  '@unit'?: string;
 }
 
 // ── Vector Embeddings ─────────────────────────────────────────────
@@ -53,6 +73,13 @@ export interface TemporalQualifiers {
   '@validFrom'?: string;
   '@validUntil'?: string;
   '@asOf'?: string;
+}
+
+/** Input options for temporal annotation */
+export interface TemporalOptions {
+  validFrom?: string;
+  validUntil?: string;
+  asOf?: string;
 }
 
 // ── Security ──────────────────────────────────────────────────────
@@ -140,4 +167,85 @@ export interface JsonLdExOptions {
   base?: string;
   /** Document loader override */
   documentLoader?: any;
+}
+
+// ── Merge & Conflict Types ────────────────────────────────────────
+
+/**
+ * Report from a merge operation.
+ */
+export interface MergeReport {
+  mergedNodeCount: number;
+  conflicts: MergeConflict[];
+  strategy: string;
+}
+
+/**
+ * Details of a conflict encountered during merge.
+ */
+export interface MergeConflict {
+  nodeId: string;
+  property: string;
+  values: any[];
+  resolution: string;
+  winner: any;
+}
+
+/**
+ * Result of a confidence propagation operation.
+ */
+export interface PropagationResult {
+  score: number;
+  method: string;
+  inputScores: number[];
+  provenanceTrail?: string[];
+}
+
+/**
+ * Report from a conflict resolution operation.
+ */
+export interface ConflictReport {
+  winner: any;
+  strategy: string;
+  candidates: any[];
+  confidenceScores: number[];
+  reason: string;
+}
+
+/**
+ * Result of a temporal difference calculation.
+ */
+export interface TemporalDiffResult {
+  added: JsonLdNode[];
+  removed: JsonLdNode[];
+  modified: Array<{
+    nodeId: string;
+    changes: Record<string, { from: any; to: any }>;
+  }>;
+}
+
+// ── Croissant / Dataset Types ─────────────────────────────────────
+
+export type JsonLdNode = Record<string, any>;
+
+export interface Distribution {
+  contentUrl?: string;
+  encodingFormat?: string;
+  sha256?: string;
+  name?: string;
+}
+
+export interface RecordSet {
+  name: string;
+  description?: string;
+  field?: Record<string, any>[];
+  key?: string | string[];
+}
+
+export interface Dataset {
+  name: string;
+  description?: string;
+  distribution?: Distribution[];
+  recordSet?: RecordSet[];
+  [key: string]: any;
 }

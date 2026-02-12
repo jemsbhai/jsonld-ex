@@ -20,6 +20,16 @@ export const KEYWORD_EXTRACTED_AT = '@extractedAt';
 export const KEYWORD_METHOD = '@method';
 /** Boolean indicating whether a human has verified the value */
 export const KEYWORD_HUMAN_VERIFIED = '@humanVerified';
+// Multimodal
+export const KEYWORD_MEDIA_TYPE = '@mediaType';
+export const KEYWORD_CONTENT_URL = '@contentUrl';
+export const KEYWORD_CONTENT_HASH = '@contentHash';
+// Translation
+export const KEYWORD_TRANSLATED_FROM = '@translatedFrom';
+export const KEYWORD_TRANSLATION_MODEL = '@translationModel';
+// Measurement
+export const KEYWORD_MEASUREMENT_UNCERTAINTY = '@measurementUncertainty';
+export const KEYWORD_UNIT = '@unit';
 
 // ── Vector Embedding Keywords ─────────────────────────────────────
 /** Container type for vector embeddings */
@@ -68,4 +78,7 @@ export const EXTENSION_KEYWORDS = [
   KEYWORD_INTEGRITY,
   KEYWORD_SHAPE, KEYWORD_REQUIRED, KEYWORD_MINIMUM, KEYWORD_MAXIMUM,
   KEYWORD_MIN_LENGTH, KEYWORD_MAX_LENGTH, KEYWORD_PATTERN,
+  KEYWORD_MEDIA_TYPE, KEYWORD_CONTENT_URL, KEYWORD_CONTENT_HASH,
+  KEYWORD_TRANSLATED_FROM, KEYWORD_TRANSLATION_MODEL,
+  KEYWORD_MEASUREMENT_UNCERTAINTY, KEYWORD_UNIT,
 ] as const;
