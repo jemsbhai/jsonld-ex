@@ -58,7 +58,7 @@ def validate_node(node: dict[str, Any], shape: dict[str, Any]) -> ValidationResu
 
         value = node.get(prop)
 
-        # ── Cardinality constraints (operate on raw value before extraction) ──
+        # -- Cardinality constraints (operate on raw value before extraction) --
         count = _count_values(value)
 
         if "@minCount" in constraint:
@@ -79,7 +79,7 @@ def validate_node(node: dict[str, Any], shape: dict[str, Any]) -> ValidationResu
                     value,
                 ))
 
-        # ── Extract scalar for remaining constraints ──
+        # -- Extract scalar for remaining constraints --
         raw = _extract_raw(value)
 
         if constraint.get("@required") and raw is None:
@@ -89,65 +89,8 @@ def validate_node(node: dict[str, Any], shape: dict[str, Any]) -> ValidationResu
         if raw is None:
             continue
 
-        # Type check
-        expected_type = constraint.get("@type")
-        if expected_type:
-            type_err = _validate_type(raw, expected_type)
-            if type_err:
-                errors.append(ValidationError(prop, "type", type_err, raw))
-
-        # Numeric (exclude booleans — they are int subclass in Python)
-        if "@minimum" in constraint and isinstance(raw, (int, float)) and not isinstance(raw, bool):
-            if raw < constraint["@minimum"]:
-                errors.append(ValidationError(
-                    prop, "minimum",
-                    f"Value {raw} below minimum {constraint['@minimum']}", raw,
-                ))
-
-        if "@maximum" in constraint and isinstance(raw, (int, float)) and not isinstance(raw, bool):
-            if raw > constraint["@maximum"]:
-                errors.append(ValidationError(
-                    prop, "maximum",
-                    f"Value {raw} exceeds maximum {constraint['@maximum']}", raw,
-                ))
-
-        # String length
-        if "@minLength" in constraint and isinstance(raw, str):
-            if len(raw) < constraint["@minLength"]:
-                errors.append(ValidationError(
-                    prop, "minLength",
-                    f"Length {len(raw)} below minimum {constraint['@minLength']}", raw,
-                ))
-
-        if "@maxLength" in constraint and isinstance(raw, str):
-            if len(raw) > constraint["@maxLength"]:
-                errors.append(ValidationError(
-                    prop, "maxLength",
-                    f"Length {len(raw)} exceeds maximum {constraint['@maxLength']}", raw,
-                ))
-
-        # Enumeration
-        if "@in" in constraint:
-            allowed = constraint["@in"]
-            if raw not in allowed:
-                errors.append(ValidationError(
-                    prop, "in",
-                    f"Value {raw!r} not in allowed set {allowed}", raw,
-                ))
-
-        # Pattern
-        if "@pattern" in constraint and isinstance(raw, str):
-            try:
-                if not re.search(constraint["@pattern"], raw):
-                    errors.append(ValidationError(
-                        prop, "pattern",
-                        f'"{raw}" does not match pattern "{constraint["@pattern"]}"', raw,
-                    ))
-            except re.error as exc:
-                errors.append(ValidationError(
-                    prop, "pattern",
-                    f'Invalid regex pattern "{constraint["@pattern"]}": {exc}', raw,
-                ))
+        # -- Evaluate constraints (including logical and cross-property) --
+        errors.extend(_check_constraints(prop, raw, constraint, node))
 
     return ValidationResult(len(errors) == 0, errors, warnings)
 
@@ -172,14 +115,201 @@ def validate_document(
     return ValidationResult(len(all_errors) == 0, all_errors, all_warnings)
 
 
-# ── Internal ───────────────────────────────────────────────────────
+# -- Constraint evaluation ---------------------------------------------------
+
+
+def _check_constraints(
+    prop: str,
+    raw: Any,
+    constraint: dict[str, Any],
+    node: dict[str, Any] | None = None,
+) -> list[ValidationError]:
+    """Evaluate atomic, logical, and cross-property constraints against *raw*.
+
+    This function is the single point of evaluation for all value-level
+    constraints.  Logical combinators (``@or``, ``@and``, ``@not``) call
+    it recursively on their sub-constraint dicts.  Cross-property
+    constraints (``@lessThan``, ``@lessThanOrEquals``, ``@equals``,
+    ``@disjoint``) use *node* to look up sibling property values.
+    """
+    errors: list[ValidationError] = []
+
+    # -- Logical combinators --------------------------------------------------
+    if "@or" in constraint:
+        branches = constraint["@or"]
+        for branch in branches:
+            if not _check_constraints(prop, raw, branch, node):
+                break  # at least one branch passed (no errors)
+        else:
+            # None of the branches passed
+            errors.append(ValidationError(
+                prop, "or",
+                f"Value {raw!r} did not satisfy any @or branch",
+                raw,
+            ))
+
+    if "@and" in constraint:
+        branches = constraint["@and"]
+        for branch in branches:
+            branch_errors = _check_constraints(prop, raw, branch, node)
+            if branch_errors:
+                errors.append(ValidationError(
+                    prop, "and",
+                    f"Value {raw!r} failed an @and branch: "
+                    f"{branch_errors[0].message}",
+                    raw,
+                ))
+                break  # fail fast
+
+    if "@not" in constraint:
+        inner = constraint["@not"]
+        inner_errors = _check_constraints(prop, raw, inner, node)
+        if not inner_errors:
+            # Inner constraints passed -- @not inverts this to failure
+            errors.append(ValidationError(
+                prop, "not",
+                f"Value {raw!r} must NOT satisfy {inner}",
+                raw,
+            ))
+
+    # -- Cross-property constraints -------------------------------------------
+    if node is not None:
+        if "@lessThan" in constraint:
+            other_prop = constraint["@lessThan"]
+            other_raw = _extract_raw(node.get(other_prop))
+            if other_raw is not None:
+                try:
+                    if not (raw < other_raw):
+                        errors.append(ValidationError(
+                            prop, "lessThan",
+                            f"Value {raw!r} is not less than "
+                            f"{other_prop}={other_raw!r}",
+                            raw,
+                        ))
+                except TypeError:
+                    errors.append(ValidationError(
+                        prop, "lessThan",
+                        f"Cannot compare {type(raw).__name__} with "
+                        f"{type(other_raw).__name__}",
+                        raw,
+                    ))
+
+        if "@lessThanOrEquals" in constraint:
+            other_prop = constraint["@lessThanOrEquals"]
+            other_raw = _extract_raw(node.get(other_prop))
+            if other_raw is not None:
+                try:
+                    if not (raw <= other_raw):
+                        errors.append(ValidationError(
+                            prop, "lessThanOrEquals",
+                            f"Value {raw!r} is not <= "
+                            f"{other_prop}={other_raw!r}",
+                            raw,
+                        ))
+                except TypeError:
+                    errors.append(ValidationError(
+                        prop, "lessThanOrEquals",
+                        f"Cannot compare {type(raw).__name__} with "
+                        f"{type(other_raw).__name__}",
+                        raw,
+                    ))
+
+        if "@equals" in constraint:
+            other_prop = constraint["@equals"]
+            other_raw = _extract_raw(node.get(other_prop))
+            if other_raw is not None:
+                if raw != other_raw:
+                    errors.append(ValidationError(
+                        prop, "equals",
+                        f"Value {raw!r} != {other_prop}={other_raw!r}",
+                        raw,
+                    ))
+
+        if "@disjoint" in constraint:
+            other_prop = constraint["@disjoint"]
+            other_raw = _extract_raw(node.get(other_prop))
+            if other_raw is not None:
+                if raw == other_raw:
+                    errors.append(ValidationError(
+                        prop, "disjoint",
+                        f"Value {raw!r} must differ from "
+                        f"{other_prop}={other_raw!r}",
+                        raw,
+                    ))
+
+    # -- Atomic constraints ---------------------------------------------------
+
+    # Type check
+    expected_type = constraint.get("@type")
+    if expected_type:
+        type_err = _validate_type(raw, expected_type)
+        if type_err:
+            errors.append(ValidationError(prop, "type", type_err, raw))
+
+    # Numeric (exclude booleans -- they are int subclass in Python)
+    if "@minimum" in constraint and isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        if raw < constraint["@minimum"]:
+            errors.append(ValidationError(
+                prop, "minimum",
+                f"Value {raw} below minimum {constraint['@minimum']}", raw,
+            ))
+
+    if "@maximum" in constraint and isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        if raw > constraint["@maximum"]:
+            errors.append(ValidationError(
+                prop, "maximum",
+                f"Value {raw} exceeds maximum {constraint['@maximum']}", raw,
+            ))
+
+    # String length
+    if "@minLength" in constraint and isinstance(raw, str):
+        if len(raw) < constraint["@minLength"]:
+            errors.append(ValidationError(
+                prop, "minLength",
+                f"Length {len(raw)} below minimum {constraint['@minLength']}", raw,
+            ))
+
+    if "@maxLength" in constraint and isinstance(raw, str):
+        if len(raw) > constraint["@maxLength"]:
+            errors.append(ValidationError(
+                prop, "maxLength",
+                f"Length {len(raw)} exceeds maximum {constraint['@maxLength']}", raw,
+            ))
+
+    # Enumeration
+    if "@in" in constraint:
+        allowed = constraint["@in"]
+        if raw not in allowed:
+            errors.append(ValidationError(
+                prop, "in",
+                f"Value {raw!r} not in allowed set {allowed}", raw,
+            ))
+
+    # Pattern
+    if "@pattern" in constraint and isinstance(raw, str):
+        try:
+            if not re.search(constraint["@pattern"], raw):
+                errors.append(ValidationError(
+                    prop, "pattern",
+                    f'"{raw}" does not match pattern "{constraint["@pattern"]}"', raw,
+                ))
+        except re.error as exc:
+            errors.append(ValidationError(
+                prop, "pattern",
+                f'Invalid regex pattern "{constraint["@pattern"]}": {exc}', raw,
+            ))
+
+    return errors
+
+
+# -- Internal -----------------------------------------------------------------
 
 def _count_values(value: Any) -> int:
     """Count the number of values for cardinality checks.
 
-    - ``None`` (absent property) → 0
-    - A list → ``len(list)``
-    - Any other single value → 1
+    - ``None`` (absent property) -> 0
+    - A list -> ``len(list)``
+    - Any other single value -> 1
     """
     if value is None:
         return 0
@@ -201,7 +331,7 @@ def _extract_raw(value: Any) -> Any:
     if isinstance(value, dict) and "@value" in value:
         return value["@value"]
     if isinstance(value, dict) and not any(k.startswith("@") for k in value):
-        return None  # Plain dict without JSON-LD keywords — treat as absent
+        return None  # Plain dict without JSON-LD keywords -- treat as absent
     if isinstance(value, list) and len(value) > 0:
         return _extract_raw(value[0])
     if isinstance(value, list) and len(value) == 0:

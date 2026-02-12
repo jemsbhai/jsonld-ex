@@ -291,3 +291,442 @@ class TestEnumerationConstraint:
         result = validate_node(node, shape)
         assert not result.valid
         assert any(e.constraint == "in" for e in result.errors)
+
+
+# ── GAP-V3: Logical Combinators (@or, @and, @not) ─────────────────
+
+
+class TestOrCombinator:
+    """@or: value passes if ANY branch is satisfied."""
+
+    def test_or_first_branch_matches(self):
+        shape = {
+            "@type": "Thing",
+            "val": {
+                "@or": [
+                    {"@type": "xsd:string", "@minLength": 1},
+                    {"@type": "xsd:integer", "@minimum": 0},
+                ]
+            },
+        }
+        node = {"@type": "Thing", "val": "hello"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_or_second_branch_matches(self):
+        shape = {
+            "@type": "Thing",
+            "val": {
+                "@or": [
+                    {"@type": "xsd:string", "@minLength": 1},
+                    {"@type": "xsd:integer", "@minimum": 0},
+                ]
+            },
+        }
+        node = {"@type": "Thing", "val": 42}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_or_no_branch_matches(self):
+        shape = {
+            "@type": "Thing",
+            "val": {
+                "@or": [
+                    {"@type": "xsd:string", "@minLength": 5},
+                    {"@type": "xsd:integer", "@minimum": 100},
+                ]
+            },
+        }
+        node = {"@type": "Thing", "val": 3}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "or" for e in result.errors)
+
+    def test_or_with_pattern_branch(self):
+        shape = {
+            "@type": "Thing",
+            "email": {
+                "@or": [
+                    {"@pattern": r"^[^@]+@[^@]+$"},
+                    {"@in": ["N/A", "unknown"]},
+                ]
+            },
+        }
+        node = {"@type": "Thing", "email": "N/A"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_or_absent_value_no_required(self):
+        """@or on absent optional property should pass."""
+        shape = {
+            "@type": "Thing",
+            "val": {
+                "@or": [
+                    {"@type": "xsd:string"},
+                    {"@type": "xsd:integer"},
+                ]
+            },
+        }
+        node = {"@type": "Thing"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_or_with_required(self):
+        """@required should still be checked even with @or."""
+        shape = {
+            "@type": "Thing",
+            "val": {
+                "@required": True,
+                "@or": [
+                    {"@type": "xsd:string"},
+                    {"@type": "xsd:integer"},
+                ]
+            },
+        }
+        node = {"@type": "Thing"}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "required" for e in result.errors)
+
+
+class TestAndCombinator:
+    """@and: value passes only if ALL branches are satisfied."""
+
+    def test_and_all_pass(self):
+        shape = {
+            "@type": "Thing",
+            "val": {
+                "@and": [
+                    {"@type": "xsd:string"},
+                    {"@minLength": 3},
+                    {"@pattern": r"^[A-Z]"},
+                ]
+            },
+        }
+        node = {"@type": "Thing", "val": "Hello"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_and_one_fails(self):
+        shape = {
+            "@type": "Thing",
+            "val": {
+                "@and": [
+                    {"@type": "xsd:string"},
+                    {"@minLength": 3},
+                    {"@pattern": r"^[A-Z]"},
+                ]
+            },
+        }
+        node = {"@type": "Thing", "val": "hello"}  # fails pattern
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "and" for e in result.errors)
+
+    def test_and_absent_optional(self):
+        shape = {
+            "@type": "Thing",
+            "val": {
+                "@and": [
+                    {"@type": "xsd:string"},
+                    {"@minLength": 1},
+                ]
+            },
+        }
+        node = {"@type": "Thing"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+
+class TestNotCombinator:
+    """@not: value passes if inner constraints FAIL."""
+
+    def test_not_inverts_failure_to_pass(self):
+        shape = {
+            "@type": "Thing",
+            "val": {
+                "@not": {"@in": ["banned", "forbidden"]}
+            },
+        }
+        node = {"@type": "Thing", "val": "allowed"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_not_inverts_pass_to_failure(self):
+        shape = {
+            "@type": "Thing",
+            "val": {
+                "@not": {"@in": ["banned", "forbidden"]}
+            },
+        }
+        node = {"@type": "Thing", "val": "banned"}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "not" for e in result.errors)
+
+    def test_not_with_pattern(self):
+        """Reject values matching a pattern."""
+        shape = {
+            "@type": "Thing",
+            "code": {
+                "@not": {"@pattern": r"^DEPRECATED_"}
+            },
+        }
+        node = {"@type": "Thing", "code": "ACTIVE_001"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_not_absent_optional(self):
+        shape = {
+            "@type": "Thing",
+            "val": {
+                "@not": {"@type": "xsd:integer"}
+            },
+        }
+        node = {"@type": "Thing"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+
+class TestNestedCombinators:
+    """Combinators can nest: @or inside @and, @not inside @or, etc."""
+
+    def test_or_inside_and(self):
+        """Value must be string AND (email OR 'N/A')."""
+        shape = {
+            "@type": "Thing",
+            "contact": {
+                "@and": [
+                    {"@type": "xsd:string"},
+                    {"@or": [
+                        {"@pattern": r"^[^@]+@[^@]+$"},
+                        {"@in": ["N/A"]},
+                    ]},
+                ]
+            },
+        }
+        # passes: string + matches @in
+        r1 = validate_node({"@type": "Thing", "contact": "N/A"}, shape)
+        assert r1.valid
+
+        # passes: string + matches pattern
+        r2 = validate_node({"@type": "Thing", "contact": "a@b.c"}, shape)
+        assert r2.valid
+
+        # fails: string but neither pattern nor @in
+        r3 = validate_node({"@type": "Thing", "contact": "garbage"}, shape)
+        assert not r3.valid
+
+    def test_not_inside_or(self):
+        """Value is either a positive int OR not a string."""
+        shape = {
+            "@type": "Thing",
+            "val": {
+                "@or": [
+                    {"@type": "xsd:integer", "@minimum": 1},
+                    {"@not": {"@type": "xsd:string"}},
+                ]
+            },
+        }
+        # passes: positive int matches first branch
+        r1 = validate_node({"@type": "Thing", "val": 5}, shape)
+        assert r1.valid
+
+        # fails: string fails both branches (not int, and IS string)
+        r2 = validate_node({"@type": "Thing", "val": "hello"}, shape)
+        assert not r2.valid
+
+
+# ── GAP-V4: Cross-Property Constraints ─────────────────────────────
+
+
+class TestLessThan:
+    """@lessThan: this property's value must be < referenced property's value."""
+
+    def test_less_than_passes(self):
+        shape = {
+            "@type": "Event",
+            "startDate": {"@lessThan": "endDate"},
+        }
+        node = {"@type": "Event", "startDate": "2025-01-01", "endDate": "2025-12-31"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_less_than_fails_equal(self):
+        shape = {
+            "@type": "Event",
+            "startDate": {"@lessThan": "endDate"},
+        }
+        node = {"@type": "Event", "startDate": "2025-06-15", "endDate": "2025-06-15"}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "lessThan" for e in result.errors)
+
+    def test_less_than_fails_greater(self):
+        shape = {
+            "@type": "Event",
+            "startDate": {"@lessThan": "endDate"},
+        }
+        node = {"@type": "Event", "startDate": "2025-12-31", "endDate": "2025-01-01"}
+        result = validate_node(node, shape)
+        assert not result.valid
+
+    def test_less_than_numeric(self):
+        shape = {
+            "@type": "Range",
+            "low": {"@lessThan": "high"},
+        }
+        node = {"@type": "Range", "low": 10, "high": 20}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_less_than_missing_other_prop_skips(self):
+        """If referenced property is absent, skip the check."""
+        shape = {
+            "@type": "Event",
+            "startDate": {"@lessThan": "endDate"},
+        }
+        node = {"@type": "Event", "startDate": "2025-01-01"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_less_than_this_absent_skips(self):
+        """If this property is absent (optional), skip."""
+        shape = {
+            "@type": "Event",
+            "startDate": {"@lessThan": "endDate"},
+        }
+        node = {"@type": "Event", "endDate": "2025-12-31"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+
+class TestLessThanOrEquals:
+    """@lessThanOrEquals: value must be <= referenced property."""
+
+    def test_lte_equal_passes(self):
+        shape = {
+            "@type": "Range",
+            "low": {"@lessThanOrEquals": "high"},
+        }
+        node = {"@type": "Range", "low": 10, "high": 10}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_lte_less_passes(self):
+        shape = {
+            "@type": "Range",
+            "low": {"@lessThanOrEquals": "high"},
+        }
+        node = {"@type": "Range", "low": 5, "high": 10}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_lte_greater_fails(self):
+        shape = {
+            "@type": "Range",
+            "low": {"@lessThanOrEquals": "high"},
+        }
+        node = {"@type": "Range", "low": 15, "high": 10}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "lessThanOrEquals" for e in result.errors)
+
+
+class TestEquals:
+    """@equals: both properties must have the same value."""
+
+    def test_equals_passes(self):
+        shape = {
+            "@type": "Account",
+            "email": {"@equals": "confirmEmail"},
+        }
+        node = {"@type": "Account", "email": "a@b.c", "confirmEmail": "a@b.c"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_equals_fails(self):
+        shape = {
+            "@type": "Account",
+            "email": {"@equals": "confirmEmail"},
+        }
+        node = {"@type": "Account", "email": "a@b.c", "confirmEmail": "x@y.z"}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "equals" for e in result.errors)
+
+    def test_equals_with_value_nodes(self):
+        """@equals works with @value-wrapped nodes."""
+        shape = {
+            "@type": "Account",
+            "email": {"@equals": "confirmEmail"},
+        }
+        node = {
+            "@type": "Account",
+            "email": {"@value": "a@b.c"},
+            "confirmEmail": {"@value": "a@b.c"},
+        }
+        result = validate_node(node, shape)
+        assert result.valid
+
+
+class TestDisjoint:
+    """@disjoint: property values must NOT be equal."""
+
+    def test_disjoint_passes(self):
+        shape = {
+            "@type": "Transfer",
+            "source": {"@disjoint": "destination"},
+        }
+        node = {"@type": "Transfer", "source": "acct-1", "destination": "acct-2"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_disjoint_fails(self):
+        shape = {
+            "@type": "Transfer",
+            "source": {"@disjoint": "destination"},
+        }
+        node = {"@type": "Transfer", "source": "acct-1", "destination": "acct-1"}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "disjoint" for e in result.errors)
+
+    def test_disjoint_missing_other_skips(self):
+        shape = {
+            "@type": "Transfer",
+            "source": {"@disjoint": "destination"},
+        }
+        node = {"@type": "Transfer", "source": "acct-1"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+
+class TestCrossPropertyWithOtherConstraints:
+    """Cross-property constraints compose with atomic constraints."""
+
+    def test_less_than_plus_type(self):
+        shape = {
+            "@type": "Range",
+            "low": {
+                "@type": "xsd:integer",
+                "@minimum": 0,
+                "@lessThan": "high",
+            },
+        }
+        node = {"@type": "Range", "low": 5, "high": 10}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_less_than_plus_type_type_fails(self):
+        shape = {
+            "@type": "Range",
+            "low": {
+                "@type": "xsd:integer",
+                "@lessThan": "high",
+            },
+        }
+        node = {"@type": "Range", "low": "not a number", "high": 10}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "type" for e in result.errors)
