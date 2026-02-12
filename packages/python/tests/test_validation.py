@@ -730,3 +730,244 @@ class TestCrossPropertyWithOtherConstraints:
         result = validate_node(node, shape)
         assert not result.valid
         assert any(e.constraint == "type" for e in result.errors)
+
+
+# -- GAP-V5: Nested / Referenced Shapes --------------------------------------
+
+
+class TestNestedShapes:
+    """@shape on a property constraint validates the property value as a node."""
+
+    def test_nested_shape_passes(self):
+        person_shape = {
+            "@type": "Person",
+            "name": {"@required": True, "@type": "xsd:string"},
+        }
+        shape = {
+            "@type": "Article",
+            "author": {"@shape": person_shape},
+        }
+        node = {
+            "@type": "Article",
+            "author": {"@type": "Person", "name": "Alice"},
+        }
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_nested_shape_fails(self):
+        person_shape = {
+            "@type": "Person",
+            "name": {"@required": True, "@type": "xsd:string"},
+        }
+        shape = {
+            "@type": "Article",
+            "author": {"@shape": person_shape},
+        }
+        node = {
+            "@type": "Article",
+            "author": {"@type": "Person"},  # missing name
+        }
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "shape" for e in result.errors)
+
+    def test_nested_shape_absent_optional(self):
+        """Optional property with @shape: absent is OK."""
+        person_shape = {"@type": "Person", "name": {"@required": True}}
+        shape = {
+            "@type": "Article",
+            "author": {"@shape": person_shape},
+        }
+        node = {"@type": "Article"}
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_nested_shape_required_absent(self):
+        person_shape = {"@type": "Person", "name": {"@required": True}}
+        shape = {
+            "@type": "Article",
+            "author": {"@required": True, "@shape": person_shape},
+        }
+        node = {"@type": "Article"}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "required" for e in result.errors)
+
+    def test_nested_shape_not_a_dict(self):
+        """If property value is a scalar, @shape fails."""
+        person_shape = {"@type": "Person"}
+        shape = {
+            "@type": "Article",
+            "author": {"@shape": person_shape},
+        }
+        node = {"@type": "Article", "author": "just a string"}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert any(e.constraint == "shape" for e in result.errors)
+
+    def test_deeply_nested_shapes(self):
+        """Shape references can nest multiple levels."""
+        addr_shape = {
+            "@type": "Address",
+            "city": {"@required": True},
+        }
+        person_shape = {
+            "@type": "Person",
+            "name": {"@required": True},
+            "address": {"@shape": addr_shape},
+        }
+        shape = {
+            "@type": "Article",
+            "author": {"@shape": person_shape},
+        }
+        node = {
+            "@type": "Article",
+            "author": {
+                "@type": "Person",
+                "name": "Alice",
+                "address": {"@type": "Address", "city": "Boston"},
+            },
+        }
+        result = validate_node(node, shape)
+        assert result.valid
+
+    def test_deeply_nested_shapes_inner_fails(self):
+        addr_shape = {
+            "@type": "Address",
+            "city": {"@required": True},
+        }
+        person_shape = {
+            "@type": "Person",
+            "name": {"@required": True},
+            "address": {"@shape": addr_shape},
+        }
+        shape = {
+            "@type": "Article",
+            "author": {"@shape": person_shape},
+        }
+        node = {
+            "@type": "Article",
+            "author": {
+                "@type": "Person",
+                "name": "Alice",
+                "address": {"@type": "Address"},  # missing city
+            },
+        }
+        result = validate_node(node, shape)
+        assert not result.valid
+
+    def test_nested_shape_with_list_first_item(self):
+        """If property is a list, validate the first item."""
+        person_shape = {"@type": "Person", "name": {"@required": True}}
+        shape = {
+            "@type": "Article",
+            "author": {"@shape": person_shape},
+        }
+        node = {
+            "@type": "Article",
+            "author": [{"@type": "Person", "name": "Alice"}],
+        }
+        result = validate_node(node, shape)
+        assert result.valid
+
+
+# -- GAP-V6: Severity Levels --------------------------------------------------
+
+
+class TestSeverityLevels:
+    """@severity on constraints: 'error' (default), 'warning', 'info'."""
+
+    def test_default_severity_is_error(self):
+        shape = {
+            "@type": "Thing",
+            "name": {"@required": True},
+        }
+        node = {"@type": "Thing"}
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert len(result.errors) == 1
+        assert len(result.warnings) == 0
+
+    def test_warning_severity_does_not_fail(self):
+        shape = {
+            "@type": "Thing",
+            "description": {
+                "@required": True,
+                "@severity": "warning",
+            },
+        }
+        node = {"@type": "Thing"}  # missing description
+        result = validate_node(node, shape)
+        assert result.valid  # warnings don't fail
+        assert len(result.warnings) == 1
+        assert result.warnings[0].code == "required"
+
+    def test_info_severity_does_not_fail(self):
+        shape = {
+            "@type": "Thing",
+            "tags": {
+                "@minCount": 3,
+                "@severity": "info",
+            },
+        }
+        node = {"@type": "Thing", "tags": ["a"]}
+        result = validate_node(node, shape)
+        assert result.valid
+        assert len(result.warnings) == 1  # info stored as warning
+        assert result.warnings[0].code == "minCount"
+
+    def test_error_severity_still_fails(self):
+        shape = {
+            "@type": "Thing",
+            "name": {
+                "@required": True,
+                "@severity": "error",
+            },
+        }
+        node = {"@type": "Thing"}
+        result = validate_node(node, shape)
+        assert not result.valid
+
+    def test_mixed_severities(self):
+        """One error + one warning: result is invalid due to error."""
+        shape = {
+            "@type": "Thing",
+            "name": {"@required": True},  # default = error
+            "description": {
+                "@required": True,
+                "@severity": "warning",
+            },
+        }
+        node = {"@type": "Thing"}  # missing both
+        result = validate_node(node, shape)
+        assert not result.valid
+        assert len(result.errors) == 1
+        assert result.errors[0].path == "name"
+        assert len(result.warnings) == 1
+        assert result.warnings[0].path == "description"
+
+    def test_warning_severity_on_type_constraint(self):
+        shape = {
+            "@type": "Thing",
+            "age": {
+                "@type": "xsd:integer",
+                "@severity": "warning",
+            },
+        }
+        node = {"@type": "Thing", "age": "not a number"}
+        result = validate_node(node, shape)
+        assert result.valid
+        assert len(result.warnings) >= 1
+
+    def test_warning_severity_on_pattern(self):
+        shape = {
+            "@type": "Thing",
+            "code": {
+                "@pattern": r"^[A-Z]{3}$",
+                "@severity": "warning",
+            },
+        }
+        node = {"@type": "Thing", "code": "abc"}
+        result = validate_node(node, shape)
+        assert result.valid
+        assert len(result.warnings) >= 1

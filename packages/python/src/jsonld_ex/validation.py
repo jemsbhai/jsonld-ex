@@ -57,6 +57,7 @@ def validate_node(node: dict[str, Any], shape: dict[str, Any]) -> ValidationResu
             continue
 
         value = node.get(prop)
+        severity = constraint.get("@severity", "error")
 
         # -- Cardinality constraints (operate on raw value before extraction) --
         count = _count_values(value)
@@ -64,33 +65,69 @@ def validate_node(node: dict[str, Any], shape: dict[str, Any]) -> ValidationResu
         if "@minCount" in constraint:
             min_count = constraint["@minCount"]
             if count < min_count:
-                errors.append(ValidationError(
-                    prop, "minCount",
+                _emit(
+                    errors, warnings, severity, prop, "minCount",
                     f"Expected at least {min_count} value(s), found {count}",
                     value,
-                ))
+                )
 
         if "@maxCount" in constraint:
             max_count = constraint["@maxCount"]
             if count > max_count:
-                errors.append(ValidationError(
-                    prop, "maxCount",
+                _emit(
+                    errors, warnings, severity, prop, "maxCount",
                     f"Expected at most {max_count} value(s), found {count}",
                     value,
-                ))
+                )
 
         # -- Extract scalar for remaining constraints --
         raw = _extract_raw(value)
 
         if constraint.get("@required") and raw is None:
-            errors.append(ValidationError(prop, "required", f'Property "{prop}" is required'))
+            _emit(
+                errors, warnings, severity, prop, "required",
+                f'Property "{prop}" is required',
+            )
+            continue
+
+        if raw is None and value is None:
+            continue
+
+        # -- Nested shape validation (GAP-V5) --
+        if "@shape" in constraint:
+            inner_shape = constraint["@shape"]
+            # Resolve the target node: raw dict, or original value if list
+            target = value
+            if isinstance(target, list) and len(target) > 0:
+                target = target[0]
+            if not isinstance(target, dict):
+                _emit(
+                    errors, warnings, severity, prop, "shape",
+                    f"Expected a node (dict) for @shape validation, "
+                    f"got {type(target).__name__}",
+                    target,
+                )
+            else:
+                inner_result = validate_node(target, inner_shape)
+                if not inner_result.valid:
+                    for e in inner_result.errors:
+                        e.path = f"{prop}/{e.path}"
+                    _emit(
+                        errors, warnings, severity, prop, "shape",
+                        f"Nested shape validation failed: "
+                        f"{inner_result.errors[0].message}",
+                        target,
+                    )
+            # @shape is the primary constraint; skip scalar checks
             continue
 
         if raw is None:
             continue
 
         # -- Evaluate constraints (including logical and cross-property) --
-        errors.extend(_check_constraints(prop, raw, constraint, node))
+        prop_errors = _check_constraints(prop, raw, constraint, node)
+        for e in prop_errors:
+            _emit(errors, warnings, severity, e.path, e.constraint, e.message, e.value)
 
     return ValidationResult(len(errors) == 0, errors, warnings)
 
@@ -113,6 +150,25 @@ def validate_document(
                 all_warnings.extend(result.warnings)
 
     return ValidationResult(len(all_errors) == 0, all_errors, all_warnings)
+
+
+# -- Severity routing ---------------------------------------------------------
+
+
+def _emit(
+    errors: list[ValidationError],
+    warnings: list[ValidationWarning],
+    severity: str,
+    path: str,
+    constraint: str,
+    message: str,
+    value: Any = None,
+) -> None:
+    """Route a finding to errors or warnings based on severity."""
+    if severity in ("warning", "info"):
+        warnings.append(ValidationWarning(path, constraint, message))
+    else:
+        errors.append(ValidationError(path, constraint, message, value))
 
 
 # -- Constraint evaluation ---------------------------------------------------
