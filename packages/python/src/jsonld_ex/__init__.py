@@ -90,6 +90,22 @@ from jsonld_ex.context import (
     ContextDiff,
     CompatibilityResult,
 )
+from jsonld_ex.data_protection import (
+    annotate_protection,
+    get_protection_metadata,
+    DataProtectionMetadata,
+    ConsentRecord,
+    create_consent_record,
+    is_consent_active,
+    is_personal_data,
+    is_sensitive_data,
+    filter_by_jurisdiction,
+    filter_personal_data,
+    LEGAL_BASES,
+    PERSONAL_DATA_CATEGORIES,
+    CONSENT_GRANULARITIES,
+    ACCESS_LEVELS,
+)
 
 # Optional modules — import only if dependencies are available
 try:
@@ -205,4 +221,19 @@ __all__ = [
     "check_compatibility",
     "ContextDiff",
     "CompatibilityResult",
+    # Data protection (GDPR/privacy compliance)
+    "annotate_protection",
+    "get_protection_metadata",
+    "DataProtectionMetadata",
+    "ConsentRecord",
+    "create_consent_record",
+    "is_consent_active",
+    "is_personal_data",
+    "is_sensitive_data",
+    "filter_by_jurisdiction",
+    "filter_personal_data",
+    "LEGAL_BASES",
+    "PERSONAL_DATA_CATEGORIES",
+    "CONSENT_GRANULARITIES",
+    "ACCESS_LEVELS",
 ]
