@@ -3,7 +3,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/jsonld-ex)](https://pypi.org/project/jsonld-ex/)
 [![Python](https://img.shields.io/pypi/pyversions/jsonld-ex)](https://pypi.org/project/jsonld-ex/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-832%2B%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-1396%2B%20passing-brightgreen)]()
 
 **JSON-LD 1.2 Extensions for AI/ML Data Exchange, Security, and Validation**
 
@@ -60,12 +60,13 @@ print(f"Fused: b={fused.belief:.3f}, u={fused.uncertainty:.3f}")
 
 ## Features
 
-jsonld-ex provides **14 modules** organized into three extension categories:
+jsonld-ex provides **15 modules** organized into four extension categories:
 
 | Category | Modules | Purpose |
 |----------|---------|---------|
 | **AI/ML Data Modeling** | ai_ml, confidence_algebra, confidence_bridge, confidence_decay, inference, vector | Confidence scores, Subjective Logic, provenance, embeddings |
 | **Security Hardening** | security, validation | Context integrity, allowlists, resource limits, native shapes |
+| **Data Protection** | data_protection | GDPR/privacy compliance, consent lifecycle, data classification |
 | **Interoperability** | owl_interop, temporal, merge, processor, cbor_ld, mqtt | PROV-O, SHACL, OWL, RDF-Star, temporal queries, IoT transport |
 
 ---
@@ -279,6 +280,56 @@ result = validate_node(
 ```
 
 Supported constraints: `@required`, `@type`, `@minimum`, `@maximum`, `@minLength`, `@maxLength`, `@pattern`.
+
+## Data Protection & Privacy Compliance
+
+GDPR/privacy compliance metadata for ML data pipelines. Annotations map to [W3C Data Privacy Vocabulary (DPV) v2.2](https://w3id.org/dpv) concepts. Composes with `annotate()` — both produce compatible `@value` dicts that can be merged.
+
+```python
+from jsonld_ex import (
+    annotate_protection, get_protection_metadata,
+    create_consent_record, is_consent_active,
+    is_personal_data, is_sensitive_data,
+    filter_personal_data, filter_by_jurisdiction,
+)
+
+# Annotate a value with data protection metadata
+name = annotate_protection(
+    "John Doe",
+    personal_data_category="regular",      # regular, sensitive, special_category,
+                                            # anonymized, pseudonymized, synthetic, non_personal
+    legal_basis="consent",                  # Maps to GDPR Art. 6
+    processing_purpose="Healthcare provision",
+    data_controller="https://hospital.example.org",
+    retention_until="2030-12-31T23:59:59Z", # Mandatory deletion deadline
+    jurisdiction="EU",
+    access_level="confidential",
+)
+
+# Compose with AI/ML provenance (both produce @value dicts)
+from jsonld_ex import annotate
+provenance = annotate("John Doe", confidence=0.95, source="ner-model-v2")
+protection = annotate_protection("John Doe", personal_data_category="regular", legal_basis="consent")
+merged = {**provenance, **protection}  # All fields coexist
+
+# Consent lifecycle tracking
+consent = create_consent_record(
+    given_at="2025-01-15T10:00:00Z",
+    scope=["Marketing", "Analytics"],
+    granularity="specific",
+)
+is_consent_active(consent)  # True
+is_consent_active(consent, at_time="2024-12-01T00:00:00Z")  # False (before given)
+
+# GDPR-correct classification
+is_personal_data({"@value": "John", "@personalDataCategory": "pseudonymized"})  # True
+is_personal_data({"@value": "stats", "@personalDataCategory": "anonymized"})    # False
+is_sensitive_data({"@value": "diagnosis", "@personalDataCategory": "sensitive"}) # True
+
+# Filter graphs for personal data or by jurisdiction
+personal_nodes = filter_personal_data(graph)
+eu_nodes = filter_by_jurisdiction(graph, "name", "EU")
+```
 
 ## Vector Embeddings
 
@@ -572,6 +623,7 @@ jsonld-ex is a research project targeting W3C standardization. It addresses gaps
 - **Security hardening** — Context integrity verification, allowlists, and resource limits not present in JSON-LD 1.1
 - **AI data modeling** — No standard way to express confidence, provenance, or vector embeddings in JSON-LD
 - **Validation** — JSON-LD lacks native validation; current options (SHACL, ShEx) require separate RDF tooling
+- **Data protection** — No existing ML data format has built-in GDPR/privacy compliance metadata with W3C DPV interop
 
 ## Links
 

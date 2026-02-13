@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] — 2026-02-13
+
+### Added
+
+**Data Protection & Privacy Compliance** (`data_protection`) — Phase 1
+- New `annotate_protection()` function with 10 annotation fields mapping to W3C DPV v2.2 concepts
+- Personal data classification: `@personalDataCategory` (regular, sensitive, special_category, anonymized, pseudonymized, synthetic, non_personal)
+- Legal basis tracking: `@legalBasis` (consent, contract, legal_obligation, vital_interest, public_task, legitimate_interest — GDPR Art. 6)
+- Processing metadata: `@processingPurpose`, `@dataController`, `@dataProcessor`, `@dataSubject`
+- Retention management: `@retentionUntil` (semantically distinct from `@validUntil`)
+- Jurisdiction and access control: `@jurisdiction`, `@accessLevel`
+- Consent lifecycle: `create_consent_record()`, `is_consent_active()` with time-aware status checking
+- GDPR-correct classification helpers: `is_personal_data()`, `is_sensitive_data()`
+- Graph filtering: `filter_by_jurisdiction()`, `filter_personal_data()`
+- Composes with existing `ai_ml.annotate()` via dict merge — both produce compatible `@value` dicts
+- 54 new tests
+
+### Changed
+- Version bumped to 0.4.0
+
+### Migration from 0.3.x
+No breaking changes. The `data_protection` module is entirely additive. No existing modules were modified. All new parameters use keyword-only arguments to prevent accidental positional usage.
+
 ## [0.3.5] — 2026-02-12
 
 ### Added
