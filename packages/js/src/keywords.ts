@@ -30,6 +30,17 @@ export const KEYWORD_TRANSLATION_MODEL = '@translationModel';
 // Measurement
 export const KEYWORD_MEASUREMENT_UNCERTAINTY = '@measurementUncertainty';
 export const KEYWORD_UNIT = '@unit';
+// Delegation
+export const KEYWORD_ACTED_ON_BEHALF_OF = '@actedOnBehalfOf';
+// Derivation
+export const KEYWORD_WAS_DERIVED_FROM = '@wasDerivedFrom';
+// Invalidation
+export const KEYWORD_WAS_INVALIDATED_BY = '@wasInvalidatedBy';
+// Calibration
+export const KEYWORD_CALIBRATION_STATUS = '@calibrationStatus';
+export const KEYWORD_CALIBRATION_TARGET = '@calibrationTarget';
+// Aggregation
+export const KEYWORD_WAS_AGGREGATED_BY = '@wasAggregatedBy';
 
 // ── Vector Embedding Keywords ─────────────────────────────────────
 /** Container type for vector embeddings */
@@ -81,4 +92,6 @@ export const EXTENSION_KEYWORDS = [
   KEYWORD_MEDIA_TYPE, KEYWORD_CONTENT_URL, KEYWORD_CONTENT_HASH,
   KEYWORD_TRANSLATED_FROM, KEYWORD_TRANSLATION_MODEL,
   KEYWORD_MEASUREMENT_UNCERTAINTY, KEYWORD_UNIT,
+  KEYWORD_ACTED_ON_BEHALF_OF, KEYWORD_WAS_DERIVED_FROM, KEYWORD_WAS_INVALIDATED_BY,
+  KEYWORD_CALIBRATION_STATUS, KEYWORD_CALIBRATION_TARGET, KEYWORD_WAS_AGGREGATED_BY,
 ] as const;

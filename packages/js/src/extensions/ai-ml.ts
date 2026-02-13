@@ -25,6 +25,12 @@ import {
   KEYWORD_TRANSLATION_MODEL,
   KEYWORD_MEASUREMENT_UNCERTAINTY,
   KEYWORD_UNIT,
+  KEYWORD_ACTED_ON_BEHALF_OF,
+  KEYWORD_WAS_DERIVED_FROM,
+  KEYWORD_WAS_INVALIDATED_BY,
+  KEYWORD_CALIBRATION_STATUS,
+  KEYWORD_CALIBRATION_TARGET,
+  KEYWORD_WAS_AGGREGATED_BY,
   JSONLD_EX_NAMESPACE,
 } from '../keywords.js';
 import { AnnotatedValue, ProvenanceMetadata } from '../types.js';
@@ -84,6 +90,30 @@ export const AI_ML_CONTEXT = {
   'unit': {
     '@id': `${JSONLD_EX_NAMESPACE}unit`,
     '@type': 'http://www.w3.org/2001/XMLSchema#string',
+  },
+  'actedOnBehalfOf': {
+    '@id': `${JSONLD_EX_NAMESPACE}actedOnBehalfOf`,
+    '@type': '@id',
+  },
+  'wasDerivedFrom': {
+    '@id': `${JSONLD_EX_NAMESPACE}wasDerivedFrom`,
+    '@type': '@id',
+  },
+  'wasInvalidatedBy': {
+    '@id': `${JSONLD_EX_NAMESPACE}wasInvalidatedBy`,
+    '@type': '@id',
+  },
+  'calibrationStatus': {
+    '@id': `${JSONLD_EX_NAMESPACE}calibrationStatus`,
+    '@type': 'http://www.w3.org/2001/XMLSchema#string',
+  },
+  'calibrationTarget': {
+    '@id': `${JSONLD_EX_NAMESPACE}calibrationTarget`,
+    '@type': 'http://www.w3.org/2001/XMLSchema#string',
+  },
+  'wasAggregatedBy': {
+    '@id': `${JSONLD_EX_NAMESPACE}wasAggregatedBy`,
+    '@type': '@id',
   },
 };
 
@@ -145,6 +175,24 @@ export function annotate(
   if (metadata.unit !== undefined) {
     result[KEYWORD_UNIT] = metadata.unit;
   }
+  if (metadata.actedOnBehalfOf !== undefined) {
+    result[KEYWORD_ACTED_ON_BEHALF_OF] = metadata.actedOnBehalfOf;
+  }
+  if (metadata.wasDerivedFrom !== undefined) {
+    result[KEYWORD_WAS_DERIVED_FROM] = metadata.wasDerivedFrom;
+  }
+  if (metadata.wasInvalidatedBy !== undefined) {
+    result[KEYWORD_WAS_INVALIDATED_BY] = metadata.wasInvalidatedBy;
+  }
+  if (metadata.calibrationStatus !== undefined) {
+    result[KEYWORD_CALIBRATION_STATUS] = metadata.calibrationStatus;
+  }
+  if (metadata.calibrationTarget !== undefined) {
+    result[KEYWORD_CALIBRATION_TARGET] = metadata.calibrationTarget;
+  }
+  if (metadata.wasAggregatedBy !== undefined) {
+    result[KEYWORD_WAS_AGGREGATED_BY] = metadata.wasAggregatedBy;
+  }
 
   return result;
 }
@@ -200,6 +248,12 @@ export function getProvenance(node: any): ProvenanceMetadata {
   meta.translationModel = extractField(node, 'translationModel', KEYWORD_TRANSLATION_MODEL);
   meta.measurementUncertainty = extractField(node, 'measurementUncertainty', KEYWORD_MEASUREMENT_UNCERTAINTY);
   meta.unit = extractField(node, 'unit', KEYWORD_UNIT);
+  meta.actedOnBehalfOf = extractField(node, 'actedOnBehalfOf', KEYWORD_ACTED_ON_BEHALF_OF);
+  meta.wasDerivedFrom = extractField(node, 'wasDerivedFrom', KEYWORD_WAS_DERIVED_FROM);
+  meta.wasInvalidatedBy = extractField(node, 'wasInvalidatedBy', KEYWORD_WAS_INVALIDATED_BY);
+  meta.calibrationStatus = extractField(node, 'calibrationStatus', KEYWORD_CALIBRATION_STATUS);
+  meta.calibrationTarget = extractField(node, 'calibrationTarget', KEYWORD_CALIBRATION_TARGET);
+  meta.wasAggregatedBy = extractField(node, 'wasAggregatedBy', KEYWORD_WAS_AGGREGATED_BY);
 
   // Remove undefined entries
   return Object.fromEntries(

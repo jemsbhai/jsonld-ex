@@ -26,6 +26,17 @@ export interface ProvenanceMetadata {
   // Measurement uncertainty (GAP-IOT1)
   measurementUncertainty?: number;
   unit?: string;
+  // Delegation (GAP-P1)
+  actedOnBehalfOf?: string;
+  // Derivation (GAP-P2)
+  wasDerivedFrom?: string;
+  // Invalidation (GAP-P3)
+  wasInvalidatedBy?: string;
+  // Calibration (GAP-IOT2)
+  calibrationStatus?: string;
+  calibrationTarget?: string;
+  // Aggregation (GAP-IOT4)
+  wasAggregatedBy?: string;
 }
 
 /** A JSON-LD value annotated with provenance */
@@ -48,6 +59,17 @@ export interface AnnotatedValue {
   // Measurement
   '@measurementUncertainty'?: number;
   '@unit'?: string;
+  // Delegation
+  '@actedOnBehalfOf'?: string;
+  // Derivation
+  '@wasDerivedFrom'?: string;
+  // Invalidation
+  '@wasInvalidatedBy'?: string;
+  // Calibration
+  '@calibrationStatus'?: string;
+  '@calibrationTarget'?: string;
+  // Aggregation
+  '@wasAggregatedBy'?: string;
 }
 
 // ── Vector Embeddings ─────────────────────────────────────────────
