@@ -1193,6 +1193,307 @@ def shape_to_owl_restrictions(
     }
 
 
+def owl_to_shape(owl_doc: dict[str, Any]) -> dict[str, Any]:
+    """Convert OWL class restrictions back to a jsonld-ex @shape definition.
+
+    Inverse of :func:`shape_to_owl_restrictions`.  Parses OWL Restriction
+    nodes from ``rdfs:subClassOf`` and reconstructs the equivalent jsonld-ex
+    constraint dictionary.
+
+    Mapping (reverse of shape_to_owl_restrictions):
+        owl:minCardinality 1          → @required: True
+        owl:minCardinality N (N > 1)  → @minCount: N
+        owl:maxCardinality            → @maxCount
+        owl:allValuesFrom simple IRI  → @type
+        owl:allValuesFrom DatatypeRestriction → @type + facets
+        owl:allValuesFrom + owl:oneOf → @in
+        owl:allValuesFrom + owl:unionOf → @or (recursive)
+        owl:allValuesFrom + owl:intersectionOf → @and (recursive)
+        owl:allValuesFrom + owl:datatypeComplementOf → @not (recursive)
+        rdfs:subClassOf plain IRI     → @extends
+        jex: namespace annotations    → unmappable constraints restored
+
+    When the base datatype is a default (xsd:string for string facets,
+    xsd:decimal for numeric facets), the @type is omitted to match the
+    original jsonld-ex convention.
+
+    Args:
+        owl_doc: OWL axioms as JSON-LD (output of shape_to_owl_restrictions).
+
+    Returns:
+        A jsonld-ex @shape definition dict.
+    """
+    graph = owl_doc.get("@graph", [])
+    if not isinstance(graph, list):
+        graph = [graph]
+    if not graph:
+        raise ValueError("OWL document must contain at least one @graph node")
+
+    owl_class = graph[0]
+    class_iri = owl_class.get("@id")
+    if class_iri is None:
+        raise ValueError("OWL class node must have @id")
+
+    shape: dict[str, Any] = {"@type": class_iri}
+
+    # Collect rdfs:subClassOf entries
+    sub_raw = owl_class.get(f"{RDFS}subClassOf")
+    if sub_raw is None:
+        # Check for jex: annotations even without restrictions
+        _restore_jex_annotations(owl_class, shape)
+        return shape
+
+    entries = sub_raw if isinstance(sub_raw, list) else [sub_raw]
+
+    # Separate OWL Restrictions from plain IRI superclasses (@extends)
+    extends: list[str] = []
+    properties: dict[str, dict[str, Any]] = {}
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+
+        # Plain IRI reference (not a Restriction) → @extends
+        if entry.get("@type") != f"{OWL}Restriction":
+            iri = entry.get("@id")
+            if iri:
+                extends.append(iri)
+            continue
+
+        # It's an owl:Restriction — extract property and constraint
+        prop_node = entry.get(f"{OWL}onProperty", {})
+        prop_iri = prop_node.get("@id") if isinstance(prop_node, dict) else prop_node
+        if not prop_iri:
+            continue
+
+        # Ensure property dict exists
+        if prop_iri not in properties:
+            properties[prop_iri] = {}
+        prop = properties[prop_iri]
+
+        # owl:minCardinality
+        min_card_node = entry.get(f"{OWL}minCardinality")
+        if min_card_node is not None:
+            val = min_card_node.get("@value", min_card_node) if isinstance(min_card_node, dict) else min_card_node
+            if val == 1:
+                prop["@required"] = True
+            else:
+                prop["@minCount"] = val
+
+        # owl:maxCardinality
+        max_card_node = entry.get(f"{OWL}maxCardinality")
+        if max_card_node is not None:
+            val = max_card_node.get("@value", max_card_node) if isinstance(max_card_node, dict) else max_card_node
+            prop["@maxCount"] = val
+
+        # owl:allValuesFrom
+        avf = entry.get(f"{OWL}allValuesFrom")
+        if avf is not None:
+            _parse_allvaluesfrom(avf, prop)
+
+    # Set @extends
+    if len(extends) == 1:
+        shape["@extends"] = extends[0]
+    elif len(extends) > 1:
+        shape["@extends"] = extends
+
+    # Attach property constraints
+    for prop_iri, constraint in properties.items():
+        shape[prop_iri] = constraint
+
+    # Restore jex: namespace annotations (unmappable constraints)
+    _restore_jex_annotations(owl_class, shape)
+
+    return shape
+
+
+# ── Default datatypes to strip on reverse mapping ──────────────────
+_DEFAULT_NUMERIC_DT = f"{XSD}decimal"
+_DEFAULT_STRING_DT = f"{XSD}string"
+
+# Facet IRI → (@shape key, is_string_facet)
+_FACET_MAP: dict[str, tuple[str, bool]] = {
+    f"{XSD}minInclusive": ("@minimum", False),
+    f"{XSD}maxInclusive": ("@maximum", False),
+    f"{XSD}minLength": ("@minLength", True),
+    f"{XSD}maxLength": ("@maxLength", True),
+    f"{XSD}pattern": ("@pattern", True),
+}
+
+# jex: local name → @shape key
+_JEX_ANNOTATION_MAP: dict[str, str] = {
+    "lessThan": "@lessThan",
+    "lessThanOrEquals": "@lessThanOrEquals",
+    "equals": "@equals",
+    "disjoint": "@disjoint",
+    "severity": "@severity",
+}
+
+
+def _parse_allvaluesfrom(avf: Any, prop: dict[str, Any]) -> None:
+    """Parse an owl:allValuesFrom value into jsonld-ex constraint keys."""
+    # Simple IRI → @type
+    if isinstance(avf, dict) and "@id" in avf and "@type" not in avf:
+        prop["@type"] = _iri_to_xsd_prefixed(avf["@id"])
+        return
+
+    if not isinstance(avf, dict):
+        return
+
+    # owl:oneOf → @in
+    one_of = avf.get(f"{OWL}oneOf")
+    if one_of is not None:
+        items = one_of.get("@list", one_of) if isinstance(one_of, dict) else one_of
+        prop["@in"] = items
+        return
+
+    # owl:unionOf → @or
+    union_of = avf.get(f"{OWL}unionOf")
+    if union_of is not None:
+        members = union_of.get("@list", union_of) if isinstance(union_of, dict) else union_of
+        prop["@or"] = [_owl_datarange_to_constraint(m) for m in members]
+        return
+
+    # owl:intersectionOf → @and
+    intersection_of = avf.get(f"{OWL}intersectionOf")
+    if intersection_of is not None:
+        members = intersection_of.get("@list", intersection_of) if isinstance(intersection_of, dict) else intersection_of
+        prop["@and"] = [_owl_datarange_to_constraint(m) for m in members]
+        return
+
+    # owl:datatypeComplementOf → @not
+    complement_of = avf.get(f"{OWL}datatypeComplementOf")
+    if complement_of is not None:
+        prop["@not"] = _owl_datarange_to_constraint(complement_of)
+        return
+
+    # DatatypeRestriction: owl:onDatatype + owl:withRestrictions
+    on_datatype = avf.get(f"{OWL}onDatatype")
+    with_restrictions = avf.get(f"{OWL}withRestrictions")
+    if on_datatype is not None and with_restrictions is not None:
+        dt_iri = on_datatype.get("@id") if isinstance(on_datatype, dict) else on_datatype
+        facets_list = with_restrictions.get("@list", with_restrictions) if isinstance(with_restrictions, dict) else with_restrictions
+
+        has_string_facet = False
+        has_numeric_facet = False
+        for facet_dict in facets_list:
+            if not isinstance(facet_dict, dict):
+                continue
+            for facet_iri, (shape_key, is_string) in _FACET_MAP.items():
+                if facet_iri in facet_dict:
+                    prop[shape_key] = facet_dict[facet_iri]
+                    if is_string:
+                        has_string_facet = True
+                    else:
+                        has_numeric_facet = True
+
+        # Determine if the datatype was a default that should be stripped
+        is_default = (
+            (has_string_facet and dt_iri == _DEFAULT_STRING_DT)
+            or (has_numeric_facet and not has_string_facet and dt_iri == _DEFAULT_NUMERIC_DT)
+        )
+        if not is_default:
+            prop["@type"] = _iri_to_xsd_prefixed(dt_iri)
+
+
+def _owl_datarange_to_constraint(node: Any) -> dict[str, Any]:
+    """Convert an OWL 2 DataRange node back to a jsonld-ex constraint dict.
+
+    Inverse of :func:`_constraint_to_owl_datarange`.  Handles simple IRI refs,
+    DatatypeRestrictions, and recursive unionOf/intersectionOf/complementOf.
+    """
+    if not isinstance(node, dict):
+        return {}
+
+    # Simple IRI ref → {"@type": "xsd:..."}
+    if "@id" in node and "@type" not in node:
+        return {"@type": _iri_to_xsd_prefixed(node["@id"])}
+
+    # Recursive combinators
+    union_of = node.get(f"{OWL}unionOf")
+    if union_of is not None:
+        members = union_of.get("@list", union_of) if isinstance(union_of, dict) else union_of
+        return {"@or": [_owl_datarange_to_constraint(m) for m in members]}
+
+    intersection_of = node.get(f"{OWL}intersectionOf")
+    if intersection_of is not None:
+        members = intersection_of.get("@list", intersection_of) if isinstance(intersection_of, dict) else intersection_of
+        return {"@and": [_owl_datarange_to_constraint(m) for m in members]}
+
+    complement_of = node.get(f"{OWL}datatypeComplementOf")
+    if complement_of is not None:
+        return {"@not": _owl_datarange_to_constraint(complement_of)}
+
+    # DatatypeRestriction
+    on_datatype = node.get(f"{OWL}onDatatype")
+    with_restrictions = node.get(f"{OWL}withRestrictions")
+    if on_datatype is not None and with_restrictions is not None:
+        result: dict[str, Any] = {}
+        dt_iri = on_datatype.get("@id") if isinstance(on_datatype, dict) else on_datatype
+        facets_list = with_restrictions.get("@list", with_restrictions) if isinstance(with_restrictions, dict) else with_restrictions
+
+        has_string_facet = False
+        has_numeric_facet = False
+        for facet_dict in facets_list:
+            if not isinstance(facet_dict, dict):
+                continue
+            for facet_iri, (shape_key, is_string) in _FACET_MAP.items():
+                if facet_iri in facet_dict:
+                    result[shape_key] = facet_dict[facet_iri]
+                    if is_string:
+                        has_string_facet = True
+                    else:
+                        has_numeric_facet = True
+
+        is_default = (
+            (has_string_facet and dt_iri == _DEFAULT_STRING_DT)
+            or (has_numeric_facet and not has_string_facet and dt_iri == _DEFAULT_NUMERIC_DT)
+        )
+        if not is_default:
+            result["@type"] = _iri_to_xsd_prefixed(dt_iri)
+        return result
+
+    return {}
+
+
+def _iri_to_xsd_prefixed(iri: str) -> str:
+    """Convert a full XSD IRI to xsd: prefixed form, or return as-is."""
+    if iri.startswith(XSD):
+        return "xsd:" + iri[len(XSD):]
+    return iri
+
+
+def _restore_jex_annotations(
+    owl_class: dict[str, Any],
+    shape: dict[str, Any],
+) -> None:
+    """Restore jex: namespace annotations from OWL class to shape.
+
+    Unmappable constraints are stored as class-level annotations in the
+    jex: namespace by shape_to_owl_restrictions.  This function detects
+    them and places them back on the shape.
+    """
+    for key, value in owl_class.items():
+        if not key.startswith(JSONLD_EX):
+            continue
+        local_name = key[len(JSONLD_EX):]
+
+        # Known scalar annotations → @-prefixed keys
+        if local_name in _JEX_ANNOTATION_MAP:
+            shape[_JEX_ANNOTATION_MAP[local_name]] = value
+        elif local_name == "conditional":
+            # Restore @if/@then/@else from the stored conditional dict
+            if isinstance(value, dict):
+                for cond_key in ("@if", "@then", "@else"):
+                    if cond_key in value:
+                        shape[cond_key] = value[cond_key]
+            else:
+                shape[f"{JSONLD_EX}conditional"] = value
+        else:
+            # Unknown jex: annotation — preserve as-is
+            shape[key] = value
+
+
 # ═══════════════════════════════════════════════════════════════════
 # RDF-STAR MAPPING
 # ═══════════════════════════════════════════════════════════════════

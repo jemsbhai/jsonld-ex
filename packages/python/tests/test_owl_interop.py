@@ -24,6 +24,7 @@ from jsonld_ex.owl_interop import (
     shape_to_shacl,
     shacl_to_shape,
     shape_to_owl_restrictions,
+    owl_to_shape,
     to_rdf_star_ntriples,
     compare_with_prov_o,
     compare_with_shacl,
@@ -1485,6 +1486,492 @@ class TestShapeToOwl:
         # And unmappable @lessThan should be preserved
         cls_str = str(cls)
         assert f"{JSONLD_EX}lessThan" in cls_str
+
+
+# ═══════════════════════════════════════════════════════════════════
+# OWL REVERSE MAPPING TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestOwlToShape:
+    """Tests for OWL class restrictions → jsonld-ex @shape (inverse of shape_to_owl_restrictions)."""
+
+    def test_min_cardinality_1_to_required(self):
+        """owl:minCardinality 1 → @required: True."""
+        owl_doc = {
+            "@context": {"owl": OWL, "xsd": XSD, "rdfs": RDFS, "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
+            "@graph": [{
+                "@id": "http://example.org/Person",
+                "@type": f"{OWL}Class",
+                f"{RDFS}subClassOf": {
+                    "@type": f"{OWL}Restriction",
+                    f"{OWL}onProperty": {"@id": "http://schema.org/name"},
+                    f"{OWL}minCardinality": {
+                        "@value": 1,
+                        "@type": f"{XSD}nonNegativeInteger",
+                    },
+                },
+            }],
+        }
+        shape = owl_to_shape(owl_doc)
+        assert shape["@type"] == "http://example.org/Person"
+        assert shape["http://schema.org/name"]["@required"] is True
+        assert "@minCount" not in shape["http://schema.org/name"]
+
+    def test_min_cardinality_gt1_to_mincount(self):
+        """owl:minCardinality N (N > 1) → @minCount: N."""
+        owl_doc = {
+            "@context": {"owl": OWL, "xsd": XSD, "rdfs": RDFS, "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
+            "@graph": [{
+                "@id": "http://example.org/Thing",
+                "@type": f"{OWL}Class",
+                f"{RDFS}subClassOf": {
+                    "@type": f"{OWL}Restriction",
+                    f"{OWL}onProperty": {"@id": "http://example.org/tags"},
+                    f"{OWL}minCardinality": {
+                        "@value": 3,
+                        "@type": f"{XSD}nonNegativeInteger",
+                    },
+                },
+            }],
+        }
+        shape = owl_to_shape(owl_doc)
+        assert shape["http://example.org/tags"]["@minCount"] == 3
+        assert "@required" not in shape["http://example.org/tags"]
+
+    def test_max_cardinality_to_maxcount(self):
+        """owl:maxCardinality → @maxCount."""
+        owl_doc = {
+            "@context": {"owl": OWL, "xsd": XSD, "rdfs": RDFS, "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
+            "@graph": [{
+                "@id": "http://example.org/Thing",
+                "@type": f"{OWL}Class",
+                f"{RDFS}subClassOf": {
+                    "@type": f"{OWL}Restriction",
+                    f"{OWL}onProperty": {"@id": "http://example.org/name"},
+                    f"{OWL}maxCardinality": {
+                        "@value": 5,
+                        "@type": f"{XSD}nonNegativeInteger",
+                    },
+                },
+            }],
+        }
+        shape = owl_to_shape(owl_doc)
+        assert shape["http://example.org/name"]["@maxCount"] == 5
+
+    def test_simple_allvaluesfrom_to_type(self):
+        """owl:allValuesFrom simple IRI → @type."""
+        owl_doc = {
+            "@context": {"owl": OWL, "xsd": XSD, "rdfs": RDFS, "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
+            "@graph": [{
+                "@id": "http://example.org/Person",
+                "@type": f"{OWL}Class",
+                f"{RDFS}subClassOf": {
+                    "@type": f"{OWL}Restriction",
+                    f"{OWL}onProperty": {"@id": "http://schema.org/name"},
+                    f"{OWL}allValuesFrom": {"@id": f"{XSD}string"},
+                },
+            }],
+        }
+        shape = owl_to_shape(owl_doc)
+        assert shape["http://schema.org/name"]["@type"] == "xsd:string"
+
+    def test_datatype_restriction_to_type_and_facets(self):
+        """owl:allValuesFrom DatatypeRestriction → @type + @minimum/@maximum."""
+        owl_doc = {
+            "@context": {"owl": OWL, "xsd": XSD, "rdfs": RDFS, "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
+            "@graph": [{
+                "@id": "http://example.org/Thing",
+                "@type": f"{OWL}Class",
+                f"{RDFS}subClassOf": {
+                    "@type": f"{OWL}Restriction",
+                    f"{OWL}onProperty": {"@id": "http://example.org/age"},
+                    f"{OWL}allValuesFrom": {
+                        "@type": f"{RDFS}Datatype",
+                        f"{OWL}onDatatype": {"@id": f"{XSD}integer"},
+                        f"{OWL}withRestrictions": {"@list": [
+                            {f"{XSD}minInclusive": 0},
+                            {f"{XSD}maxInclusive": 150},
+                        ]},
+                    },
+                },
+            }],
+        }
+        shape = owl_to_shape(owl_doc)
+        prop = shape["http://example.org/age"]
+        assert prop["@type"] == "xsd:integer"
+        assert prop["@minimum"] == 0
+        assert prop["@maximum"] == 150
+
+    def test_facets_only_defaults_stripped(self):
+        """DatatypeRestriction with default datatype → facets only, no @type."""
+        owl_doc = {
+            "@context": {"owl": OWL, "xsd": XSD, "rdfs": RDFS, "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
+            "@graph": [{
+                "@id": "http://example.org/Thing",
+                "@type": f"{OWL}Class",
+                f"{RDFS}subClassOf": {
+                    "@type": f"{OWL}Restriction",
+                    f"{OWL}onProperty": {"@id": "http://example.org/score"},
+                    f"{OWL}allValuesFrom": {
+                        "@type": f"{RDFS}Datatype",
+                        f"{OWL}onDatatype": {"@id": f"{XSD}decimal"},
+                        f"{OWL}withRestrictions": {"@list": [
+                            {f"{XSD}minInclusive": 0},
+                        ]},
+                    },
+                },
+            }],
+        }
+        shape = owl_to_shape(owl_doc)
+        prop = shape["http://example.org/score"]
+        assert "@type" not in prop
+        assert prop["@minimum"] == 0
+
+    def test_string_facets_default_stripped(self):
+        """DatatypeRestriction with xsd:string default → facets only, no @type."""
+        owl_doc = {
+            "@context": {"owl": OWL, "xsd": XSD, "rdfs": RDFS, "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
+            "@graph": [{
+                "@id": "http://example.org/Thing",
+                "@type": f"{OWL}Class",
+                f"{RDFS}subClassOf": {
+                    "@type": f"{OWL}Restriction",
+                    f"{OWL}onProperty": {"@id": "http://example.org/label"},
+                    f"{OWL}allValuesFrom": {
+                        "@type": f"{RDFS}Datatype",
+                        f"{OWL}onDatatype": {"@id": f"{XSD}string"},
+                        f"{OWL}withRestrictions": {"@list": [
+                            {f"{XSD}minLength": 1},
+                            {f"{XSD}maxLength": 100},
+                        ]},
+                    },
+                },
+            }],
+        }
+        shape = owl_to_shape(owl_doc)
+        prop = shape["http://example.org/label"]
+        assert "@type" not in prop
+        assert prop["@minLength"] == 1
+        assert prop["@maxLength"] == 100
+
+    def test_oneof_to_in(self):
+        """owl:oneOf → @in."""
+        owl_doc = {
+            "@context": {"owl": OWL, "xsd": XSD, "rdfs": RDFS, "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
+            "@graph": [{
+                "@id": "http://example.org/Thing",
+                "@type": f"{OWL}Class",
+                f"{RDFS}subClassOf": {
+                    "@type": f"{OWL}Restriction",
+                    f"{OWL}onProperty": {"@id": "http://example.org/status"},
+                    f"{OWL}allValuesFrom": {
+                        "@type": f"{RDFS}Datatype",
+                        f"{OWL}oneOf": {"@list": ["active", "inactive", "pending"]},
+                    },
+                },
+            }],
+        }
+        shape = owl_to_shape(owl_doc)
+        assert shape["http://example.org/status"]["@in"] == ["active", "inactive", "pending"]
+
+    def test_unionof_to_or(self):
+        """owl:unionOf → @or."""
+        owl_doc = {
+            "@context": {"owl": OWL, "xsd": XSD, "rdfs": RDFS, "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
+            "@graph": [{
+                "@id": "http://example.org/Thing",
+                "@type": f"{OWL}Class",
+                f"{RDFS}subClassOf": {
+                    "@type": f"{OWL}Restriction",
+                    f"{OWL}onProperty": {"@id": "http://example.org/value"},
+                    f"{OWL}allValuesFrom": {
+                        "@type": f"{RDFS}Datatype",
+                        f"{OWL}unionOf": {"@list": [
+                            {"@id": f"{XSD}string"},
+                            {"@id": f"{XSD}integer"},
+                        ]},
+                    },
+                },
+            }],
+        }
+        shape = owl_to_shape(owl_doc)
+        branches = shape["http://example.org/value"]["@or"]
+        assert len(branches) == 2
+        assert {"@type": "xsd:string"} in branches
+        assert {"@type": "xsd:integer"} in branches
+
+    def test_intersectionof_to_and(self):
+        """owl:intersectionOf → @and."""
+        owl_doc = {
+            "@context": {"owl": OWL, "xsd": XSD, "rdfs": RDFS, "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
+            "@graph": [{
+                "@id": "http://example.org/Thing",
+                "@type": f"{OWL}Class",
+                f"{RDFS}subClassOf": {
+                    "@type": f"{OWL}Restriction",
+                    f"{OWL}onProperty": {"@id": "http://example.org/value"},
+                    f"{OWL}allValuesFrom": {
+                        "@type": f"{RDFS}Datatype",
+                        f"{OWL}intersectionOf": {"@list": [
+                            {"@id": f"{XSD}integer"},
+                            {
+                                "@type": f"{RDFS}Datatype",
+                                f"{OWL}onDatatype": {"@id": f"{XSD}integer"},
+                                f"{OWL}withRestrictions": {"@list": [{f"{XSD}minInclusive": 0}]},
+                            },
+                        ]},
+                    },
+                },
+            }],
+        }
+        shape = owl_to_shape(owl_doc)
+        branches = shape["http://example.org/value"]["@and"]
+        assert len(branches) == 2
+
+    def test_complementof_to_not(self):
+        """owl:datatypeComplementOf → @not."""
+        owl_doc = {
+            "@context": {"owl": OWL, "xsd": XSD, "rdfs": RDFS, "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
+            "@graph": [{
+                "@id": "http://example.org/Thing",
+                "@type": f"{OWL}Class",
+                f"{RDFS}subClassOf": {
+                    "@type": f"{OWL}Restriction",
+                    f"{OWL}onProperty": {"@id": "http://example.org/value"},
+                    f"{OWL}allValuesFrom": {
+                        "@type": f"{RDFS}Datatype",
+                        f"{OWL}datatypeComplementOf": {"@id": f"{XSD}string"},
+                    },
+                },
+            }],
+        }
+        shape = owl_to_shape(owl_doc)
+        assert shape["http://example.org/value"]["@not"] == {"@type": "xsd:string"}
+
+    def test_subclassof_plain_iri_to_extends(self):
+        """rdfs:subClassOf plain IRI (not Restriction) → @extends."""
+        owl_doc = {
+            "@context": {"owl": OWL, "xsd": XSD, "rdfs": RDFS, "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
+            "@graph": [{
+                "@id": "http://example.org/Employee",
+                "@type": f"{OWL}Class",
+                f"{RDFS}subClassOf": {"@id": "http://example.org/Person"},
+            }],
+        }
+        shape = owl_to_shape(owl_doc)
+        assert shape["@extends"] == "http://example.org/Person"
+
+    def test_multiple_subclassof_plain_iris_to_extends_list(self):
+        """Multiple rdfs:subClassOf plain IRIs → @extends list."""
+        owl_doc = {
+            "@context": {"owl": OWL, "xsd": XSD, "rdfs": RDFS, "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
+            "@graph": [{
+                "@id": "http://example.org/Manager",
+                "@type": f"{OWL}Class",
+                f"{RDFS}subClassOf": [
+                    {"@id": "http://example.org/Person"},
+                    {"@id": "http://example.org/Employee"},
+                ],
+            }],
+        }
+        shape = owl_to_shape(owl_doc)
+        assert isinstance(shape["@extends"], list)
+        assert "http://example.org/Person" in shape["@extends"]
+        assert "http://example.org/Employee" in shape["@extends"]
+
+    def test_jex_annotations_to_unmappable_constraints(self):
+        """jex: namespace annotations → restored unmappable constraints."""
+        owl_doc = {
+            "@context": {"owl": OWL, "xsd": XSD, "rdfs": RDFS, "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
+            "@graph": [{
+                "@id": "http://example.org/Thing",
+                "@type": f"{OWL}Class",
+                f"{RDFS}subClassOf": {
+                    "@type": f"{OWL}Restriction",
+                    f"{OWL}onProperty": {"@id": "http://example.org/name"},
+                    f"{OWL}minCardinality": {
+                        "@value": 1,
+                        "@type": f"{XSD}nonNegativeInteger",
+                    },
+                },
+                f"{JSONLD_EX}lessThan": "http://example.org/endDate",
+                f"{JSONLD_EX}severity": "warning",
+            }],
+        }
+        shape = owl_to_shape(owl_doc)
+        # The unmappable constraints should be available on the shape
+        # They attach at property level in the original, but stored as
+        # class-level annotations in OWL. We'll need to verify restoration.
+        assert f"{JSONLD_EX}lessThan" in str(shape) or "@lessThan" in str(shape)
+
+    def test_jex_conditional_restored(self):
+        """jex:conditional annotation → @if/@then/@else restored."""
+        cond = {"@if": {"@type": "xsd:string"}, "@then": {"@minLength": 1}}
+        owl_doc = {
+            "@context": {"owl": OWL, "xsd": XSD, "rdfs": RDFS, "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
+            "@graph": [{
+                "@id": "http://example.org/Thing",
+                "@type": f"{OWL}Class",
+                f"{JSONLD_EX}conditional": cond,
+            }],
+        }
+        shape = owl_to_shape(owl_doc)
+        assert f"{JSONLD_EX}conditional" in str(shape) or "@if" in str(shape)
+
+    def test_multiple_restrictions_on_different_properties(self):
+        """Multiple restrictions on different properties."""
+        owl_doc = {
+            "@context": {"owl": OWL, "xsd": XSD, "rdfs": RDFS, "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
+            "@graph": [{
+                "@id": "http://example.org/Person",
+                "@type": f"{OWL}Class",
+                f"{RDFS}subClassOf": [
+                    {
+                        "@type": f"{OWL}Restriction",
+                        f"{OWL}onProperty": {"@id": "http://schema.org/name"},
+                        f"{OWL}minCardinality": {"@value": 1, "@type": f"{XSD}nonNegativeInteger"},
+                    },
+                    {
+                        "@type": f"{OWL}Restriction",
+                        f"{OWL}onProperty": {"@id": "http://schema.org/name"},
+                        f"{OWL}allValuesFrom": {"@id": f"{XSD}string"},
+                    },
+                    {
+                        "@type": f"{OWL}Restriction",
+                        f"{OWL}onProperty": {"@id": "http://schema.org/age"},
+                        f"{OWL}allValuesFrom": {
+                            "@type": f"{RDFS}Datatype",
+                            f"{OWL}onDatatype": {"@id": f"{XSD}integer"},
+                            f"{OWL}withRestrictions": {"@list": [
+                                {f"{XSD}minInclusive": 0},
+                                {f"{XSD}maxInclusive": 150},
+                            ]},
+                        },
+                    },
+                ],
+            }],
+        }
+        shape = owl_to_shape(owl_doc)
+        assert shape["@type"] == "http://example.org/Person"
+        assert shape["http://schema.org/name"]["@required"] is True
+        assert shape["http://schema.org/name"]["@type"] == "xsd:string"
+        assert shape["http://schema.org/age"]["@type"] == "xsd:integer"
+        assert shape["http://schema.org/age"]["@minimum"] == 0
+        assert shape["http://schema.org/age"]["@maximum"] == 150
+
+    def test_round_trip_basic_shape(self):
+        """shape → OWL → shape round-trip preserves semantics."""
+        original = {
+            "@type": "http://example.org/Person",
+            "http://schema.org/name": {
+                "@required": True,
+                "@type": "xsd:string",
+                "@minLength": 1,
+            },
+            "http://schema.org/age": {
+                "@type": "xsd:integer",
+                "@minimum": 0,
+                "@maximum": 150,
+            },
+        }
+        owl = shape_to_owl_restrictions(original)
+        restored = owl_to_shape(owl)
+
+        assert restored["@type"] == original["@type"]
+        # name: @required, @minLength preserved; @type stripped because
+        # xsd:string is the default for string facets — the forward mapping
+        # produces identical OWL whether @type was explicit or not.
+        assert restored["http://schema.org/name"]["@required"] is True
+        assert "@type" not in restored["http://schema.org/name"]
+        assert restored["http://schema.org/name"]["@minLength"] == 1
+        # age: @type, @minimum, @maximum
+        assert restored["http://schema.org/age"]["@type"] == "xsd:integer"
+        assert restored["http://schema.org/age"]["@minimum"] == 0
+        assert restored["http://schema.org/age"]["@maximum"] == 150
+
+    def test_round_trip_with_in(self):
+        """shape → OWL → shape round-trip preserves @in."""
+        original = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/status": {
+                "@in": ["active", "inactive"],
+            },
+        }
+        owl = shape_to_owl_restrictions(original)
+        restored = owl_to_shape(owl)
+        assert restored["http://example.org/status"]["@in"] == ["active", "inactive"]
+
+    def test_round_trip_with_or(self):
+        """shape → OWL → shape round-trip preserves @or."""
+        original = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/value": {
+                "@or": [
+                    {"@type": "xsd:string"},
+                    {"@type": "xsd:integer"},
+                ],
+            },
+        }
+        owl = shape_to_owl_restrictions(original)
+        restored = owl_to_shape(owl)
+        branches = restored["http://example.org/value"]["@or"]
+        assert len(branches) == 2
+        assert {"@type": "xsd:string"} in branches
+        assert {"@type": "xsd:integer"} in branches
+
+    def test_round_trip_with_extends(self):
+        """shape → OWL → shape round-trip preserves @extends."""
+        original = {
+            "@type": "http://example.org/Employee",
+            "@extends": "http://example.org/Person",
+            "http://example.org/salary": {
+                "@type": "xsd:decimal",
+            },
+        }
+        owl = shape_to_owl_restrictions(original)
+        restored = owl_to_shape(owl)
+        assert restored["@extends"] == "http://example.org/Person"
+
+    def test_pattern_to_pattern(self):
+        """DatatypeRestriction with xsd:pattern → @pattern."""
+        owl_doc = {
+            "@context": {"owl": OWL, "xsd": XSD, "rdfs": RDFS, "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
+            "@graph": [{
+                "@id": "http://example.org/Thing",
+                "@type": f"{OWL}Class",
+                f"{RDFS}subClassOf": {
+                    "@type": f"{OWL}Restriction",
+                    f"{OWL}onProperty": {"@id": "http://example.org/email"},
+                    f"{OWL}allValuesFrom": {
+                        "@type": f"{RDFS}Datatype",
+                        f"{OWL}onDatatype": {"@id": f"{XSD}string"},
+                        f"{OWL}withRestrictions": {"@list": [
+                            {f"{XSD}pattern": "^[^@]+@[^@]+$"},
+                        ]},
+                    },
+                },
+            }],
+        }
+        shape = owl_to_shape(owl_doc)
+        # xsd:string is the default for pattern → should be stripped
+        assert "@type" not in shape["http://example.org/email"]
+        assert shape["http://example.org/email"]["@pattern"] == "^[^@]+@[^@]+$"
+
+    def test_empty_class_no_restrictions(self):
+        """OWL class with no restrictions → minimal shape."""
+        owl_doc = {
+            "@context": {"owl": OWL, "xsd": XSD, "rdfs": RDFS, "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
+            "@graph": [{
+                "@id": "http://example.org/Thing",
+                "@type": f"{OWL}Class",
+            }],
+        }
+        shape = owl_to_shape(owl_doc)
+        assert shape["@type"] == "http://example.org/Thing"
+        # Should have no property constraints
+        non_meta_keys = [k for k in shape if not k.startswith("@")]
+        assert non_meta_keys == []
 
 
 # ═══════════════════════════════════════════════════════════════════
