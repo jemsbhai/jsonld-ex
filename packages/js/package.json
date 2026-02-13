@@ -1,6 +1,6 @@
 {
   "name": "@jsonld-ex/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "JSON-LD 1.2 extensions for AI/ML data exchange, security hardening, and validation",
   "type": "module",
   "main": "dist/index.js",
