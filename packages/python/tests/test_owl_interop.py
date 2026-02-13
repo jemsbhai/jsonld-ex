@@ -2429,6 +2429,31 @@ class TestToRdfStar:
         ntriples, _ = to_rdf_star_ntriples(doc)
         assert f'"2025-01-01T00:00:00Z"^^<http://www.w3.org/2001/XMLSchema#dateTime>' in ntriples
 
+    # ── Escape correctness ───────────────────────────────────────
+
+    def test_method_field_escapes_special_characters(self):
+        """The method field must escape quotes, newlines, and backslashes.
+
+        Regression test: the original hand-coded N-Triples emitter
+        omitted _escape_ntriples() for the method field, unlike all
+        other string fields.
+        """
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate(
+                "Alice",
+                confidence=0.9,
+                method='NER model "v2"\nfine-tuned',
+            ),
+        }
+        ntriples, report = to_rdf_star_ntriples(doc)
+        assert report.success
+        # The quote and newline must be escaped in the output
+        assert r'NER model \"v2\"' in ntriples
+        assert r"\n" in ntriples
+        # The raw unescaped characters must NOT appear
+        assert '"v2"' not in ntriples.replace(r'\"v2\"', '')
+
 
 # ═══════════════════════════════════════════════════════════════════
 # COMPARISON / VERBOSITY TESTS

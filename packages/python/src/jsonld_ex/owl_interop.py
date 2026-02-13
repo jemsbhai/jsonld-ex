@@ -1529,41 +1529,9 @@ def to_rdf_star_ntriples(
 
         if isinstance(value, dict) and "@value" in value:
             prov = get_provenance(value)
-            has_annotations = any([
-                # Core
-                prov.confidence is not None,
-                prov.source is not None,
-                prov.extracted_at is not None,
-                prov.method is not None,
-                prov.human_verified is not None,
-                # Content
-                prov.media_type is not None,
-                prov.content_url is not None,
-                prov.content_hash is not None,
-                # Translation
-                prov.translated_from is not None,
-                prov.translation_model is not None,
-                # Measurement
-                prov.measurement_uncertainty is not None,
-                prov.unit is not None,
-                # Derivation
-                prov.derived_from is not None,
-                # Aggregation
-                prov.aggregation_method is not None,
-                prov.aggregation_window is not None,
-                prov.aggregation_count is not None,
-                # Calibration
-                prov.calibrated_at is not None,
-                prov.calibration_method is not None,
-                prov.calibration_authority is not None,
-                # Delegation
-                prov.delegated_by is not None,
-                # Invalidation
-                prov.invalidated_at is not None,
-                prov.invalidation_reason is not None,
-            ])
+            ann_tuples = _iter_prov_annotations(prov)
 
-            if not has_annotations:
+            if not ann_tuples:
                 # Plain value — emit standard triple
                 literal = _format_literal(value["@value"])
                 lines.append(f"{subject} <{key}> {literal} .")
@@ -1580,111 +1548,11 @@ def to_rdf_star_ntriples(
             report.triples_output += 1
 
             # Annotation triples
-            if prov.confidence is not None:
-                lines.append(f'{embedded} <{JSONLD_EX}confidence> "{prov.confidence}"^^<{XSD}double> .')
-                report.triples_output += 1
-
-            if prov.source is not None:
-                lines.append(f"{embedded} <{JSONLD_EX}source> <{prov.source}> .")
-                report.triples_output += 1
-
-            if prov.extracted_at is not None:
-                lines.append(f'{embedded} <{JSONLD_EX}extractedAt> "{prov.extracted_at}"^^<{XSD}dateTime> .')
-                report.triples_output += 1
-
-            if prov.method is not None:
-                lines.append(f'{embedded} <{JSONLD_EX}method> "{prov.method}" .')
-                report.triples_output += 1
-
-            if prov.human_verified is not None:
-                val = "true" if prov.human_verified else "false"
-                lines.append(f'{embedded} <{JSONLD_EX}humanVerified> "{val}"^^<{XSD}boolean> .')
-                report.triples_output += 1
-
-            # -- Content group ------------------------------------------------
-
-            if prov.media_type is not None:
-                lines.append(f'{embedded} <{JSONLD_EX}mediaType> "{_escape_ntriples(prov.media_type)}" .')
-                report.triples_output += 1
-
-            if prov.content_url is not None:
-                lines.append(f'{embedded} <{JSONLD_EX}contentUrl> <{prov.content_url}> .')
-                report.triples_output += 1
-
-            if prov.content_hash is not None:
-                lines.append(f'{embedded} <{JSONLD_EX}contentHash> "{_escape_ntriples(prov.content_hash)}" .')
-                report.triples_output += 1
-
-            # -- Translation group --------------------------------------------
-
-            if prov.translated_from is not None:
-                lines.append(f'{embedded} <{JSONLD_EX}translatedFrom> "{_escape_ntriples(prov.translated_from)}" .')
-                report.triples_output += 1
-
-            if prov.translation_model is not None:
-                lines.append(f'{embedded} <{JSONLD_EX}translationModel> "{_escape_ntriples(prov.translation_model)}" .')
-                report.triples_output += 1
-
-            # -- Measurement group --------------------------------------------
-
-            if prov.measurement_uncertainty is not None:
-                lines.append(f'{embedded} <{JSONLD_EX}measurementUncertainty> "{prov.measurement_uncertainty}"^^<{XSD}double> .')
-                report.triples_output += 1
-
-            if prov.unit is not None:
-                lines.append(f'{embedded} <{JSONLD_EX}unit> "{_escape_ntriples(prov.unit)}" .')
-                report.triples_output += 1
-
-            if prov.derived_from is not None:
-                sources = prov.derived_from
-                if isinstance(sources, str):
-                    sources = [sources]
-                for src in sources:
-                    lines.append(f'{embedded} <{JSONLD_EX}derivedFrom> <{src}> .')
-                    report.triples_output += 1
-
-            if prov.delegated_by is not None:
-                delegates = prov.delegated_by
-                if isinstance(delegates, str):
-                    delegates = [delegates]
-                for dlg in delegates:
-                    lines.append(f'{embedded} <{JSONLD_EX}delegatedBy> <{dlg}> .')
-                    report.triples_output += 1
-
-            # -- Aggregation group --------------------------------------------
-
-            if prov.aggregation_method is not None:
-                lines.append(f'{embedded} <{JSONLD_EX}aggregationMethod> "{_escape_ntriples(prov.aggregation_method)}" .')
-                report.triples_output += 1
-
-            if prov.aggregation_window is not None:
-                lines.append(f'{embedded} <{JSONLD_EX}aggregationWindow> "{_escape_ntriples(prov.aggregation_window)}" .')
-                report.triples_output += 1
-
-            if prov.aggregation_count is not None:
-                lines.append(f'{embedded} <{JSONLD_EX}aggregationCount> "{prov.aggregation_count}"^^<{XSD}integer> .')
-                report.triples_output += 1
-
-            # -- Calibration group --------------------------------------------
-
-            if prov.calibrated_at is not None:
-                lines.append(f'{embedded} <{JSONLD_EX}calibratedAt> "{prov.calibrated_at}"^^<{XSD}dateTime> .')
-                report.triples_output += 1
-
-            if prov.calibration_method is not None:
-                lines.append(f'{embedded} <{JSONLD_EX}calibrationMethod> "{_escape_ntriples(prov.calibration_method)}" .')
-                report.triples_output += 1
-
-            if prov.calibration_authority is not None:
-                lines.append(f'{embedded} <{JSONLD_EX}calibrationAuthority> "{_escape_ntriples(prov.calibration_authority)}" .')
-                report.triples_output += 1
-
-            if prov.invalidated_at is not None:
-                lines.append(f'{embedded} <{JSONLD_EX}invalidatedAt> "{prov.invalidated_at}"^^<{XSD}dateTime> .')
-                report.triples_output += 1
-
-            if prov.invalidation_reason is not None:
-                lines.append(f'{embedded} <{JSONLD_EX}invalidationReason> "{_escape_ntriples(prov.invalidation_reason)}" .')
+            for local_name, val, vkind in ann_tuples:
+                formatted = _format_annotation_value_ntriples(val, vkind)
+                lines.append(
+                    f"{embedded} <{JSONLD_EX}{local_name}> {formatted} ."
+                )
                 report.triples_output += 1
 
             report.nodes_converted += 1
@@ -2036,6 +1904,26 @@ def _iter_prov_annotations(
         else:
             result.append((local_name, raw, vkind))
     return result
+
+
+def _format_annotation_value_ntriples(value: Any, vkind: str) -> str:
+    """Format an annotation value for N-Triples-star serialization.
+
+    Uses full IRIs (not prefixed names) as required by N-Triples.
+    """
+    if vkind == "iri":
+        return f"<{value}>"
+    if vkind == "double":
+        return f'"{value}"^^<{XSD}double>'
+    if vkind == "integer":
+        return f'"{value}"^^<{XSD}integer>'
+    if vkind == "boolean":
+        val = "true" if value else "false"
+        return f'"{val}"^^<{XSD}boolean>'
+    if vkind == "dateTime":
+        return f'"{value}"^^<{XSD}dateTime>'
+    # string
+    return f'"{_escape_ntriples(str(value))}"'
 
 
 def _format_annotation_value_turtle(
