@@ -2019,7 +2019,8 @@ class TestToRdfStar:
         assert "Plain" in ntriples
         assert "<<" not in ntriples
 
-    def test_all_annotation_fields(self):
+    def test_all_core_annotation_fields(self):
+        """All 9 original annotation fields emit RDF-Star annotations."""
         doc = {
             "@id": "http://example.org/x",
             "http://schema.org/name": annotate(
@@ -2029,6 +2030,10 @@ class TestToRdfStar:
                 extracted_at="2025-01-01T00:00:00Z",
                 method="NER",
                 human_verified=True,
+                derived_from="https://example.org/source-doc",
+                delegated_by="https://example.org/agent",
+                invalidated_at="2025-06-01T00:00:00Z",
+                invalidation_reason="Superseded by new data",
             ),
         }
         ntriples, report = to_rdf_star_ntriples(doc)
@@ -2038,7 +2043,389 @@ class TestToRdfStar:
         assert f"{JSONLD_EX_NAMESPACE}extractedAt" in ntriples
         assert f"{JSONLD_EX_NAMESPACE}method" in ntriples
         assert f"{JSONLD_EX_NAMESPACE}humanVerified" in ntriples
+        assert f"{JSONLD_EX_NAMESPACE}derivedFrom" in ntriples
+        assert f"{JSONLD_EX_NAMESPACE}delegatedBy" in ntriples
+        assert f"{JSONLD_EX_NAMESPACE}invalidatedAt" in ntriples
+        assert f"{JSONLD_EX_NAMESPACE}invalidationReason" in ntriples
         assert report.nodes_converted == 1
+
+    # -- Content group --------------------------------------------------------
+
+    def test_media_type_annotation(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/image": annotate(
+                "photo.jpg",
+                confidence=0.9,
+                media_type="image/jpeg",
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+        assert f"{JSONLD_EX_NAMESPACE}mediaType" in ntriples
+        assert '"image/jpeg"' in ntriples
+
+    def test_content_url_annotation(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/image": annotate(
+                "photo.jpg",
+                confidence=0.9,
+                content_url="https://cdn.example.org/photo.jpg",
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+        assert f"{JSONLD_EX_NAMESPACE}contentUrl" in ntriples
+        assert "<https://cdn.example.org/photo.jpg>" in ntriples
+
+    def test_content_hash_annotation(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/image": annotate(
+                "photo.jpg",
+                confidence=0.9,
+                content_hash="sha256-abc123def456",
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+        assert f"{JSONLD_EX_NAMESPACE}contentHash" in ntriples
+        assert '"sha256-abc123def456"' in ntriples
+
+    def test_content_group_all_fields(self):
+        """All three content fields emit together."""
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/image": annotate(
+                "photo.jpg",
+                confidence=0.9,
+                media_type="image/jpeg",
+                content_url="https://cdn.example.org/photo.jpg",
+                content_hash="sha256-abc123",
+            ),
+        }
+        ntriples, report = to_rdf_star_ntriples(doc)
+        assert f"{JSONLD_EX_NAMESPACE}mediaType" in ntriples
+        assert f"{JSONLD_EX_NAMESPACE}contentUrl" in ntriples
+        assert f"{JSONLD_EX_NAMESPACE}contentHash" in ntriples
+        assert report.nodes_converted == 1
+
+    # -- Translation group ----------------------------------------------------
+
+    def test_translated_from_annotation(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate(
+                "Hello",
+                confidence=0.85,
+                translated_from="es",
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+        assert f"{JSONLD_EX_NAMESPACE}translatedFrom" in ntriples
+        assert '"es"' in ntriples
+
+    def test_translation_model_annotation(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate(
+                "Hello",
+                confidence=0.85,
+                translation_model="Google Translate",
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+        assert f"{JSONLD_EX_NAMESPACE}translationModel" in ntriples
+        assert '"Google Translate"' in ntriples
+
+    def test_translation_group_all_fields(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate(
+                "Hello",
+                confidence=0.85,
+                translated_from="es",
+                translation_model="DeepL v3",
+            ),
+        }
+        ntriples, report = to_rdf_star_ntriples(doc)
+        assert f"{JSONLD_EX_NAMESPACE}translatedFrom" in ntriples
+        assert f"{JSONLD_EX_NAMESPACE}translationModel" in ntriples
+        assert report.nodes_converted == 1
+
+    # -- Measurement group ----------------------------------------------------
+
+    def test_measurement_uncertainty_annotation(self):
+        doc = {
+            "@id": "http://example.org/sensor1",
+            "http://example.org/temperature": annotate(
+                22.5,
+                confidence=0.95,
+                measurement_uncertainty=0.3,
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+        assert f"{JSONLD_EX_NAMESPACE}measurementUncertainty" in ntriples
+        assert "0.3" in ntriples
+
+    def test_unit_annotation(self):
+        doc = {
+            "@id": "http://example.org/sensor1",
+            "http://example.org/temperature": annotate(
+                22.5,
+                confidence=0.95,
+                unit="degC",
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+        assert f"{JSONLD_EX_NAMESPACE}unit" in ntriples
+        assert '"degC"' in ntriples
+
+    def test_measurement_group_all_fields(self):
+        doc = {
+            "@id": "http://example.org/sensor1",
+            "http://example.org/temperature": annotate(
+                22.5,
+                confidence=0.95,
+                measurement_uncertainty=0.3,
+                unit="degC",
+            ),
+        }
+        ntriples, report = to_rdf_star_ntriples(doc)
+        assert f"{JSONLD_EX_NAMESPACE}measurementUncertainty" in ntriples
+        assert f"{JSONLD_EX_NAMESPACE}unit" in ntriples
+        assert report.nodes_converted == 1
+
+    # -- Aggregation group ----------------------------------------------------
+
+    def test_aggregation_method_annotation(self):
+        doc = {
+            "@id": "http://example.org/sensor1",
+            "http://example.org/temperature": annotate(
+                22.5,
+                confidence=0.95,
+                aggregation_method="mean",
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+        assert f"{JSONLD_EX_NAMESPACE}aggregationMethod" in ntriples
+        assert '"mean"' in ntriples
+
+    def test_aggregation_window_annotation(self):
+        doc = {
+            "@id": "http://example.org/sensor1",
+            "http://example.org/temperature": annotate(
+                22.5,
+                confidence=0.95,
+                aggregation_window="PT1H",
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+        assert f"{JSONLD_EX_NAMESPACE}aggregationWindow" in ntriples
+        assert '"PT1H"' in ntriples
+
+    def test_aggregation_count_annotation(self):
+        doc = {
+            "@id": "http://example.org/sensor1",
+            "http://example.org/temperature": annotate(
+                22.5,
+                confidence=0.95,
+                aggregation_count=60,
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+        assert f"{JSONLD_EX_NAMESPACE}aggregationCount" in ntriples
+        assert '"60"' in ntriples
+
+    def test_aggregation_group_all_fields(self):
+        doc = {
+            "@id": "http://example.org/sensor1",
+            "http://example.org/temperature": annotate(
+                22.5,
+                confidence=0.95,
+                aggregation_method="mean",
+                aggregation_window="PT1H",
+                aggregation_count=60,
+            ),
+        }
+        ntriples, report = to_rdf_star_ntriples(doc)
+        assert f"{JSONLD_EX_NAMESPACE}aggregationMethod" in ntriples
+        assert f"{JSONLD_EX_NAMESPACE}aggregationWindow" in ntriples
+        assert f"{JSONLD_EX_NAMESPACE}aggregationCount" in ntriples
+        assert report.nodes_converted == 1
+
+    # -- Calibration group ----------------------------------------------------
+
+    def test_calibrated_at_annotation(self):
+        doc = {
+            "@id": "http://example.org/sensor1",
+            "http://example.org/temperature": annotate(
+                22.5,
+                confidence=0.95,
+                calibrated_at="2025-01-01T00:00:00Z",
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+        assert f"{JSONLD_EX_NAMESPACE}calibratedAt" in ntriples
+        assert '"2025-01-01T00:00:00Z"' in ntriples
+
+    def test_calibration_method_annotation(self):
+        doc = {
+            "@id": "http://example.org/sensor1",
+            "http://example.org/temperature": annotate(
+                22.5,
+                confidence=0.95,
+                calibration_method="two-point linear",
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+        assert f"{JSONLD_EX_NAMESPACE}calibrationMethod" in ntriples
+        assert '"two-point linear"' in ntriples
+
+    def test_calibration_authority_annotation(self):
+        doc = {
+            "@id": "http://example.org/sensor1",
+            "http://example.org/temperature": annotate(
+                22.5,
+                confidence=0.95,
+                calibration_authority="NIST",
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+        assert f"{JSONLD_EX_NAMESPACE}calibrationAuthority" in ntriples
+        assert '"NIST"' in ntriples
+
+    def test_calibration_group_all_fields(self):
+        doc = {
+            "@id": "http://example.org/sensor1",
+            "http://example.org/temperature": annotate(
+                22.5,
+                confidence=0.95,
+                calibrated_at="2025-01-01T00:00:00Z",
+                calibration_method="two-point linear",
+                calibration_authority="NIST",
+            ),
+        }
+        ntriples, report = to_rdf_star_ntriples(doc)
+        assert f"{JSONLD_EX_NAMESPACE}calibratedAt" in ntriples
+        assert f"{JSONLD_EX_NAMESPACE}calibrationMethod" in ntriples
+        assert f"{JSONLD_EX_NAMESPACE}calibrationAuthority" in ntriples
+        assert report.nodes_converted == 1
+
+    # -- Comprehensive test ---------------------------------------------------
+
+    def test_all_22_annotation_fields(self):
+        """Every ProvenanceMetadata field emits an RDF-Star annotation."""
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate(
+                "Full Coverage",
+                # Core
+                confidence=0.99,
+                source="https://example.org/model",
+                extracted_at="2025-01-01T00:00:00Z",
+                method="NER",
+                human_verified=True,
+                # Content
+                media_type="text/plain",
+                content_url="https://example.org/content",
+                content_hash="sha256-abc123",
+                # Translation
+                translated_from="fr",
+                translation_model="DeepL v3",
+                # Measurement
+                measurement_uncertainty=0.1,
+                unit="degC",
+                # Derivation
+                derived_from="https://example.org/source",
+                # Aggregation
+                aggregation_method="mean",
+                aggregation_window="PT1H",
+                aggregation_count=100,
+                # Calibration
+                calibrated_at="2025-01-01T00:00:00Z",
+                calibration_method="two-point",
+                calibration_authority="NIST",
+                # Delegation
+                delegated_by="https://example.org/agent",
+                # Invalidation
+                invalidated_at="2025-06-01T00:00:00Z",
+                invalidation_reason="Superseded",
+            ),
+        }
+        ntriples, report = to_rdf_star_ntriples(doc)
+
+        expected_predicates = [
+            "confidence", "source", "extractedAt", "method", "humanVerified",
+            "mediaType", "contentUrl", "contentHash",
+            "translatedFrom", "translationModel",
+            "measurementUncertainty", "unit",
+            "derivedFrom",
+            "aggregationMethod", "aggregationWindow", "aggregationCount",
+            "calibratedAt", "calibrationMethod", "calibrationAuthority",
+            "delegatedBy",
+            "invalidatedAt", "invalidationReason",
+        ]
+        for pred in expected_predicates:
+            assert f"{JSONLD_EX_NAMESPACE}{pred}" in ntriples, (
+                f"Missing RDF-Star annotation for {pred}"
+            )
+
+        # 1 base triple + 22 annotation triples = 23 total
+        assert report.triples_output == 23
+        assert report.nodes_converted == 1
+
+    def test_triple_count_content_url_is_iri(self):
+        """content_url should be emitted as an IRI, not a string literal."""
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/image": annotate(
+                "photo.jpg",
+                confidence=0.9,
+                content_url="https://cdn.example.org/photo.jpg",
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+        # IRI form: <https://...> not "https://..."  
+        assert "<https://cdn.example.org/photo.jpg>" in ntriples
+
+    def test_aggregation_count_xsd_integer(self):
+        """aggregation_count should be typed as xsd:integer."""
+        doc = {
+            "@id": "http://example.org/x",
+            "http://example.org/temp": annotate(
+                22.5,
+                confidence=0.95,
+                aggregation_count=60,
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+        assert f'"60"^^<{JSONLD_EX}integer>' in ntriples or \
+               f'"60"^^<http://www.w3.org/2001/XMLSchema#integer>' in ntriples
+
+    def test_measurement_uncertainty_xsd_double(self):
+        """measurement_uncertainty should be typed as xsd:double."""
+        doc = {
+            "@id": "http://example.org/x",
+            "http://example.org/temp": annotate(
+                22.5,
+                confidence=0.95,
+                measurement_uncertainty=0.3,
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+        assert f'^^<http://www.w3.org/2001/XMLSchema#double>' in ntriples
+
+    def test_calibrated_at_xsd_datetime(self):
+        """calibrated_at should be typed as xsd:dateTime."""
+        doc = {
+            "@id": "http://example.org/x",
+            "http://example.org/temp": annotate(
+                22.5,
+                confidence=0.95,
+                calibrated_at="2025-01-01T00:00:00Z",
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+        assert f'"2025-01-01T00:00:00Z"^^<http://www.w3.org/2001/XMLSchema#dateTime>' in ntriples
 
 
 # ═══════════════════════════════════════════════════════════════════
