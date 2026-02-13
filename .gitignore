@@ -24,6 +24,14 @@ benchmarks/results/*_latest.*
 
 docs/experiment_collation.md
 
+# Experiment artifacts (notebooks tracked selectively, not outputs)
+experiments/**/*.csv
+experiments/**/*.png
+experiments/**/*.pdf
+experiments/**/output/
+*.ipynb_checkpoints/
+.ipynb_checkpoints/
+
 # Debug files
 packages/js/debug-*.ts
 packages/js/*_output.txt
