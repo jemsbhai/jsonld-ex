@@ -16,10 +16,15 @@ coverage/
 *.log
 .DS_Store
 Thumbs.db
-ROADMAP.md
+
 
 # Benchmark convenience copies (overwritten each run; timestamped files are the record)
 benchmarks/results/*_latest.*
 .hypothesis/
 
 docs/experiment_collation.md
+
+# Debug files
+packages/js/debug-*.ts
+packages/js/*_output.txt
+packages/js/test_result.json
