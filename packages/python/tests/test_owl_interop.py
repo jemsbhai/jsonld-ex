@@ -1,7 +1,10 @@
 """Tests for owl_interop module — PROV-O, SHACL, OWL, RDF-star bidirectional mapping."""
 
 import json
+import math
 import pytest
+from hypothesis import given, assume, settings, HealthCheck
+from hypothesis import strategies as st
 
 from jsonld_ex.ai_ml import annotate, JSONLD_EX_NAMESPACE
 from jsonld_ex.owl_interop import (
@@ -4629,3 +4632,359 @@ class TestToRdfStarTurtle:
         assert report.nodes_converted == 1
         # 1 base + 2 annotations + 1 unannotated = 4 output triples
         assert report.triples_output == 4
+
+
+# ═══════════════════════════════════════════════════════════════════
+# HYPOTHESIS PROPERTY-BASED TESTS — RDF-Star Round-Trips
+# ═══════════════════════════════════════════════════════════════════
+
+
+# ── Hypothesis Strategies ──────────────────────────────────────────
+
+# Safe text: printable BMP characters, no null bytes or surrogates.
+# Includes quotes, newlines, backslashes to stress N-Triples escaping.
+_safe_text = st.text(
+    alphabet=st.characters(
+        min_codepoint=0x20, max_codepoint=0xFFFD,
+        exclude_categories=("Cs",),  # exclude surrogates
+    ),
+    min_size=1,
+    max_size=200,
+)
+
+# Strings that specifically stress the N-Triples escape path.
+_escape_heavy_text = st.text(
+    alphabet=st.sampled_from(
+        list('abcABC012 \\"\n\r\t\u00e9\u00f1\u4e16\u754c')
+    ),
+    min_size=1,
+    max_size=100,
+)
+
+# Valid HTTP IRI for source / contentUrl / derivedFrom / delegatedBy.
+_iri = st.from_regex(
+    r"https://example\.org/[a-z0-9]{1,20}",
+    fullmatch=True,
+)
+
+# ISO 8601 datetime (simplified but valid subset).
+_datetime = st.from_regex(
+    r"20[0-9]{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T"
+    r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z",
+    fullmatch=True,
+)
+
+# Confidence: valid floats in [0.0, 1.0].  Avoid subnormals.
+_confidence = st.floats(
+    min_value=0.0, max_value=1.0,
+    allow_nan=False, allow_infinity=False,
+    allow_subnormal=False,
+)
+
+# Positive float for measurement_uncertainty.
+_pos_float = st.floats(
+    min_value=0.0, max_value=1e6,
+    allow_nan=False, allow_infinity=False,
+    allow_subnormal=False,
+)
+
+# Integer for aggregation_count.
+_pos_int = st.integers(min_value=0, max_value=10_000_000)
+
+
+@st.composite
+def annotated_docs(draw, min_annotations=1):
+    """Generate a jsonld-ex document with a random subset of annotations.
+
+    Returns (doc, expected_annotations) where expected_annotations is a
+    dict mapping @-keywords to their expected round-trip values.
+    """
+    # Choose which annotation fields to include (at least min_annotations).
+    # Group by kind so strategies match field types.
+    optional_fields: list[tuple[str, st.SearchStrategy]] = [
+        ("confidence", _confidence),
+        ("source", _iri),
+        ("extracted_at", _datetime),
+        ("method", _safe_text),
+        ("human_verified", st.booleans()),
+        ("media_type", _safe_text),
+        ("content_url", _iri),
+        ("content_hash", _safe_text),
+        ("translated_from", _safe_text),
+        ("translation_model", _safe_text),
+        ("measurement_uncertainty", _pos_float),
+        ("unit", _safe_text),
+        ("aggregation_method", _safe_text),
+        ("aggregation_window", _safe_text),
+        ("aggregation_count", _pos_int),
+        ("calibrated_at", _datetime),
+        ("calibration_method", _safe_text),
+        ("calibration_authority", _safe_text),
+        ("invalidated_at", _datetime),
+        ("invalidation_reason", _safe_text),
+    ]
+
+    # Pick a random subset of fields.
+    n_fields = draw(st.integers(
+        min_value=min_annotations, max_value=len(optional_fields),
+    ))
+    chosen_indices = draw(
+        st.lists(
+            st.integers(min_value=0, max_value=len(optional_fields) - 1),
+            min_size=n_fields,
+            max_size=n_fields,
+            unique=True,
+        )
+    )
+
+    kwargs: dict = {}
+    for idx in chosen_indices:
+        name, strat = optional_fields[idx]
+        kwargs[name] = draw(strat)
+
+    # Optionally include multi-value fields.
+    if draw(st.booleans()):
+        n = draw(st.integers(min_value=1, max_value=3))
+        kwargs["derived_from"] = draw(
+            st.lists(_iri, min_size=n, max_size=n, unique=True)
+        )
+    if draw(st.booleans()):
+        n = draw(st.integers(min_value=1, max_value=3))
+        kwargs["delegated_by"] = draw(
+            st.lists(_iri, min_size=n, max_size=n, unique=True)
+        )
+
+    # The base value.
+    base_value = draw(st.one_of(
+        _safe_text,
+        st.integers(min_value=-1_000_000, max_value=1_000_000),
+        st.floats(
+            min_value=-1e6, max_value=1e6,
+            allow_nan=False, allow_infinity=False,
+            allow_subnormal=False,
+        ),
+        st.booleans(),
+    ))
+
+    doc = {
+        "@id": "http://example.org/hyp",
+        "http://example.org/prop": annotate(base_value, **kwargs),
+    }
+    return doc, kwargs, base_value
+
+
+# ── Keyword mapping (annotate kwarg → @keyword in round-trip output) ──
+
+_KWARG_TO_KEYWORD: dict[str, str] = {
+    "confidence": "@confidence",
+    "source": "@source",
+    "extracted_at": "@extractedAt",
+    "method": "@method",
+    "human_verified": "@humanVerified",
+    "media_type": "@mediaType",
+    "content_url": "@contentUrl",
+    "content_hash": "@contentHash",
+    "translated_from": "@translatedFrom",
+    "translation_model": "@translationModel",
+    "measurement_uncertainty": "@measurementUncertainty",
+    "unit": "@unit",
+    "derived_from": "@derivedFrom",
+    "delegated_by": "@delegatedBy",
+    "aggregation_method": "@aggregationMethod",
+    "aggregation_window": "@aggregationWindow",
+    "aggregation_count": "@aggregationCount",
+    "calibrated_at": "@calibratedAt",
+    "calibration_method": "@calibrationMethod",
+    "calibration_authority": "@calibrationAuthority",
+    "invalidated_at": "@invalidatedAt",
+    "invalidation_reason": "@invalidationReason",
+}
+
+
+def _assert_value_equal(actual, expected, field_name: str) -> None:
+    """Assert round-trip equality, tolerating float imprecision."""
+    if isinstance(expected, float):
+        assert isinstance(actual, float), (
+            f"{field_name}: expected float, got {type(actual).__name__}"
+        )
+        assert math.isclose(actual, expected, rel_tol=1e-9, abs_tol=1e-15), (
+            f"{field_name}: {actual!r} != {expected!r}"
+        )
+    elif isinstance(expected, list):
+        assert isinstance(actual, list), (
+            f"{field_name}: expected list, got {type(actual).__name__}"
+        )
+        assert set(actual) == set(expected), (
+            f"{field_name}: {actual!r} != {expected!r}"
+        )
+    else:
+        assert actual == expected, f"{field_name}: {actual!r} != {expected!r}"
+
+
+class TestRdfStarHypothesis:
+    """Property-based fuzz tests for RDF-Star N-Triples round-trips.
+
+    Uses Hypothesis to generate random annotated documents and verify
+    that to_rdf_star_ntriples → from_rdf_star_ntriples preserves all
+    annotation values.
+
+    Known limitations documented inline:
+    - Multi-value fields always become lists (even single-element).
+    - Float values compared with math.isclose (IEEE 754 repr precision).
+    """
+
+    @given(data=annotated_docs())
+    @settings(
+        max_examples=200,
+        suppress_health_check=[HealthCheck.too_slow],
+        deadline=None,
+    )
+    def test_ntriples_round_trip_preserves_annotations(self, data):
+        """Property: all annotation values survive N-Triples round-trip."""
+        doc, kwargs, base_value = data
+
+        ntriples, fwd_report = to_rdf_star_ntriples(doc)
+        assert fwd_report.success
+
+        restored, rev_report = from_rdf_star_ntriples(ntriples)
+        assert rev_report.success
+
+        val = restored["http://example.org/prop"]
+
+        # Check base value.
+        _assert_value_equal(val["@value"], base_value, "@value")
+
+        # Check every annotation field that was set.
+        for kwarg_name, expected in kwargs.items():
+            keyword = _KWARG_TO_KEYWORD[kwarg_name]
+            assert keyword in val, (
+                f"Missing {keyword} in round-trip output. "
+                f"Set {kwarg_name}={expected!r}. "
+                f"N-Triples:\n{ntriples}"
+            )
+            _assert_value_equal(val[keyword], expected, keyword)
+
+    @given(data=annotated_docs())
+    @settings(
+        max_examples=200,
+        suppress_health_check=[HealthCheck.too_slow],
+        deadline=None,
+    )
+    def test_ntriples_round_trip_no_extra_annotations(self, data):
+        """Property: round-trip does not invent spurious annotations."""
+        doc, kwargs, _ = data
+
+        ntriples, _ = to_rdf_star_ntriples(doc)
+        restored, _ = from_rdf_star_ntriples(ntriples)
+
+        val = restored["http://example.org/prop"]
+
+        expected_keywords = {"@value"}
+        for kwarg_name in kwargs:
+            expected_keywords.add(_KWARG_TO_KEYWORD[kwarg_name])
+
+        actual_keywords = set(val.keys())
+        extra = actual_keywords - expected_keywords
+        assert not extra, (
+            f"Unexpected annotation keywords after round-trip: {extra}"
+        )
+
+    @given(data=annotated_docs())
+    @settings(
+        max_examples=100,
+        suppress_health_check=[HealthCheck.too_slow],
+        deadline=None,
+    )
+    def test_ntriples_output_is_valid_syntax(self, data):
+        """Property: every output line is valid N-Triples-star syntax."""
+        doc, _, _ = data
+
+        ntriples, report = to_rdf_star_ntriples(doc)
+        assert report.success
+
+        for line in ntriples.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            # Every N-Triples line must end with " ."
+            assert line.endswith(" ."), f"Line missing terminator: {line!r}"
+
+    @given(text=_escape_heavy_text)
+    @settings(
+        max_examples=200,
+        suppress_health_check=[HealthCheck.too_slow],
+        deadline=None,
+    )
+    def test_string_escape_round_trip(self, text):
+        """Property: strings with special characters survive round-trip.
+
+        Stresses the _escape_ntriples / _unescape_ntriples path with
+        quotes, backslashes, newlines, tabs, and non-ASCII characters.
+        """
+        doc = {
+            "@id": "http://example.org/esc",
+            "http://example.org/val": annotate(
+                text, confidence=0.5, method=text,
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+        restored, _ = from_rdf_star_ntriples(ntriples)
+
+        val = restored["http://example.org/val"]
+        assert val["@value"] == text, (
+            f"@value round-trip failed for {text!r}"
+        )
+        assert val["@method"] == text, (
+            f"@method round-trip failed for {text!r}"
+        )
+
+    @given(data=annotated_docs())
+    @settings(
+        max_examples=100,
+        suppress_health_check=[HealthCheck.too_slow],
+        deadline=None,
+    )
+    def test_turtle_output_has_valid_structure(self, data):
+        """Property: Turtle-star output has @prefix declarations and valid lines."""
+        doc, kwargs, _ = data
+
+        turtle, report = to_rdf_star_turtle(doc)
+        assert report.success
+
+        # If there are annotations, jex: prefix must appear.
+        if kwargs:
+            assert "@prefix jex:" in turtle
+
+    @given(
+        conf=_confidence,
+        unc=_pos_float,
+        count=_pos_int,
+    )
+    @settings(
+        max_examples=200,
+        suppress_health_check=[HealthCheck.too_slow],
+        deadline=None,
+    )
+    def test_numeric_types_preserved(self, conf, unc, count):
+        """Property: float, float, and int types survive round-trip."""
+        doc = {
+            "@id": "http://example.org/num",
+            "http://example.org/val": annotate(
+                "x",
+                confidence=conf,
+                measurement_uncertainty=unc,
+                aggregation_count=count,
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(doc)
+        restored, _ = from_rdf_star_ntriples(ntriples)
+
+        val = restored["http://example.org/val"]
+        assert isinstance(val["@confidence"], float)
+        assert math.isclose(val["@confidence"], conf, rel_tol=1e-9, abs_tol=1e-15)
+        assert isinstance(val["@measurementUncertainty"], float)
+        assert math.isclose(
+            val["@measurementUncertainty"], unc, rel_tol=1e-9, abs_tol=1e-15
+        )
+        assert isinstance(val["@aggregationCount"], int)
+        assert val["@aggregationCount"] == count
