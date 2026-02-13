@@ -701,3 +701,207 @@ class TestConstants:
     def test_access_levels_complete(self):
         expected = {"public", "internal", "restricted", "confidential", "secret"}
         assert set(ACCESS_LEVELS) == expected
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 2: Data Subject Rights — Annotation Field Extensions
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestAnnotateProtectionPhase2Fields:
+    """Tests for Phase 2 annotation fields on annotate_protection()."""
+
+    # ── Erasure fields ────────────────────────────────────────────
+
+    def test_erasure_requested_true(self):
+        result = annotate_protection(
+            "John Doe",
+            personal_data_category="regular",
+            erasure_requested=True,
+        )
+        assert result["@erasureRequested"] is True
+
+    def test_erasure_requested_false(self):
+        result = annotate_protection("x", erasure_requested=False)
+        assert result["@erasureRequested"] is False
+
+    def test_erasure_requested_at(self):
+        result = annotate_protection(
+            "John Doe",
+            erasure_requested=True,
+            erasure_requested_at="2026-02-13T10:00:00Z",
+        )
+        assert result["@erasureRequestedAt"] == "2026-02-13T10:00:00Z"
+
+    def test_erasure_completed_at(self):
+        result = annotate_protection(
+            "John Doe",
+            erasure_requested=True,
+            erasure_completed_at="2026-02-20T10:00:00Z",
+        )
+        assert result["@erasureCompletedAt"] == "2026-02-20T10:00:00Z"
+
+    # ── Restriction fields ────────────────────────────────────────
+
+    def test_restrict_processing_true(self):
+        result = annotate_protection(
+            "John Doe",
+            restrict_processing=True,
+        )
+        assert result["@restrictProcessing"] is True
+
+    def test_restriction_reason(self):
+        result = annotate_protection(
+            "John Doe",
+            restrict_processing=True,
+            restriction_reason="Accuracy contested by data subject",
+        )
+        assert result["@restrictionReason"] == "Accuracy contested by data subject"
+
+    def test_processing_restrictions_list(self):
+        result = annotate_protection(
+            "John Doe",
+            processing_restrictions=["profiling", "automated_decision"],
+        )
+        assert result["@processingRestrictions"] == ["profiling", "automated_decision"]
+
+    def test_processing_restrictions_single_string(self):
+        """Single string is accepted (not auto-wrapped — user must pass list)."""
+        result = annotate_protection(
+            "John Doe",
+            processing_restrictions=["profiling"],
+        )
+        assert result["@processingRestrictions"] == ["profiling"]
+
+    # ── Portability field ─────────────────────────────────────────
+
+    def test_portability_format(self):
+        result = annotate_protection(
+            "John Doe",
+            portability_format="application/json",
+        )
+        assert result["@portabilityFormat"] == "application/json"
+
+    def test_portability_format_csv(self):
+        result = annotate_protection("x", portability_format="text/csv")
+        assert result["@portabilityFormat"] == "text/csv"
+
+    # ── Rectification fields ──────────────────────────────────────
+
+    def test_rectified_at(self):
+        result = annotate_protection(
+            "Jane Doe",
+            rectified_at="2026-02-13T12:00:00Z",
+        )
+        assert result["@rectifiedAt"] == "2026-02-13T12:00:00Z"
+
+    def test_rectification_note(self):
+        result = annotate_protection(
+            "Jane Doe",
+            rectified_at="2026-02-13T12:00:00Z",
+            rectification_note="Corrected spelling of surname",
+        )
+        assert result["@rectificationNote"] == "Corrected spelling of surname"
+
+    # ── All Phase 2 fields together ───────────────────────────────
+
+    def test_all_phase2_fields(self):
+        result = annotate_protection(
+            "John Doe",
+            personal_data_category="regular",
+            legal_basis="consent",
+            erasure_requested=True,
+            erasure_requested_at="2026-02-13T10:00:00Z",
+            erasure_completed_at="2026-02-20T10:00:00Z",
+            restrict_processing=True,
+            restriction_reason="Under review",
+            processing_restrictions=["profiling", "marketing"],
+            portability_format="application/json",
+            rectified_at="2026-01-15T09:00:00Z",
+            rectification_note="Name corrected",
+        )
+        assert result["@erasureRequested"] is True
+        assert result["@erasureRequestedAt"] == "2026-02-13T10:00:00Z"
+        assert result["@erasureCompletedAt"] == "2026-02-20T10:00:00Z"
+        assert result["@restrictProcessing"] is True
+        assert result["@restrictionReason"] == "Under review"
+        assert result["@processingRestrictions"] == ["profiling", "marketing"]
+        assert result["@portabilityFormat"] == "application/json"
+        assert result["@rectifiedAt"] == "2026-01-15T09:00:00Z"
+        assert result["@rectificationNote"] == "Name corrected"
+        # Phase 1 fields still present
+        assert result["@personalDataCategory"] == "regular"
+        assert result["@legalBasis"] == "consent"
+
+    def test_none_phase2_fields_excluded(self):
+        """Phase 2 fields not present when not specified."""
+        result = annotate_protection("x", personal_data_category="regular")
+        assert "@erasureRequested" not in result
+        assert "@erasureRequestedAt" not in result
+        assert "@erasureCompletedAt" not in result
+        assert "@restrictProcessing" not in result
+        assert "@restrictionReason" not in result
+        assert "@processingRestrictions" not in result
+        assert "@portabilityFormat" not in result
+        assert "@rectifiedAt" not in result
+        assert "@rectificationNote" not in result
+
+
+class TestGetProtectionMetadataPhase2:
+    """Tests for Phase 2 fields in get_protection_metadata()."""
+
+    def test_extract_phase2_fields(self):
+        node = {
+            "@value": "John Doe",
+            "@personalDataCategory": "regular",
+            "@erasureRequested": True,
+            "@erasureRequestedAt": "2026-02-13T10:00:00Z",
+            "@erasureCompletedAt": "2026-02-20T10:00:00Z",
+            "@restrictProcessing": True,
+            "@restrictionReason": "Under review",
+            "@processingRestrictions": ["profiling"],
+            "@portabilityFormat": "application/json",
+            "@rectifiedAt": "2026-01-15T09:00:00Z",
+            "@rectificationNote": "Name corrected",
+        }
+        meta = get_protection_metadata(node)
+        assert meta.erasure_requested is True
+        assert meta.erasure_requested_at == "2026-02-13T10:00:00Z"
+        assert meta.erasure_completed_at == "2026-02-20T10:00:00Z"
+        assert meta.restrict_processing is True
+        assert meta.restriction_reason == "Under review"
+        assert meta.processing_restrictions == ["profiling"]
+        assert meta.portability_format == "application/json"
+        assert meta.rectified_at == "2026-01-15T09:00:00Z"
+        assert meta.rectification_note == "Name corrected"
+
+    def test_phase2_fields_default_none(self):
+        meta = get_protection_metadata({})
+        assert meta.erasure_requested is None
+        assert meta.erasure_requested_at is None
+        assert meta.erasure_completed_at is None
+        assert meta.restrict_processing is None
+        assert meta.restriction_reason is None
+        assert meta.processing_restrictions is None
+        assert meta.portability_format is None
+        assert meta.rectified_at is None
+        assert meta.rectification_note is None
+
+    def test_mixed_phase1_and_phase2(self):
+        """Both Phase 1 and Phase 2 fields extracted together."""
+        node = {
+            "@value": "x",
+            "@personalDataCategory": "sensitive",
+            "@legalBasis": "consent",
+            "@jurisdiction": "EU",
+            "@erasureRequested": False,
+            "@restrictProcessing": True,
+        }
+        meta = get_protection_metadata(node)
+        # Phase 1
+        assert meta.personal_data_category == "sensitive"
+        assert meta.legal_basis == "consent"
+        assert meta.jurisdiction == "EU"
+        # Phase 2
+        assert meta.erasure_requested is False
+        assert meta.restrict_processing is True

@@ -73,6 +73,7 @@ ACCESS_LEVELS: tuple[str, ...] = (
 @dataclass
 class DataProtectionMetadata:
     """Data protection metadata extracted from a JSON-LD node."""
+    # Phase 1 fields
     personal_data_category: Optional[str] = None
     legal_basis: Optional[str] = None
     processing_purpose: Optional[str | list[str]] = None
@@ -83,6 +84,16 @@ class DataProtectionMetadata:
     jurisdiction: Optional[str] = None
     access_level: Optional[str] = None
     consent: Optional[dict[str, Any]] = None
+    # Phase 2 fields — Data Subject Rights
+    erasure_requested: Optional[bool] = None
+    erasure_requested_at: Optional[str] = None
+    erasure_completed_at: Optional[str] = None
+    restrict_processing: Optional[bool] = None
+    restriction_reason: Optional[str] = None
+    processing_restrictions: Optional[list[str]] = None
+    portability_format: Optional[str] = None
+    rectified_at: Optional[str] = None
+    rectification_note: Optional[str] = None
 
 
 @dataclass
@@ -109,6 +120,16 @@ def annotate_protection(
     jurisdiction: Optional[str] = None,
     access_level: Optional[str] = None,
     consent: Optional[dict[str, Any]] = None,
+    # Phase 2: Data Subject Rights
+    erasure_requested: Optional[bool] = None,
+    erasure_requested_at: Optional[str] = None,
+    erasure_completed_at: Optional[str] = None,
+    restrict_processing: Optional[bool] = None,
+    restriction_reason: Optional[str] = None,
+    processing_restrictions: Optional[list[str]] = None,
+    portability_format: Optional[str] = None,
+    rectified_at: Optional[str] = None,
+    rectification_note: Optional[str] = None,
 ) -> dict[str, Any]:
     """Create a JSON-LD value annotated with data protection metadata.
 
@@ -175,6 +196,26 @@ def annotate_protection(
         result["@accessLevel"] = access_level
     if consent is not None:
         result["@consent"] = consent
+
+    # Phase 2: Data Subject Rights
+    if erasure_requested is not None:
+        result["@erasureRequested"] = erasure_requested
+    if erasure_requested_at is not None:
+        result["@erasureRequestedAt"] = erasure_requested_at
+    if erasure_completed_at is not None:
+        result["@erasureCompletedAt"] = erasure_completed_at
+    if restrict_processing is not None:
+        result["@restrictProcessing"] = restrict_processing
+    if restriction_reason is not None:
+        result["@restrictionReason"] = restriction_reason
+    if processing_restrictions is not None:
+        result["@processingRestrictions"] = processing_restrictions
+    if portability_format is not None:
+        result["@portabilityFormat"] = portability_format
+    if rectified_at is not None:
+        result["@rectifiedAt"] = rectified_at
+    if rectification_note is not None:
+        result["@rectificationNote"] = rectification_note
 
     return result
 
@@ -295,6 +336,7 @@ def get_protection_metadata(node: Any) -> DataProtectionMetadata:
         return DataProtectionMetadata()
 
     return DataProtectionMetadata(
+        # Phase 1
         personal_data_category=node.get("@personalDataCategory"),
         legal_basis=node.get("@legalBasis"),
         processing_purpose=node.get("@processingPurpose"),
@@ -305,6 +347,16 @@ def get_protection_metadata(node: Any) -> DataProtectionMetadata:
         jurisdiction=node.get("@jurisdiction"),
         access_level=node.get("@accessLevel"),
         consent=node.get("@consent"),
+        # Phase 2
+        erasure_requested=node.get("@erasureRequested"),
+        erasure_requested_at=node.get("@erasureRequestedAt"),
+        erasure_completed_at=node.get("@erasureCompletedAt"),
+        restrict_processing=node.get("@restrictProcessing"),
+        restriction_reason=node.get("@restrictionReason"),
+        processing_restrictions=node.get("@processingRestrictions"),
+        portability_format=node.get("@portabilityFormat"),
+        rectified_at=node.get("@rectifiedAt"),
+        rectification_note=node.get("@rectificationNote"),
     )
 
 

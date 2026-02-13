@@ -106,6 +106,23 @@ from jsonld_ex.data_protection import (
     CONSENT_GRANULARITIES,
     ACCESS_LEVELS,
 )
+from jsonld_ex.data_rights import (
+    request_erasure,
+    execute_erasure,
+    request_restriction,
+    export_portable,
+    rectify_data,
+    right_of_access_report,
+    validate_retention,
+    audit_trail,
+    ErasurePlan,
+    ErasureAudit,
+    RestrictionResult,
+    PortableExport,
+    AccessReport,
+    RetentionViolation,
+    AuditEntry,
+)
 
 # Optional modules — import only if dependencies are available
 try:
@@ -236,4 +253,20 @@ __all__ = [
     "PERSONAL_DATA_CATEGORIES",
     "CONSENT_GRANULARITIES",
     "ACCESS_LEVELS",
+    # Data subject rights (GDPR Articles 15-20)
+    "request_erasure",
+    "execute_erasure",
+    "request_restriction",
+    "export_portable",
+    "rectify_data",
+    "right_of_access_report",
+    "validate_retention",
+    "audit_trail",
+    "ErasurePlan",
+    "ErasureAudit",
+    "RestrictionResult",
+    "PortableExport",
+    "AccessReport",
+    "RetentionViolation",
+    "AuditEntry",
 ]
