@@ -124,6 +124,18 @@ from jsonld_ex.data_rights import (
     AuditEntry,
 )
 
+from jsonld_ex.dpv_interop import (
+    to_dpv,
+    from_dpv,
+    compare_with_dpv,
+    DPV,
+    EU_GDPR,
+    DPV_LOC,
+    DPV_PD,
+    LEGAL_BASIS_TO_DPV,
+    CATEGORY_TO_DPV,
+)
+
 # Optional modules — import only if dependencies are available
 try:
     from jsonld_ex.cbor_ld import to_cbor, from_cbor, payload_stats, PayloadStats
@@ -269,4 +281,14 @@ __all__ = [
     "AccessReport",
     "RetentionViolation",
     "AuditEntry",
+    # DPV v2.2 interoperability
+    "to_dpv",
+    "from_dpv",
+    "compare_with_dpv",
+    "DPV",
+    "EU_GDPR",
+    "DPV_LOC",
+    "DPV_PD",
+    "LEGAL_BASIS_TO_DPV",
+    "CATEGORY_TO_DPV",
 ]
