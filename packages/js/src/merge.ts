@@ -27,7 +27,7 @@ const NODE_IDENTITY_KEYS = new Set(['@id', '@type', '@context']);
 export function mergeGraphs(
     graphs: any[],
     conflictStrategy: 'highest' | 'weighted_vote' | 'recency' | 'union' = 'highest',
-    confidenceCombination: 'noisy_or' | 'average' | 'max' = 'noisy_or'
+    confidenceCombination: 'noisy_or' | 'average' | 'max' | 'dempster_shafer' = 'noisy_or'
 ): { merged: any; report: MergeReport } {
     if (graphs.length < 2) {
         throw new Error('mergeGraphs requires at least 2 graphs');

@@ -239,26 +239,83 @@ export interface GraphDiff {
 
 // ── Croissant / Dataset Types ─────────────────────────────────────
 
-export type JsonLdNode = Record<string, any>;
-
-export interface Distribution {
-  contentUrl?: string;
-  encodingFormat?: string;
-  sha256?: string;
-  name?: string;
-}
-
-export interface RecordSet {
-  name: string;
-  description?: string;
-  field?: Record<string, any>[];
-  key?: string | string[];
-}
-
 export interface Dataset {
+  '@context'?: any;
+  '@type'?: string;
+  '@id'?: string;
   name: string;
   description?: string;
-  distribution?: Distribution[];
+  version?: string;
+  license?: string;
+  url?: string;
+  datePublished?: string;
+  dateCreated?: string;
+  dateModified?: string;
+  creator?: any;
+  publisher?: any;
+  keywords?: string | string[];
+  citeAs?: string;
+  inLanguage?: string | string[];
+  sameAs?: string | string[];
+  isLiveDataset?: boolean;
+  distribution?: (FileObject | FileSet)[];
   recordSet?: RecordSet[];
   [key: string]: any;
 }
+
+export interface FileObject {
+  '@type': 'cr:FileObject';
+  '@id'?: string;
+  name: string;
+  contentUrl: string;
+  encodingFormat: string;
+  sha256?: string;
+  contentSize?: string;
+  description?: string;
+}
+
+export interface FileSet {
+  '@type': 'cr:FileSet';
+  '@id'?: string;
+  name: string;
+  containedIn: { '@id': string };
+  encodingFormat: string;
+  includes: string;
+  description?: string;
+}
+
+export interface RecordSet {
+  '@type': 'cr:RecordSet';
+  '@id'?: string;
+  name: string;
+  description?: string;
+  field?: Field[];
+  key?: string | string[];
+}
+
+export interface Field {
+  '@type': 'cr:Field';
+  '@id'?: string;
+  name: string;
+  description?: string;
+  dataType: string;
+  source?: {
+    fileObject?: { '@id': string };
+    fileSet?: { '@id': string };
+    extract?: {
+      column?: string;
+      jsonPath?: string;
+      fileProperty?: string;
+    };
+    transform?: any;
+  };
+  references?: {
+    field: { '@id': string };
+  };
+  subField?: Field[];
+  repeated?: boolean;
+}
+
+export type JsonLdNode = Record<string, any>;
+
+
