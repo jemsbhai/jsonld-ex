@@ -13,6 +13,8 @@ from jsonld_ex.vector import validate_vector, cosine_similarity, vector_term_def
 from jsonld_ex.security import compute_integrity, verify_integrity, is_context_allowed
 from jsonld_ex.validation import validate_node, validate_document
 from jsonld_ex.owl_interop import (
+    ConversionReport,
+    VerbosityComparison,
     to_prov_o,
     to_prov_o_graph,
     from_prov_o,
@@ -23,6 +25,8 @@ from jsonld_ex.owl_interop import (
     to_rdf_star_ntriples,
     from_rdf_star_ntriples,
     to_rdf_star_turtle,
+    to_ssn,
+    from_ssn,
     compare_with_prov_o,
     compare_with_shacl,
 )
@@ -130,6 +134,10 @@ __all__ = [
     "to_rdf_star_ntriples",
     "from_rdf_star_ntriples",
     "to_rdf_star_turtle",
+    "to_ssn",
+    "from_ssn",
+    "ConversionReport",
+    "VerbosityComparison",
     "compare_with_prov_o",
     "compare_with_shacl",
     # Confidence propagation & inference
