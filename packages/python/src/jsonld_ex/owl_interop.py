@@ -1706,6 +1706,471 @@ def to_rdf_star_ntriples(
     return "\n".join(lines), report
 
 
+# ── RDF-Star Reverse Mapping Constants ─────────────────────────────
+
+# Reverse mapping: jex: predicate IRI → @keyword name.
+_RDF_STAR_PREDICATE_TO_KEYWORD: dict[str, str] = {
+    f"{JSONLD_EX}confidence": "@confidence",
+    f"{JSONLD_EX}source": "@source",
+    f"{JSONLD_EX}extractedAt": "@extractedAt",
+    f"{JSONLD_EX}method": "@method",
+    f"{JSONLD_EX}humanVerified": "@humanVerified",
+    f"{JSONLD_EX}mediaType": "@mediaType",
+    f"{JSONLD_EX}contentUrl": "@contentUrl",
+    f"{JSONLD_EX}contentHash": "@contentHash",
+    f"{JSONLD_EX}translatedFrom": "@translatedFrom",
+    f"{JSONLD_EX}translationModel": "@translationModel",
+    f"{JSONLD_EX}measurementUncertainty": "@measurementUncertainty",
+    f"{JSONLD_EX}unit": "@unit",
+    f"{JSONLD_EX}derivedFrom": "@derivedFrom",
+    f"{JSONLD_EX}delegatedBy": "@delegatedBy",
+    f"{JSONLD_EX}aggregationMethod": "@aggregationMethod",
+    f"{JSONLD_EX}aggregationWindow": "@aggregationWindow",
+    f"{JSONLD_EX}aggregationCount": "@aggregationCount",
+    f"{JSONLD_EX}calibratedAt": "@calibratedAt",
+    f"{JSONLD_EX}calibrationMethod": "@calibrationMethod",
+    f"{JSONLD_EX}calibrationAuthority": "@calibrationAuthority",
+    f"{JSONLD_EX}invalidatedAt": "@invalidatedAt",
+    f"{JSONLD_EX}invalidationReason": "@invalidationReason",
+}
+
+# Keywords that accept multiple values (accumulated into a list).
+_RDF_STAR_MULTI_VALUE_KEYWORDS: frozenset[str] = frozenset(
+    {"@derivedFrom", "@delegatedBy"}
+)
+
+
+def _unescape_ntriples(s: str) -> str:
+    """Reverse of :func:`_escape_ntriples`.
+
+    Processes escape sequences character-by-character so that
+    sequences like ``\\\\`` → ``\\`` are handled correctly.
+    """
+    result: list[str] = []
+    i = 0
+    while i < len(s):
+        if s[i] == "\\" and i + 1 < len(s):
+            c = s[i + 1]
+            if c == "\\":
+                result.append("\\")
+            elif c == '"':
+                result.append('"')
+            elif c == "n":
+                result.append("\n")
+            elif c == "r":
+                result.append("\r")
+            elif c == "t":
+                result.append("\t")
+            else:
+                result.append("\\")
+                result.append(c)
+            i += 2
+        else:
+            result.append(s[i])
+            i += 1
+    return "".join(result)
+
+
+def _cast_typed_literal(value_str: str, datatype_iri: str) -> Any:
+    """Cast a typed-literal string to the appropriate Python type.
+
+    - ``xsd:double``  → :class:`float`
+    - ``xsd:integer`` → :class:`int`
+    - ``xsd:boolean`` → :class:`bool`
+    - everything else (including ``xsd:dateTime``) → :class:`str`
+    """
+    if datatype_iri == f"{XSD}double":
+        return float(value_str)
+    if datatype_iri == f"{XSD}integer":
+        return int(value_str)
+    if datatype_iri == f"{XSD}boolean":
+        return value_str.lower() == "true"
+    return value_str
+
+
+def _parse_ntriples_term(text: str, pos: int) -> tuple[Any, str, int]:
+    """Parse one N-Triples term starting at *pos*.
+
+    Returns ``(python_value, raw_form, next_position)``.
+
+    *raw_form* is the verbatim text slice (e.g. ``'"Alice"'`` or
+    ``'"22.5"^^<…double>'``) used as a grouping key so that base
+    triples and their embedded-triple annotations can be matched.
+    """
+    # Skip leading whitespace
+    while pos < len(text) and text[pos] == " ":
+        pos += 1
+
+    if pos >= len(text):
+        raise ValueError("Unexpected end of input while parsing N-Triples term")
+
+    # ── IRI ──────────────────────────────────────────────────────
+    if text[pos] == "<":
+        end = text.index(">", pos + 1)
+        iri = text[pos + 1 : end]
+        raw = text[pos : end + 1]
+        return iri, raw, end + 1
+
+    # ── Literal ──────────────────────────────────────────────────
+    if text[pos] == '"':
+        # Scan for closing quote, respecting escape sequences.
+        i = pos + 1
+        while i < len(text):
+            if text[i] == "\\":
+                i += 2  # skip escaped character
+            elif text[i] == '"':
+                break
+            else:
+                i += 1
+
+        literal_str = _unescape_ntriples(text[pos + 1 : i])
+        next_pos = i + 1  # past closing quote
+
+        # Typed literal?  "value"^^<type>
+        if (
+            next_pos + 1 < len(text)
+            and text[next_pos : next_pos + 2] == "^^"
+        ):
+            type_start = next_pos + 3  # skip ^^ and opening <
+            type_end = text.index(">", type_start)
+            datatype = text[type_start:type_end]
+            raw = text[pos : type_end + 1]
+            value = _cast_typed_literal(literal_str, datatype)
+            return value, raw, type_end + 1
+
+        # Language-tagged literal?  "value"@lang  (pass through as string)
+        if next_pos < len(text) and text[next_pos] == "@":
+            lang_end = next_pos + 1
+            while lang_end < len(text) and text[lang_end] not in (" ", ".", "\n"):
+                lang_end += 1
+            raw = text[pos:lang_end]
+            return literal_str, raw, lang_end
+
+        # Plain literal
+        raw = text[pos:next_pos]
+        return literal_str, raw, next_pos
+
+    # ── Blank node ───────────────────────────────────────────────
+    if text[pos : pos + 2] == "_:":
+        end = pos + 2
+        while end < len(text) and text[end] not in (" ", ".", "\n", ">"):
+            end += 1
+        bnode = text[pos:end]
+        return bnode, bnode, end
+
+    raise ValueError(
+        f"Unexpected character at position {pos}: {text[pos : pos + 20]!r}"
+    )
+
+
+def from_rdf_star_ntriples(
+    ntriples_str: str,
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Parse RDF-Star N-Triples and reconstruct a jsonld-ex annotated document.
+
+    Inverse of :func:`to_rdf_star_ntriples`.  Handles:
+
+    - Base triples: ``<s> <p> object .``
+    - Annotation triples: ``<< <s> <p> object >> <jex:pred> value .``
+    - Typed literals (``xsd:double``, ``xsd:integer``, ``xsd:boolean``,
+      ``xsd:dateTime``), IRI objects, and plain string literals.
+    - Multi-value annotation fields (``@derivedFrom``, ``@delegatedBy``)
+      are collected into lists.
+
+    Args:
+        ntriples_str: N-Triples-star text (as produced by
+            :func:`to_rdf_star_ntriples`).
+
+    Returns:
+        Tuple of ``(reconstructed_document, ConversionReport)``.
+    """
+    report = ConversionReport(success=True)
+
+    # Phase 1 — parse every line into base triples and annotations.
+    #   base_triples: [(subject_iri, predicate_iri, python_value, raw_object)]
+    #   annotations:  { (subj, pred, raw_obj) -> [(keyword, python_value)] }
+    base_triples: list[tuple[str, str, Any, str]] = []
+    annotations: dict[tuple[str, str, str], list[tuple[str, Any]]] = {}
+
+    for line in ntriples_str.split("\n"):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        if line.startswith("<<"):
+            # ── Annotation triple ────────────────────────────────
+            close_idx = line.index(">>")
+            inner = line[2:close_idx].strip()
+            outer = line[close_idx + 2 :].strip().rstrip(" .")
+
+            # Parse the three terms of the embedded triple.
+            pos = 0
+            e_subj, _, pos = _parse_ntriples_term(inner, pos)
+            e_pred, _, pos = _parse_ntriples_term(inner, pos)
+            _, e_obj_raw, pos = _parse_ntriples_term(inner, pos)
+
+            # Parse annotation predicate + value.
+            pos = 0
+            ann_pred, _, pos = _parse_ntriples_term(outer, pos)
+            ann_value, _, pos = _parse_ntriples_term(outer, pos)
+
+            keyword = _RDF_STAR_PREDICATE_TO_KEYWORD.get(ann_pred)
+            if keyword is None:
+                report.warnings.append(
+                    f"Unknown annotation predicate: {ann_pred}"
+                )
+                continue
+
+            key = (e_subj, e_pred, e_obj_raw)
+            annotations.setdefault(key, []).append((keyword, ann_value))
+            report.triples_input += 1
+        else:
+            # ── Regular base triple ──────────────────────────────
+            content = line.rstrip(" .")
+            pos = 0
+            subj, _, pos = _parse_ntriples_term(content, pos)
+            pred, _, pos = _parse_ntriples_term(content, pos)
+            obj_value, obj_raw, pos = _parse_ntriples_term(content, pos)
+
+            base_triples.append((subj, pred, obj_value, obj_raw))
+            report.triples_input += 1
+
+    # Phase 2 — reconstruct the document from parsed data.
+    subjects: dict[str, dict[str, Any]] = {}
+    for subj, pred, obj_value, obj_raw in base_triples:
+        if subj not in subjects:
+            subjects[subj] = {}
+
+        key = (subj, pred, obj_raw)
+        if key in annotations:
+            # Build an annotated value dict.
+            annotated: dict[str, Any] = {"@value": obj_value}
+            for keyword, ann_value in annotations[key]:
+                if keyword in _RDF_STAR_MULTI_VALUE_KEYWORDS:
+                    annotated.setdefault(keyword, []).append(ann_value)
+                else:
+                    annotated[keyword] = ann_value
+            subjects[subj][pred] = annotated
+            report.nodes_converted += 1
+        else:
+            subjects[subj][pred] = obj_value
+
+        report.triples_output += 1
+
+    # Phase 3 — assemble the output document.
+    if len(subjects) == 0:
+        return {}, report
+
+    if len(subjects) == 1:
+        subj_iri, props = next(iter(subjects.items()))
+        result: dict[str, Any] = {"@id": subj_iri}
+        result.update(props)
+        return result, report
+
+    # Multiple subjects → wrap in @graph.
+    graph: list[dict[str, Any]] = []
+    for subj_iri, props in subjects.items():
+        node: dict[str, Any] = {"@id": subj_iri}
+        node.update(props)
+        graph.append(node)
+    return {"@graph": graph}, report
+
+
+# ── RDF-Star Turtle Output ─────────────────────────────────────────
+
+# Shared annotation field descriptors.
+# Each entry: (ProvenanceMetadata attr, jex local name, value kind, multi-value?)
+_ANNOTATION_FIELDS: list[tuple[str, str, str, bool]] = [
+    # Core
+    ("confidence", "confidence", "double", False),
+    ("source", "source", "iri", False),
+    ("extracted_at", "extractedAt", "dateTime", False),
+    ("method", "method", "string", False),
+    ("human_verified", "humanVerified", "boolean", False),
+    # Content
+    ("media_type", "mediaType", "string", False),
+    ("content_url", "contentUrl", "iri", False),
+    ("content_hash", "contentHash", "string", False),
+    # Translation
+    ("translated_from", "translatedFrom", "string", False),
+    ("translation_model", "translationModel", "string", False),
+    # Measurement
+    ("measurement_uncertainty", "measurementUncertainty", "double", False),
+    ("unit", "unit", "string", False),
+    # Derivation
+    ("derived_from", "derivedFrom", "iri", True),
+    # Delegation
+    ("delegated_by", "delegatedBy", "iri", True),
+    # Aggregation
+    ("aggregation_method", "aggregationMethod", "string", False),
+    ("aggregation_window", "aggregationWindow", "string", False),
+    ("aggregation_count", "aggregationCount", "integer", False),
+    # Calibration
+    ("calibrated_at", "calibratedAt", "dateTime", False),
+    ("calibration_method", "calibrationMethod", "string", False),
+    ("calibration_authority", "calibrationAuthority", "string", False),
+    # Invalidation
+    ("invalidated_at", "invalidatedAt", "dateTime", False),
+    ("invalidation_reason", "invalidationReason", "string", False),
+]
+
+
+def _iter_prov_annotations(
+    prov: ProvenanceMetadata,
+) -> list[tuple[str, Any, str]]:
+    """Return annotation triples for non-None fields in *prov*.
+
+    Each result is ``(jex_local_name, python_value, value_kind)``
+    where *value_kind* is one of ``"double"``, ``"integer"``,
+    ``"boolean"``, ``"dateTime"``, ``"iri"``, ``"string"``.
+    """
+    result: list[tuple[str, Any, str]] = []
+    for attr, local_name, vkind, is_multi in _ANNOTATION_FIELDS:
+        raw = getattr(prov, attr)
+        if raw is None:
+            continue
+        if is_multi:
+            items = raw if isinstance(raw, list) else [raw]
+            for item in items:
+                result.append((local_name, item, vkind))
+        else:
+            result.append((local_name, raw, vkind))
+    return result
+
+
+def _format_annotation_value_turtle(
+    value: Any, vkind: str, used_prefixes: set[str],
+) -> str:
+    """Format an annotation value for Turtle-star serialization."""
+    if vkind == "iri":
+        return f"<{value}>"
+    if vkind == "double":
+        used_prefixes.add("xsd")
+        return f'"{value}"^^xsd:double'
+    if vkind == "integer":
+        used_prefixes.add("xsd")
+        return f'"{value}"^^xsd:integer'
+    if vkind == "boolean":
+        used_prefixes.add("xsd")
+        val = "true" if value else "false"
+        return f'"{val}"^^xsd:boolean'
+    if vkind == "dateTime":
+        used_prefixes.add("xsd")
+        return f'"{value}"^^xsd:dateTime'
+    # string
+    return f'"{_escape_ntriples(str(value))}"'
+
+
+def _format_literal_turtle(value: Any, used_prefixes: set[str]) -> str:
+    """Format a Python value as a Turtle literal, tracking prefix usage."""
+    if isinstance(value, bool):
+        used_prefixes.add("xsd")
+        return f'"{str(value).lower()}"^^xsd:boolean'
+    if isinstance(value, int):
+        used_prefixes.add("xsd")
+        return f'"{value}"^^xsd:integer'
+    if isinstance(value, float):
+        used_prefixes.add("xsd")
+        return f'"{value}"^^xsd:double'
+    return f'"{_escape_ntriples(str(value))}"'
+
+
+def to_rdf_star_turtle(
+    doc: dict[str, Any],
+    base_subject: Optional[str] = None,
+) -> tuple[str, ConversionReport]:
+    """Convert jsonld-ex annotated values to RDF-Star Turtle.
+
+    Human-readable alternative to :func:`to_rdf_star_ntriples`.  Uses
+    ``@prefix`` declarations for ``jex:`` and ``xsd:`` namespaces and
+    groups annotations for the same embedded triple with ``;``
+    continuation syntax.  Only prefixes that are actually referenced
+    are emitted.
+
+    Args:
+        doc: A JSON-LD document with jsonld-ex annotations.
+        base_subject: IRI for the document subject.
+
+    Returns:
+        Tuple of (Turtle-star string, ConversionReport).
+    """
+    report = ConversionReport(success=True)
+    used_prefixes: set[str] = set()
+    body_lines: list[str] = []
+
+    subject = base_subject or doc.get("@id", "_:subject")
+    if not subject.startswith("_:") and not subject.startswith("<"):
+        subject = f"<{subject}>"
+
+    for key, value in doc.items():
+        if key.startswith("@"):
+            continue
+
+        if isinstance(value, dict) and "@value" in value:
+            prov = get_provenance(value)
+            ann_tuples = _iter_prov_annotations(prov)
+
+            if not ann_tuples:
+                # Plain value — no annotations.
+                literal = _format_literal_turtle(value["@value"], used_prefixes)
+                body_lines.append(f"{subject} <{key}> {literal} .")
+                report.triples_output += 1
+                continue
+
+            # Build the base triple.
+            literal = _format_literal_turtle(value["@value"], used_prefixes)
+            embedded = f"<< {subject} <{key}> {literal} >>"
+            body_lines.append(f"{subject} <{key}> {literal} .")
+            report.triples_output += 1
+            report.triples_input += 1
+
+            # Build grouped annotation block.
+            used_prefixes.add("jex")
+            ann_parts: list[str] = []
+            for local_name, ann_value, vkind in ann_tuples:
+                obj = _format_annotation_value_turtle(
+                    ann_value, vkind, used_prefixes,
+                )
+                ann_parts.append(f"    jex:{local_name} {obj}")
+                report.triples_output += 1
+
+            annotation_block = f"{embedded}\n"
+            annotation_block += " ;\n".join(ann_parts)
+            annotation_block += " ."
+            body_lines.append(annotation_block)
+
+            report.nodes_converted += 1
+        else:
+            # Non-annotated value.
+            if isinstance(value, str):
+                if value.startswith("http://") or value.startswith("https://"):
+                    body_lines.append(f"{subject} <{key}> <{value}> .")
+                else:
+                    body_lines.append(
+                        f'{subject} <{key}> "{_escape_ntriples(value)}" .'
+                    )
+            elif isinstance(value, bool):
+                literal = _format_literal_turtle(value, used_prefixes)
+                body_lines.append(f"{subject} <{key}> {literal} .")
+            elif isinstance(value, (int, float)):
+                literal = _format_literal_turtle(value, used_prefixes)
+                body_lines.append(f"{subject} <{key}> {literal} .")
+            report.triples_output += 1
+
+    # Assemble output: prefix declarations, then body.
+    output_lines: list[str] = []
+    if "jex" in used_prefixes:
+        output_lines.append(f"@prefix jex: <{JSONLD_EX}> .")
+    if "xsd" in used_prefixes:
+        output_lines.append(f"@prefix xsd: <{XSD}> .")
+    if output_lines:
+        output_lines.append("")  # blank line after prefixes
+
+    output_lines.extend(body_lines)
+
+    return "\n".join(output_lines), report
+
+
 # ═══════════════════════════════════════════════════════════════════
 # SSN/SOSA MAPPING
 # ═══════════════════════════════════════════════════════════════════

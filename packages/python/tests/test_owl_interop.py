@@ -26,6 +26,8 @@ from jsonld_ex.owl_interop import (
     shape_to_owl_restrictions,
     owl_to_shape,
     to_rdf_star_ntriples,
+    from_rdf_star_ntriples,
+    to_rdf_star_turtle,
     compare_with_prov_o,
     compare_with_shacl,
 )
@@ -3722,3 +3724,883 @@ class TestSSNSOSARoundTrip:
         restored, _ = from_ssn(ssn_doc)
 
         assert restored.get("@id") == "http://example.org/room-134"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# FROM RDF-STAR N-TRIPLES (Reverse Parser)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestFromRdfStarNtriples:
+    """Tests for from_rdf_star_ntriples() — the reverse RDF-Star parser."""
+
+    # ── Basic parsing ────────────────────────────────────────────
+
+    def test_single_annotated_property(self):
+        """Parse a single property with confidence + source annotations."""
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}confidence> "0.95"^^<{XSD}double> .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}source> <https://model.example.org/v1> .'
+        )
+        doc, report = from_rdf_star_ntriples(ntriples)
+
+        assert report.success
+        assert doc["@id"] == "http://example.org/x"
+        val = doc["http://schema.org/name"]
+        assert val["@value"] == "Alice"
+        assert val["@confidence"] == 0.95
+        assert val["@source"] == "https://model.example.org/v1"
+
+    def test_unannotated_string_property(self):
+        """Unannotated string values are plain Python strings."""
+        ntriples = '<http://example.org/x> <http://schema.org/name> "Bob" .'
+        doc, report = from_rdf_star_ntriples(ntriples)
+
+        assert doc["@id"] == "http://example.org/x"
+        assert doc["http://schema.org/name"] == "Bob"
+
+    def test_unannotated_iri_property(self):
+        """Unannotated IRI values are plain strings."""
+        ntriples = '<http://example.org/x> <http://schema.org/url> <https://example.org/page> .'
+        doc, report = from_rdf_star_ntriples(ntriples)
+
+        assert doc["http://schema.org/url"] == "https://example.org/page"
+
+    def test_unannotated_typed_literal(self):
+        """Unannotated typed literals are cast to Python types."""
+        ntriples = (
+            f'<http://example.org/x> <http://schema.org/age> "42"^^<{XSD}integer> .\n'
+            f'<http://example.org/x> <http://schema.org/score> "3.14"^^<{XSD}double> .\n'
+            f'<http://example.org/x> <http://schema.org/active> "true"^^<{XSD}boolean> .'
+        )
+        doc, report = from_rdf_star_ntriples(ntriples)
+
+        assert doc["http://schema.org/age"] == 42
+        assert isinstance(doc["http://schema.org/age"], int)
+        assert doc["http://schema.org/score"] == 3.14
+        assert isinstance(doc["http://schema.org/score"], float)
+        assert doc["http://schema.org/active"] is True
+
+    def test_empty_input(self):
+        """Empty string produces empty document."""
+        doc, report = from_rdf_star_ntriples("")
+        assert doc == {}
+        assert report.success
+
+    def test_comment_and_blank_lines_ignored(self):
+        """Comments and blank lines are skipped."""
+        ntriples = (
+            '# This is a comment\n'
+            '\n'
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '\n'
+            '# Another comment'
+        )
+        doc, report = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"] == "Alice"
+
+    # ── Per-field annotation parsing ─────────────────────────────
+
+    def test_confidence_annotation(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}confidence> "0.85"^^<{XSD}double> .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@confidence"] == 0.85
+
+    def test_source_annotation(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}source> <https://ner.example.org/v3> .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@source"] == "https://ner.example.org/v3"
+
+    def test_extracted_at_annotation(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}extractedAt> "2025-01-15T10:30:00Z"^^<{XSD}dateTime> .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@extractedAt"] == "2025-01-15T10:30:00Z"
+
+    def test_method_annotation(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}method> "NER-BERT" .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@method"] == "NER-BERT"
+
+    def test_human_verified_annotation(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}humanVerified> "true"^^<{XSD}boolean> .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@humanVerified"] is True
+
+    def test_human_verified_false(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}humanVerified> "false"^^<{XSD}boolean> .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@humanVerified"] is False
+
+    def test_media_type_annotation(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}mediaType> "text/plain" .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@mediaType"] == "text/plain"
+
+    def test_content_url_annotation(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}contentUrl> <https://storage.example.org/file.txt> .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@contentUrl"] == "https://storage.example.org/file.txt"
+
+    def test_content_hash_annotation(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}contentHash> "sha256-abc123" .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@contentHash"] == "sha256-abc123"
+
+    def test_translated_from_annotation(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}translatedFrom> "es" .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@translatedFrom"] == "es"
+
+    def test_translation_model_annotation(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}translationModel> "Google Translate" .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@translationModel"] == "Google Translate"
+
+    def test_measurement_uncertainty_annotation(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}measurementUncertainty> "0.01"^^<{XSD}double> .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@measurementUncertainty"] == 0.01
+
+    def test_unit_annotation(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}unit> "celsius" .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@unit"] == "celsius"
+
+    def test_aggregation_method_annotation(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}aggregationMethod> "mean" .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@aggregationMethod"] == "mean"
+
+    def test_aggregation_window_annotation(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}aggregationWindow> "PT1H" .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@aggregationWindow"] == "PT1H"
+
+    def test_aggregation_count_annotation(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}aggregationCount> "60"^^<{XSD}integer> .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@aggregationCount"] == 60
+        assert isinstance(doc["http://schema.org/name"]["@aggregationCount"], int)
+
+    def test_calibrated_at_annotation(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}calibratedAt> "2025-01-01T00:00:00Z"^^<{XSD}dateTime> .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@calibratedAt"] == "2025-01-01T00:00:00Z"
+
+    def test_calibration_method_annotation(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}calibrationMethod> "two-point" .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@calibrationMethod"] == "two-point"
+
+    def test_calibration_authority_annotation(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}calibrationAuthority> "NIST" .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@calibrationAuthority"] == "NIST"
+
+    def test_invalidated_at_annotation(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}invalidatedAt> "2025-06-01T00:00:00Z"^^<{XSD}dateTime> .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@invalidatedAt"] == "2025-06-01T00:00:00Z"
+
+    def test_invalidation_reason_annotation(self):
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}invalidationReason> "superseded by newer data" .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/name"]["@invalidationReason"] == "superseded by newer data"
+
+    # ── Multi-value fields ───────────────────────────────────────
+
+    def test_derived_from_multiple(self):
+        """Multiple derivedFrom triples are collected into a list."""
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}derivedFrom> <https://source1.example.org> .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}derivedFrom> <https://source2.example.org> .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        val = doc["http://schema.org/name"]
+        assert isinstance(val["@derivedFrom"], list)
+        assert set(val["@derivedFrom"]) == {
+            "https://source1.example.org",
+            "https://source2.example.org",
+        }
+
+    def test_delegated_by_multiple(self):
+        """Multiple delegatedBy triples are collected into a list."""
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}delegatedBy> <https://agent1.example.org> .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}delegatedBy> <https://agent2.example.org> .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        val = doc["http://schema.org/name"]
+        assert isinstance(val["@delegatedBy"], list)
+        assert set(val["@delegatedBy"]) == {
+            "https://agent1.example.org",
+            "https://agent2.example.org",
+        }
+
+    def test_derived_from_single_still_list(self):
+        """Even a single derivedFrom becomes a list (multi-value keyword)."""
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}derivedFrom> <https://only-source.example.org> .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        val = doc["http://schema.org/name"]
+        assert val["@derivedFrom"] == ["https://only-source.example.org"]
+
+    # ── Mixed annotated and unannotated ──────────────────────────
+
+    def test_mixed_properties(self):
+        """Document with both annotated and unannotated properties."""
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}confidence> "0.95"^^<{XSD}double> .\n'
+            '<http://example.org/x> <http://schema.org/email> "alice@example.org" .'
+        )
+        doc, _ = from_rdf_star_ntriples(ntriples)
+
+        # Annotated
+        assert isinstance(doc["http://schema.org/name"], dict)
+        assert doc["http://schema.org/name"]["@value"] == "Alice"
+        assert doc["http://schema.org/name"]["@confidence"] == 0.95
+
+        # Unannotated
+        assert doc["http://schema.org/email"] == "alice@example.org"
+
+    # ── Special characters ───────────────────────────────────────
+
+    def test_escaped_characters_in_literal(self):
+        """N-Triples escape sequences are unescaped correctly."""
+        ntriples = '<http://example.org/x> <http://schema.org/desc> "line1\\nline2" .'
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/desc"] == "line1\nline2"
+
+    def test_escaped_quote_in_literal(self):
+        ntriples = '<http://example.org/x> <http://schema.org/desc> "say \\\"hello\\\"" .'
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/desc"] == 'say "hello"'
+
+    def test_escaped_backslash_in_literal(self):
+        ntriples = '<http://example.org/x> <http://schema.org/path> "C:\\\\Users\\\\file" .'
+        doc, _ = from_rdf_star_ntriples(ntriples)
+        assert doc["http://schema.org/path"] == "C:\\Users\\file"
+
+    # ── Unknown predicate handling ───────────────────────────────
+
+    def test_unknown_annotation_predicate_warning(self):
+        """Unknown jex: predicates produce a warning, not an error."""
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            '<http://example.org/custom/unknown> "value" .'
+        )
+        doc, report = from_rdf_star_ntriples(ntriples)
+
+        assert report.success
+        assert len(report.warnings) == 1
+        assert "Unknown annotation predicate" in report.warnings[0]
+        # The base triple is still parsed.
+        assert doc["http://schema.org/name"] == "Alice"
+
+    # ── ConversionReport counts ──────────────────────────────────
+
+    def test_report_counts(self):
+        """Verify triples_input, triples_output, nodes_converted."""
+        ntriples = (
+            '<http://example.org/x> <http://schema.org/name> "Alice" .\n'
+            '<< <http://example.org/x> <http://schema.org/name> "Alice" >> '
+            f'<{JSONLD_EX}confidence> "0.95"^^<{XSD}double> .\n'
+            '<http://example.org/x> <http://schema.org/email> "a@b.c" .'
+        )
+        _, report = from_rdf_star_ntriples(ntriples)
+
+        assert report.triples_input == 3   # 2 base + 1 annotation
+        assert report.triples_output == 2  # 2 reconstructed properties
+        assert report.nodes_converted == 1  # 1 annotated value
+
+
+# ═══════════════════════════════════════════════════════════════════
+# RDF-STAR ROUND-TRIP TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestRdfStarRoundTrip:
+    """Full round-trip: doc → to_rdf_star_ntriples → from_rdf_star_ntriples → doc."""
+
+    def test_single_confidence_source(self):
+        """Simple annotated doc survives round-trip."""
+        original = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate(
+                "Alice", confidence=0.95, source="https://model.example.org/v1"
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(original)
+        restored, _ = from_rdf_star_ntriples(ntriples)
+
+        assert restored["@id"] == "http://example.org/x"
+        val = restored["http://schema.org/name"]
+        assert val["@value"] == "Alice"
+        assert val["@confidence"] == 0.95
+        assert val["@source"] == "https://model.example.org/v1"
+
+    def test_multiple_annotated_properties(self):
+        """Multiple annotated properties survive round-trip."""
+        original = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate("Alice", confidence=0.9),
+            "http://schema.org/email": annotate(
+                "alice@example.org",
+                confidence=0.8,
+                source="https://extractor.example.org",
+            ),
+        }
+        ntriples, _ = to_rdf_star_ntriples(original)
+        restored, _ = from_rdf_star_ntriples(ntriples)
+
+        assert restored["http://schema.org/name"]["@value"] == "Alice"
+        assert restored["http://schema.org/name"]["@confidence"] == 0.9
+        assert restored["http://schema.org/email"]["@value"] == "alice@example.org"
+        assert restored["http://schema.org/email"]["@confidence"] == 0.8
+        assert (
+            restored["http://schema.org/email"]["@source"]
+            == "https://extractor.example.org"
+        )
+
+    def test_all_22_fields_round_trip(self):
+        """All 22 annotation fields survive a full round-trip."""
+        original = {
+            "@id": "http://example.org/sensor/1",
+            "http://example.org/temperature": annotate(
+                22.5,
+                confidence=0.95,
+                source="https://sensor.example.org/t1",
+                extracted_at="2025-01-15T10:30:00Z",
+                method="direct-measurement",
+                human_verified=True,
+                media_type="application/json",
+                content_url="https://storage.example.org/raw/t1.json",
+                content_hash="sha256-abc123def456",
+                translated_from="es",
+                translation_model="Google Translate",
+                measurement_uncertainty=0.01,
+                unit="celsius",
+                derived_from=[
+                    "https://raw.example.org/reading/1",
+                    "https://raw.example.org/reading/2",
+                ],
+                delegated_by=[
+                    "https://agent.example.org/supervisor",
+                    "https://agent.example.org/admin",
+                ],
+                aggregation_method="mean",
+                aggregation_window="PT1H",
+                aggregation_count=60,
+                calibrated_at="2025-01-01T00:00:00Z",
+                calibration_method="two-point",
+                calibration_authority="NIST",
+                invalidated_at="2025-06-01T00:00:00Z",
+                invalidation_reason="sensor replaced",
+            ),
+        }
+        ntriples, fwd_report = to_rdf_star_ntriples(original)
+        restored, rev_report = from_rdf_star_ntriples(ntriples)
+
+        assert restored["@id"] == "http://example.org/sensor/1"
+        val = restored["http://example.org/temperature"]
+
+        # Core
+        assert val["@value"] == 22.5
+        assert val["@confidence"] == 0.95
+        assert val["@source"] == "https://sensor.example.org/t1"
+        assert val["@extractedAt"] == "2025-01-15T10:30:00Z"
+        assert val["@method"] == "direct-measurement"
+        assert val["@humanVerified"] is True
+
+        # Content
+        assert val["@mediaType"] == "application/json"
+        assert val["@contentUrl"] == "https://storage.example.org/raw/t1.json"
+        assert val["@contentHash"] == "sha256-abc123def456"
+
+        # Translation
+        assert val["@translatedFrom"] == "es"
+        assert val["@translationModel"] == "Google Translate"
+
+        # Measurement
+        assert val["@measurementUncertainty"] == 0.01
+        assert val["@unit"] == "celsius"
+
+        # Derivation (multi-value)
+        assert isinstance(val["@derivedFrom"], list)
+        assert set(val["@derivedFrom"]) == {
+            "https://raw.example.org/reading/1",
+            "https://raw.example.org/reading/2",
+        }
+
+        # Delegation (multi-value)
+        assert isinstance(val["@delegatedBy"], list)
+        assert set(val["@delegatedBy"]) == {
+            "https://agent.example.org/supervisor",
+            "https://agent.example.org/admin",
+        }
+
+        # Aggregation
+        assert val["@aggregationMethod"] == "mean"
+        assert val["@aggregationWindow"] == "PT1H"
+        assert val["@aggregationCount"] == 60
+
+        # Calibration
+        assert val["@calibratedAt"] == "2025-01-01T00:00:00Z"
+        assert val["@calibrationMethod"] == "two-point"
+        assert val["@calibrationAuthority"] == "NIST"
+
+        # Invalidation
+        assert val["@invalidatedAt"] == "2025-06-01T00:00:00Z"
+        assert val["@invalidationReason"] == "sensor replaced"
+
+    def test_mixed_annotated_and_plain(self):
+        """Mix of annotated and plain values survives round-trip."""
+        original = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate("Alice", confidence=0.95),
+            "http://schema.org/url": "https://example.org/alice",
+        }
+        ntriples, _ = to_rdf_star_ntriples(original)
+        restored, _ = from_rdf_star_ntriples(ntriples)
+
+        # Annotated property
+        assert restored["http://schema.org/name"]["@value"] == "Alice"
+        assert restored["http://schema.org/name"]["@confidence"] == 0.95
+
+        # Plain IRI property
+        assert restored["http://schema.org/url"] == "https://example.org/alice"
+
+    def test_numeric_value_round_trip(self):
+        """Numeric @value survives round-trip with correct type."""
+        original = {
+            "@id": "http://example.org/x",
+            "http://example.org/temp": annotate(22.5, confidence=0.9),
+        }
+        ntriples, _ = to_rdf_star_ntriples(original)
+        restored, _ = from_rdf_star_ntriples(ntriples)
+
+        val = restored["http://example.org/temp"]
+        assert val["@value"] == 22.5
+        assert isinstance(val["@value"], float)
+
+    def test_integer_value_round_trip(self):
+        """Integer @value survives round-trip with correct type."""
+        original = {
+            "@id": "http://example.org/x",
+            "http://example.org/count": annotate(42, confidence=0.99),
+        }
+        ntriples, _ = to_rdf_star_ntriples(original)
+        restored, _ = from_rdf_star_ntriples(ntriples)
+
+        val = restored["http://example.org/count"]
+        assert val["@value"] == 42
+        assert isinstance(val["@value"], int)
+
+    def test_boolean_value_round_trip(self):
+        """Boolean @value survives round-trip with correct type."""
+        original = {
+            "@id": "http://example.org/x",
+            "http://example.org/active": annotate(True, confidence=1.0),
+        }
+        ntriples, _ = to_rdf_star_ntriples(original)
+        restored, _ = from_rdf_star_ntriples(ntriples)
+
+        val = restored["http://example.org/active"]
+        assert val["@value"] is True
+
+    def test_blank_node_subject(self):
+        """Documents without @id use blank node subjects."""
+        original = {
+            "http://schema.org/name": annotate("Alice", confidence=0.9),
+        }
+        ntriples, _ = to_rdf_star_ntriples(original)
+        restored, _ = from_rdf_star_ntriples(ntriples)
+
+        assert restored["@id"] == "_:subject"
+        assert restored["http://schema.org/name"]["@value"] == "Alice"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# TO RDF-STAR TURTLE
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestToRdfStarTurtle:
+    """Tests for to_rdf_star_turtle() — human-readable RDF-Star output."""
+
+    # ── Prefix auto-detection ────────────────────────────────────
+
+    def test_jex_and_xsd_prefixes_for_typed_annotation(self):
+        """Both jex: and xsd: emitted when typed annotations are present."""
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate("Alice", confidence=0.95),
+        }
+        output, _ = to_rdf_star_turtle(doc)
+        assert f"@prefix jex: <{JSONLD_EX}> ." in output
+        assert f"@prefix xsd: <{XSD}> ." in output
+
+    def test_jex_only_prefix_for_string_and_iri_annotations(self):
+        """Only jex: emitted when annotations are strings/IRIs (no xsd types)."""
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate(
+                "Alice",
+                source="https://model.example.org/v1",
+                method="NER",
+            ),
+        }
+        output, _ = to_rdf_star_turtle(doc)
+        assert f"@prefix jex: <{JSONLD_EX}> ." in output
+        assert "@prefix xsd:" not in output
+
+    def test_no_prefixes_for_unannotated_string(self):
+        """No prefix declarations when document has only plain string values."""
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": "Alice",
+        }
+        output, _ = to_rdf_star_turtle(doc)
+        assert "@prefix" not in output
+
+    def test_xsd_prefix_for_unannotated_typed_literal(self):
+        """xsd: prefix emitted for unannotated typed literals (int/float)."""
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/age": 42,
+        }
+        output, _ = to_rdf_star_turtle(doc)
+        assert f"@prefix xsd: <{XSD}> ." in output
+        assert '"42"^^xsd:integer' in output
+        assert "@prefix jex:" not in output
+
+    # ── Annotation grouping ──────────────────────────────────────
+
+    def test_annotations_grouped_with_semicolons(self):
+        """Multiple annotations use ; continuation, last uses . terminator."""
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate(
+                "Alice",
+                confidence=0.95,
+                source="https://model.example.org/v1",
+            ),
+        }
+        output, _ = to_rdf_star_turtle(doc)
+
+        # Find the annotation block.
+        lines = output.split("\n")
+        ann_lines = [l for l in lines if l.startswith("    jex:")]
+        assert len(ann_lines) == 2
+
+        # First annotation ends with ;
+        assert ann_lines[0].endswith(" ;")
+        # Last annotation ends with .
+        assert ann_lines[1].endswith(" .")
+
+    def test_single_annotation_ends_with_period(self):
+        """A single annotation ends directly with . (no semicolons)."""
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate(
+                "Alice", method="NER",
+            ),
+        }
+        output, _ = to_rdf_star_turtle(doc)
+
+        ann_lines = [l for l in output.split("\n") if l.startswith("    jex:")]
+        assert len(ann_lines) == 1
+        assert ann_lines[0].endswith(" .")
+
+    # ── Output format ────────────────────────────────────────────
+
+    def test_basic_annotated_output(self):
+        """Verify complete structure of a basic Turtle-star document."""
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate(
+                "Alice", confidence=0.95,
+            ),
+        }
+        output, report = to_rdf_star_turtle(doc)
+
+        assert report.success
+        assert report.nodes_converted == 1
+
+        # Prefix declarations
+        assert output.startswith("@prefix")
+
+        # Base triple
+        assert '<http://example.org/x> <http://schema.org/name> "Alice" .' in output
+
+        # Annotation uses prefixed form
+        assert 'jex:confidence "0.95"^^xsd:double' in output
+
+        # Embedded triple syntax
+        assert '<< <http://example.org/x> <http://schema.org/name> "Alice" >>' in output
+
+    def test_unannotated_string_property(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": "Alice",
+        }
+        output, _ = to_rdf_star_turtle(doc)
+        assert '<http://example.org/x> <http://schema.org/name> "Alice" .' in output
+        assert "<<" not in output
+
+    def test_unannotated_iri_property(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/url": "https://example.org/page",
+        }
+        output, _ = to_rdf_star_turtle(doc)
+        assert "<http://example.org/x> <http://schema.org/url> <https://example.org/page> ." in output
+
+    def test_mixed_annotated_and_plain(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate("Alice", confidence=0.95),
+            "http://schema.org/email": "alice@example.org",
+        }
+        output, _ = to_rdf_star_turtle(doc)
+
+        # Annotated property has embedded triple
+        assert 'jex:confidence' in output
+        # Plain property
+        assert '"alice@example.org"' in output
+
+    # ── Annotation value formatting ─────────────────────────────
+
+    def test_iri_annotation_format(self):
+        """IRI annotations use angle brackets, not xsd type."""
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate(
+                "Alice", source="https://model.example.org/v1",
+            ),
+        }
+        output, _ = to_rdf_star_turtle(doc)
+        assert "jex:source <https://model.example.org/v1>" in output
+
+    def test_boolean_annotation_format(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate("Alice", human_verified=True),
+        }
+        output, _ = to_rdf_star_turtle(doc)
+        assert 'jex:humanVerified "true"^^xsd:boolean' in output
+
+    def test_datetime_annotation_format(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate(
+                "Alice", extracted_at="2025-01-15T10:30:00Z",
+            ),
+        }
+        output, _ = to_rdf_star_turtle(doc)
+        assert 'jex:extractedAt "2025-01-15T10:30:00Z"^^xsd:dateTime' in output
+
+    def test_integer_annotation_format(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate(
+                "Alice", aggregation_count=60,
+            ),
+        }
+        output, _ = to_rdf_star_turtle(doc)
+        assert 'jex:aggregationCount "60"^^xsd:integer' in output
+
+    def test_string_annotation_no_xsd_type(self):
+        """Plain string annotations are untyped literals."""
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate("Alice", method="NER"),
+        }
+        output, _ = to_rdf_star_turtle(doc)
+        assert 'jex:method "NER" .' in output
+        # Should NOT have ^^xsd: on the method value
+        assert 'jex:method "NER"^^' not in output
+
+    # ── Multi-value fields ───────────────────────────────────────
+
+    def test_derived_from_multiple(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate(
+                "Alice",
+                derived_from=[
+                    "https://source1.example.org",
+                    "https://source2.example.org",
+                ],
+            ),
+        }
+        output, _ = to_rdf_star_turtle(doc)
+        assert "jex:derivedFrom <https://source1.example.org>" in output
+        assert "jex:derivedFrom <https://source2.example.org>" in output
+
+    # ── All 22 fields ────────────────────────────────────────────
+
+    def test_all_22_fields(self):
+        """All 22 annotation fields appear in the Turtle output."""
+        doc = {
+            "@id": "http://example.org/sensor/1",
+            "http://example.org/temperature": annotate(
+                22.5,
+                confidence=0.95,
+                source="https://sensor.example.org/t1",
+                extracted_at="2025-01-15T10:30:00Z",
+                method="direct-measurement",
+                human_verified=True,
+                media_type="application/json",
+                content_url="https://storage.example.org/raw/t1.json",
+                content_hash="sha256-abc123def456",
+                translated_from="es",
+                translation_model="Google Translate",
+                measurement_uncertainty=0.01,
+                unit="celsius",
+                derived_from=["https://raw.example.org/r1", "https://raw.example.org/r2"],
+                delegated_by=["https://agent.example.org/sup"],
+                aggregation_method="mean",
+                aggregation_window="PT1H",
+                aggregation_count=60,
+                calibrated_at="2025-01-01T00:00:00Z",
+                calibration_method="two-point",
+                calibration_authority="NIST",
+                invalidated_at="2025-06-01T00:00:00Z",
+                invalidation_reason="sensor replaced",
+            ),
+        }
+        output, report = to_rdf_star_turtle(doc)
+
+        assert report.nodes_converted == 1
+
+        # Verify all 22 annotation field names appear as jex: predicates.
+        expected_fields = [
+            "confidence", "source", "extractedAt", "method",
+            "humanVerified", "mediaType", "contentUrl", "contentHash",
+            "translatedFrom", "translationModel",
+            "measurementUncertainty", "unit",
+            "derivedFrom",  # appears twice (two sources)
+            "delegatedBy",
+            "aggregationMethod", "aggregationWindow", "aggregationCount",
+            "calibratedAt", "calibrationMethod", "calibrationAuthority",
+            "invalidatedAt", "invalidationReason",
+        ]
+        for field_name in expected_fields:
+            assert f"jex:{field_name}" in output, f"Missing jex:{field_name}"
+
+    # ── Report counts ────────────────────────────────────────────
+
+    def test_report_counts(self):
+        doc = {
+            "@id": "http://example.org/x",
+            "http://schema.org/name": annotate(
+                "Alice", confidence=0.95, source="https://m.example.org",
+            ),
+            "http://schema.org/email": "alice@example.org",
+        }
+        _, report = to_rdf_star_turtle(doc)
+
+        assert report.success
+        assert report.nodes_converted == 1
+        # 1 base + 2 annotations + 1 unannotated = 4 output triples
+        assert report.triples_output == 4

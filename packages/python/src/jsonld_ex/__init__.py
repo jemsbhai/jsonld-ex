@@ -20,6 +20,8 @@ from jsonld_ex.owl_interop import (
     shacl_to_shape,
     shape_to_owl_restrictions,
     to_rdf_star_ntriples,
+    from_rdf_star_ntriples,
+    to_rdf_star_turtle,
     compare_with_prov_o,
     compare_with_shacl,
 )
@@ -124,6 +126,8 @@ __all__ = [
     "shacl_to_shape",
     "shape_to_owl_restrictions",
     "to_rdf_star_ntriples",
+    "from_rdf_star_ntriples",
+    "to_rdf_star_turtle",
     "compare_with_prov_o",
     "compare_with_shacl",
     # Confidence propagation & inference
