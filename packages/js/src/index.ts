@@ -27,4 +27,4 @@ export * from './merge.js';
 export * from './inference.js';
 export * from './confidence/algebra.js';
 export * from './confidence/decay.js';
-export * from './confidence/bridge.js';
+export * from './data-protection.js';

@@ -7,13 +7,14 @@
 
 ## Status
 
-**Feature Complete (v0.1.0)** — Core extensions, Subjective Logic, and MCP Server are fully implemented and tested, achieving parity with the Python reference implementation.
+**Feature Complete (v0.1.1)** — All extensions, including Subjective Logic, AI/ML Provenance, GDPR Compliance, and Interop modules are fully implemented and tested, achieving 100% feature parity with the Python reference implementation.
 
 ### Implemented Modules
 
 | Module | Features | Description |
 |--------|-----------|-------------|
 | **AI/ML** | `annotate`, `provenance` | Confidence scores, data lineage, method tracking. |
+| **Data Protection** | `annotateProtection` | GDPR metadata, consent records, and graph filtering. |
 | **Confidence** | `Opinion`, `fuse`, `discount` | Subjective Logic algebra for uncertainty propagation. |
 | **Logic** | `decay`, `deduce` | Temporal belief decay and conditional reasoning. |
 | **Inference** | `merge`, `diff`, `conflict` | Graph merging with confidence-aware conflict resolution. |
@@ -21,6 +22,10 @@
 | **Security** | `integrity`, `allowlist` | Context hashing and resource limits. |
 | **Validation** | `@shape` | Native structure validation without SHACL. |
 | **Vector** | `@vector` | Embeddings and cosine similarity. |
+| **Interop** | `prov`, `shacl`, `owl` | Bidirectional conversion to W3C standards. |
+| **Transport** | `mqtt` | MQTT QoS mapping and topic derivation. |
+| **Batch** | `batch` | High-throughput processing for large datasets. |
+| **Dataset** | `dataset`, `croissant` | MLCommons Croissant metadata interoperability. |
 | **MCP** | `server` | Model Context Protocol server for AI agents. |
 
 ## Installation
@@ -56,9 +61,24 @@ const result = client.propagate([0.9, 0.8, 0.95], 'multiply');
 // result.score ≈ 0.68
 ```
 
-## Advanced Usage
+## Feature Deep Dive
 
-### Subjective Logic (Uncertainty)
+### 1. Data Protection & GDPR
+
+Manage regulatory compliance with metadata for legal basis, consent, and personal data categories.
+
+```typescript
+import { annotateProtection, createConsentRecord } from '@jsonld-ex/core';
+
+const profile = annotateProtection("John Doe", {
+  personalDataCategory: "regular",
+  legalBasis: "consent",
+  jurisdiction: "EU",
+  consent: createConsentRecord("2024-01-01T00:00:00Z", ["marketing", "analytics"])
+});
+```
+
+### 2. Subjective Logic (Uncertainty)
 
 Work directly with Subjective Logic opinions (Belief, Disbelief, Uncertainty).
 
@@ -80,42 +100,60 @@ const opinionC = Opinion.fromConfidence(0.6);
 const fused = cumulativeFuse(opinionAX, opinionC);
 ```
 
-### Temporal Queries
+### 3. Standards Interoperability
 
-Manage knowledge over time using bitemporal assertions.
-
-```typescript
-import client from '@jsonld-ex/core';
-
-// Add temporal validity
-const assertion = client.addTemporal({ "status": "open" }, {
-  validFrom: "2024-01-01T00:00:00Z",
-  validUntil: "2024-12-31T23:59:59Z"
-});
-
-// Query graph at specific point in time
-const snapshot = client.queryAtTime(historyGraph, "2024-06-01T00:00:00Z");
-```
-
-### Graph Merging & Diffing
-
-Merge graphs with fine-grained conflict resolution.
+Convert between `jsonld-ex` extensions and established W3C standards.
 
 ```typescript
-import client from '@jsonld-ex/core';
+import { toProvO, shapeToShacl, shapeToOwlRestrictions } from '@jsonld-ex/core';
 
-// Calculate semantic difference
-const diff = client.diff(graphV1, graphV2);
-console.log(`Changed: ${diff.modified.length}, Added: ${diff.added.length}`);
+// Export provenance as PROV-O (RDF)
+const { provGraph } = toProvO(annotatedDoc);
 
-// Merge with report
-const { merged, report } = client.merge([sourceA, sourceB], {
-  conflictStrategy: 'weighted_vote',
-  confidenceCombination: 'average'
-});
+// Convert @shape definitions to SHACL shapes
+const shaclShapes = shapeToShacl(myShape);
+
+// Convert to OWL Class Restrictions
+const owlClasses = shapeToOwlRestrictions(myShape);
 ```
 
-### MCP Server
+### 4. MQTT & IoT Transport
+
+Optimize payloads for bandwidth-constrained environments.
+
+```typescript
+import { toMqttPayload, deriveMqttQos } from '@jsonld-ex/core';
+
+// Serialize to CBOR-compressed MQTT payload
+const payload = toMqttPayload(doc, { compress: true });
+
+// Map confidence to MQTT QoS level (0, 1, or 2)
+const qos = deriveMqttQos(doc);
+```
+
+### 5. Batch Processing
+
+High-performance API for processing annotation and validation in bulk.
+
+```typescript
+import { annotateBatch, validateBatch } from '@jsonld-ex/core';
+
+const items = ["A", "B", "C"];
+const annotated = annotateBatch(items, { confidence: 0.9 });
+```
+
+### 6. Dataset (Croissant)
+
+Interoperability with MLCommons Croissant metadata for datasets.
+
+```typescript
+import { toCroissant, createDatasetMetadata } from '@jsonld-ex/core';
+
+const metadata = createDatasetMetadata("My Dataset");
+const croissant = toCroissant(metadata);
+```
+
+### 7. MCP Server
 
 Run `jsonld-ex` as a Model Context Protocol (MCP) server to give AI agents access to these tools.
 
@@ -127,13 +165,6 @@ npx @jsonld-ex/core
 ./bin/mcp-server.js
 ```
 
-**Available Tools:**
-- `jsonld_annotate`: Create annotated values.
-- `jsonld_merge`: Merge knowledge graphs.
-- `jsonld_diff`: Compare graphs.
-- `jsonld_propagate`: Calculate derived confidence.
-- `jsonld_temporal`: Add temporal qualifiers.
-
 ## Architecture
 
 ```
@@ -142,6 +173,11 @@ src/
 ├── types.ts              # Unified Type Definitions
 ├── schemas.ts            # Zod Validation Schemas
 ├── processor.ts          # JsonLdEx Processor (Legacy Wrapper)
+├── data-protection.ts    # GDPR & Privacy (New)
+├── batch.ts              # Batch Processing (New)
+├── dataset.ts            # Croissant Support (New)
+├── mqtt.ts               # IoT Transport (New)
+├── owl.ts                # Interop (PROV/SHACL/OWL) (New)
 ├── mcp/
 │   └── server.ts         # MCP Server Implementation
 ├── confidence/

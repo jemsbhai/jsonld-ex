@@ -341,3 +341,48 @@ export interface Field {
 export type JsonLdNode = Record<string, any>;
 
 
+
+// ── Data Protection (GDPR) ────────────────────────────────────────
+
+/**
+ * Data protection metadata extracted from a JSON-LD node.
+ * Maps to W3C Data Privacy Vocabulary (DPV) concepts.
+ */
+export interface DataProtectionMetadata {
+  /** One of PERSONAL_DATA_CATEGORIES */
+  personalDataCategory?: string;
+  /** One of LEGAL_BASES (GDPR Art. 6) */
+  legalBasis?: string;
+  /** Purpose of processing */
+  processingPurpose?: string | string[];
+  /** IRI of the data controller */
+  dataController?: string;
+  /** IRI of the data processor */
+  dataProcessor?: string;
+  /** IRI or category of the data subject */
+  dataSubject?: string;
+  /** ISO 8601 datetime for mandatory deletion */
+  retentionUntil?: string;
+  /** Applicable legal jurisdiction (ISO 3166 or IRI) */
+  jurisdiction?: string;
+  /** One of ACCESS_LEVELS */
+  accessLevel?: string;
+  /** Structured consent record */
+  consent?: ConsentRecord;
+}
+
+/**
+ * Structured consent record.
+ */
+export interface ConsentRecord {
+  /** ISO 8601 datetime when consent was given */
+  '@consentGivenAt': string;
+  /** Purpose(s) for which consent was given */
+  '@consentScope': string[];
+  /** One of CONSENT_GRANULARITIES */
+  '@consentGranularity'?: string;
+  /** ISO 8601 datetime when consent was withdrawn */
+  '@consentWithdrawnAt'?: string;
+  // Index signature to allow other arbitrary consent fields
+  [key: string]: any;
+}
