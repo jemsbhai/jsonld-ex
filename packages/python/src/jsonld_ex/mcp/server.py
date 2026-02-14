@@ -1,12 +1,12 @@
 """
 jsonld-ex MCP Server — Model Context Protocol integration.
 
-Exposes jsonld-ex capabilities as 41 MCP tools for LLM agents,
-covering 9 groups: AI/ML annotation, confidence algebra (Subjective
+Exposes jsonld-ex capabilities as 51 MCP tools for LLM agents,
+covering 10 groups: AI/ML annotation, confidence algebra (Subjective
 Logic), confidence bridge, inference/propagation, security, vector
 operations, graph operations, temporal extensions, standards
-interoperability (PROV-O, SHACL, OWL, RDF-Star), and MQTT/IoT
-transport optimization.
+interoperability (PROV-O, SHACL, OWL, RDF-Star), MQTT/IoT transport
+optimization, and compliance algebra (GDPR regulatory modeling).
 
 Usage::
 
@@ -85,6 +85,19 @@ from jsonld_ex.owl_interop import (
     compare_with_prov_o as _compare_prov_o_raw,
     compare_with_shacl as _compare_shacl_raw,
 )
+from jsonld_ex.compliance_algebra import (
+    ComplianceOpinion,
+    jurisdictional_meet as _jurisdictional_meet_raw,
+    compliance_propagation as _compliance_propagation_raw,
+    consent_validity as _consent_validity_raw,
+    withdrawal_override as _withdrawal_override_raw,
+    expiry_trigger as _expiry_trigger_raw,
+    review_due_trigger as _review_due_trigger_raw,
+    regulatory_change_trigger as _regulatory_change_trigger_raw,
+    erasure_scope_opinion as _erasure_scope_opinion_raw,
+    residual_contamination as _residual_contamination_raw,
+)
+
 from jsonld_ex.mqtt import (
     to_mqtt_payload as _to_mqtt_payload_raw,
     from_mqtt_payload as _from_mqtt_payload_raw,
@@ -103,6 +116,7 @@ mcp = FastMCP(
     instructions=(
         "JSON-LD 1.2 extensions for AI/ML data exchange. "
         "Provides confidence algebra (Subjective Logic), "
+        "compliance algebra (GDPR regulatory modeling), "
         "provenance tracking, security verification, vector "
         "operations, temporal queries, standards interop "
         "(PROV-O, SHACL), and MQTT/IoT transport optimization. "
@@ -1411,4 +1425,496 @@ def trust_chain_analysis(chain_description: str) -> str:
         "6. If you suspect adversarial agents, use method='robust'.\n"
         "7. Check the final projected_probability and uncertainty "
         "to assess overall confidence.\n"
+    )
+
+
+# ═════════════════════════════════════════════════════════════════
+# Group 8: Compliance Algebra Tools
+# ═════════════════════════════════════════════════════════════════
+
+
+def _compliance_to_dict(co: ComplianceOpinion) -> dict:
+    """Serialize a ComplianceOpinion to a dict with both alias sets."""
+    return {
+        "lawfulness": co.lawfulness,
+        "violation": co.violation,
+        "uncertainty": co.uncertainty,
+        "base_rate": co.base_rate,
+        "belief": co.belief,
+        "disbelief": co.disbelief,
+        "projected_probability": co.projected_probability(),
+    }
+
+
+@mcp.tool()
+def create_compliance_opinion(
+    lawfulness: float,
+    violation: float,
+    uncertainty: float,
+    base_rate: float = 0.5,
+) -> dict:
+    """Create a compliance opinion ω = (l, v, u, a) per the Compliance Algebra.
+
+    Models regulatory compliance as an uncertain epistemic state using
+    Jøsang's Subjective Logic. Distinguishes between:
+      - Evidence of compliance (lawfulness / belief)
+      - Evidence of violation (violation / disbelief)
+      - Absence of evidence (uncertainty)
+
+    This is strictly more informative than binary COMPLIANT/NON-COMPLIANT:
+    it distinguishes \"we know it's compliant\" from \"we don't know\" from
+    \"we have conflicting evidence.\"
+
+    Constraint: lawfulness + violation + uncertainty = 1.0.
+    Projected probability: P(ω) = l + a·u.
+
+    Args:
+        lawfulness: Evidence of compliance, in [0, 1].
+        violation: Evidence of violation, in [0, 1].
+        uncertainty: Absence of evidence, in [0, 1].
+        base_rate: Prior compliance probability, in [0, 1]. Default 0.5.
+
+    Returns:
+        Dict with lawfulness, violation, uncertainty, base_rate,
+        belief, disbelief, and projected_probability.
+    """
+    co = ComplianceOpinion.create(
+        lawfulness=lawfulness,
+        violation=violation,
+        uncertainty=uncertainty,
+        base_rate=base_rate,
+    )
+    return _compliance_to_dict(co)
+
+
+@mcp.tool()
+def jurisdictional_meet(opinions_json: str) -> dict:
+    """Compute the jurisdictional meet — conjunction of compliance requirements.
+
+    Models composite compliance across multiple regulatory jurisdictions
+    (e.g., GDPR + CCPA + UK-DPA). An organization must satisfy ALL
+    requirements simultaneously.
+
+    Lawfulness is conjunctive: l⊓ = l₁·l₂.
+    Violation is disjunctive: v⊓ = v₁ + v₂ − v₁·v₂.
+
+    Algebraic properties (Theorem 1):
+      - Commutative and associative (order-independent)
+      - Identity: (1,0,0,1) — a jurisdiction with certain compliance
+      - Annihilator: (0,1,0,0) — a jurisdiction with certain violation
+      - Monotonic: composite l ≤ min(lᵢ), composite v ≥ max(vᵢ)
+
+    Args:
+        opinions_json: JSON array of opinion objects, each with
+            belief, disbelief, uncertainty, and optional base_rate.
+
+    Returns:
+        Compliance opinion dict for the composite assessment.
+    """
+    data = _parse_json(opinions_json, "opinions_json")
+    if not isinstance(data, list) or len(data) == 0:
+        raise ValueError("opinions_json must be a non-empty JSON array")
+    opinions = [_opinion_from_dict(d) for d in data]
+    result = _jurisdictional_meet_raw(*opinions)
+    return _compliance_to_dict(result)
+
+
+@mcp.tool()
+def compliance_propagation(
+    source_json: str,
+    derivation_trust_json: str,
+    purpose_compat_json: str,
+) -> dict:
+    """Propagate compliance through a data derivation step.
+
+    Models how compliance degrades when data is derived, transformed,
+    or transferred. The derived dataset's compliance depends on:
+      - Source compliance (ω_S): is the source data compliant?
+      - Derivation trust (τ): is the derivation process lawful? (Art. 5/25)
+      - Purpose compatibility (π): is the new purpose compatible? (Art. 6(4))
+
+    Result: l_D = t·p·l_S (multiplicative degradation).
+
+    Key insight: even if each step is 95% compliant, a 10-step pipeline
+    drops to ~60% — invisible to binary pass/fail checking.
+
+    Args:
+        source_json: JSON opinion for source compliance.
+        derivation_trust_json: JSON opinion for derivation process trust.
+        purpose_compat_json: JSON opinion for purpose compatibility.
+
+    Returns:
+        Compliance opinion dict for the derived dataset.
+    """
+    source = _opinion_from_dict(_parse_json(source_json, "source_json"))
+    trust = _opinion_from_dict(_parse_json(derivation_trust_json, "derivation_trust_json"))
+    purpose = _opinion_from_dict(_parse_json(purpose_compat_json, "purpose_compat_json"))
+    result = _compliance_propagation_raw(source, trust, purpose)
+    return _compliance_to_dict(result)
+
+
+@mcp.tool()
+def consent_validity(conditions_json: str) -> dict:
+    """Assess GDPR Art. 7 consent validity via six-condition composition.
+
+    Valid consent requires ALL six conditions to be satisfied
+    (GDPR Art. 4(11) and Art. 7):
+      1. Freely given (Art. 7(4))
+      2. Specific to purpose (Art. 4(11))
+      3. Informed (Art. 4(11))
+      4. Unambiguous indication (Art. 4(11))
+      5. Demonstrable by controller (Art. 7(1))
+      6. Distinguishable from other matters (Art. 7(2))
+
+    Uses jurisdictional meet (conjunction): a single weak condition
+    dominates the composite result.
+
+    Args:
+        conditions_json: JSON array of exactly 6 opinion objects,
+            one per consent condition, each with belief, disbelief,
+            uncertainty, and optional base_rate.
+
+    Returns:
+        Compliance opinion dict for composite consent validity.
+    """
+    data = _parse_json(conditions_json, "conditions_json")
+    if not isinstance(data, list) or len(data) != 6:
+        raise ValueError(
+            f"consent_validity requires exactly 6 opinions, got {len(data) if isinstance(data, list) else 'non-list'}"
+        )
+    opinions = [_opinion_from_dict(d) for d in data]
+    result = _consent_validity_raw(*opinions)
+    return _compliance_to_dict(result)
+
+
+@mcp.tool()
+def withdrawal_override(
+    consent_json: str,
+    withdrawal_json: str,
+    assessment_time: float,
+    withdrawal_time: float,
+) -> dict:
+    """Apply consent withdrawal override (GDPR Art. 7(3)).
+
+    Models the proposition replacement at consent withdrawal:
+    before withdrawal, compliance depends on consent validity;
+    after withdrawal, it depends on whether the controller has
+    ceased processing.
+
+    This is NOT fusion (combining evidence about one proposition).
+    It is replacement (switching to a different proposition entirely).
+    No existing SL operator models this — it is a novel contribution.
+
+    Sharp boundary at withdrawal_time:
+      - assessment_time < withdrawal_time → consent opinion
+      - assessment_time ≥ withdrawal_time → withdrawal opinion
+
+    Args:
+        consent_json: JSON opinion for pre-withdrawal consent validity.
+        withdrawal_json: JSON opinion for post-withdrawal processing cessation.
+        assessment_time: Time of compliance assessment.
+        withdrawal_time: Time of consent withdrawal.
+
+    Returns:
+        Compliance opinion dict (consent or withdrawal, depending on time).
+    """
+    consent = _opinion_from_dict(_parse_json(consent_json, "consent_json"))
+    withdrawal = _opinion_from_dict(_parse_json(withdrawal_json, "withdrawal_json"))
+    result = _withdrawal_override_raw(consent, withdrawal, assessment_time, withdrawal_time)
+    return _compliance_to_dict(result)
+
+
+@mcp.tool()
+def expiry_trigger(
+    opinion_json: str,
+    assessment_time: float,
+    trigger_time: float,
+    residual_factor: float = 0.0,
+) -> dict:
+    """Apply an expiry trigger — asymmetric l→v transition.
+
+    At expiry time, lawfulness transfers to violation (not uncertainty).
+    An expired deadline is a known fact, not a source of epistemic
+    uncertainty. This asymmetry is unique to the compliance algebra.
+
+    Pre-trigger: opinion unchanged.
+    Post-trigger: l' = γ·l, v' = v + (1−γ)·l, u' = u.
+
+    The residual_factor γ controls the transition:
+      - γ = 0.0: hard expiry (all lawfulness → violation)
+      - γ = 0.5: partial expiry (50% retained)
+      - γ = 1.0: no immediate effect
+
+    Models: data retention deadlines (Art. 5(1)(e)), consent expiry,
+    adequacy decision sunset clauses.
+
+    Args:
+        opinion_json: JSON opinion to evaluate.
+        assessment_time: Time of assessment.
+        trigger_time: Expiry trigger time.
+        residual_factor: Fraction of lawfulness retained, in [0, 1]. Default 0.
+
+    Returns:
+        Compliance opinion dict after applying expiry.
+    """
+    opinion = _opinion_from_dict(_parse_json(opinion_json, "opinion_json"))
+    result = _expiry_trigger_raw(opinion, assessment_time, trigger_time, residual_factor)
+    return _compliance_to_dict(result)
+
+
+@mcp.tool()
+def review_due_trigger(
+    opinion_json: str,
+    assessment_time: float,
+    trigger_time: float,
+    accelerated_half_life: float,
+) -> dict:
+    """Apply a review-due trigger — accelerated decay toward vacuity.
+
+    A missed mandatory review (e.g., DPIA review under Art. 35(11),
+    adequacy review under Art. 45(3)) accelerates uncertainty growth.
+
+    Unlike expiry, review-due moves toward vacuity (increased u),
+    not violation: a missed review means we lack current evidence,
+    not that we know the situation is non-compliant.
+
+    Pre-trigger: opinion unchanged.
+    Post-trigger: applies accelerated exponential decay with
+    elapsed = assessment_time − trigger_time.
+
+    Args:
+        opinion_json: JSON opinion to evaluate.
+        assessment_time: Time of assessment.
+        trigger_time: Review-due trigger time.
+        accelerated_half_life: Shorter half-life for post-trigger decay.
+
+    Returns:
+        Compliance opinion dict after applying accelerated decay.
+    """
+    opinion = _opinion_from_dict(_parse_json(opinion_json, "opinion_json"))
+    result = _review_due_trigger_raw(opinion, assessment_time, trigger_time, accelerated_half_life)
+    return _compliance_to_dict(result)
+
+
+@mcp.tool()
+def regulatory_change_trigger(
+    opinion_json: str,
+    assessment_time: float,
+    trigger_time: float,
+    new_opinion_json: str,
+) -> dict:
+    """Apply a regulatory change trigger — proposition replacement.
+
+    At trigger time, the compliance opinion is replaced by a new
+    assessment reflecting the changed legal framework. Models
+    discrete legal events: adequacy decision revocation, new
+    regulation taking effect, court ruling.
+
+    Same proposition-replacement semantics as withdrawal_override.
+    Trigger ordering is non-commutative (Theorem 4(e)): the order
+    of regulatory events matters.
+
+    Args:
+        opinion_json: JSON opinion for current assessment.
+        assessment_time: Time of assessment.
+        trigger_time: Regulatory change time.
+        new_opinion_json: JSON opinion under the new legal framework.
+
+    Returns:
+        Compliance opinion dict (original or new, depending on time).
+    """
+    opinion = _opinion_from_dict(_parse_json(opinion_json, "opinion_json"))
+    new_op = _opinion_from_dict(_parse_json(new_opinion_json, "new_opinion_json"))
+    result = _regulatory_change_trigger_raw(opinion, assessment_time, trigger_time, new_op)
+    return _compliance_to_dict(result)
+
+
+@mcp.tool()
+def erasure_scope_opinion(opinions_json: str) -> dict:
+    """Compute composite erasure completeness across data lineage.
+
+    Complete erasure (GDPR Art. 17) requires ALL nodes in the data
+    lineage graph to be erased — a conjunction. A single node with
+    retained data compromises the entire erasure.
+
+    Composite erasure confidence degrades exponentially: e_R = ∏ e_i.
+    For 10 nodes at 99% each: e_R ≈ 90.4%. For 100 nodes: e_R ≈ 36.6%.
+    This makes complete erasure assurance practically impossible for
+    large data lineage graphs — a result with direct implications
+    for Art. 17 compliance.
+
+    Args:
+        opinions_json: JSON array of erasure completeness opinions,
+            one per node in the erasure scope.
+
+    Returns:
+        Compliance opinion dict for composite erasure completeness.
+    """
+    data = _parse_json(opinions_json, "opinions_json")
+    if not isinstance(data, list) or len(data) == 0:
+        raise ValueError("opinions_json must be a non-empty JSON array")
+    opinions = [_opinion_from_dict(d) for d in data]
+    result = _erasure_scope_opinion_raw(*opinions)
+    return _compliance_to_dict(result)
+
+
+@mcp.tool()
+def residual_contamination(opinions_json: str) -> dict:
+    """Compute residual contamination risk at a node.
+
+    A node is contaminated if personal data persists in the node
+    OR any of its ancestors — a disjunction of per-node persistence.
+
+    Given erasure opinions for the node and its ancestors:
+      - violation (r):   contamination risk = 1 − ∏(1−ē_i)
+      - lawfulness (r̄): clean probability = ∏ e_i
+      - uncertainty:      u_r = ∏(1−ē_i) − ∏ e_i
+
+    Risk is monotonically non-decreasing in ancestor count:
+    more ancestors = more potential contamination sources.
+
+    Args:
+        opinions_json: JSON array of erasure opinions for the node
+            and its ancestors.
+
+    Returns:
+        Compliance opinion dict where lawfulness = clean probability,
+        violation = contamination risk.
+    """
+    data = _parse_json(opinions_json, "opinions_json")
+    if not isinstance(data, list) or len(data) == 0:
+        raise ValueError("opinions_json must be a non-empty JSON array")
+    opinions = [_opinion_from_dict(d) for d in data]
+    result = _residual_contamination_raw(*opinions)
+    return _compliance_to_dict(result)
+
+
+# ═════════════════════════════════════════════════════════════════
+# Group 8b: Compliance Algebra — Resources
+# ═════════════════════════════════════════════════════════════════
+
+
+@mcp.resource("jsonld-ex://schema/compliance-opinion")
+def get_compliance_opinion_schema() -> str:
+    """JSON Schema for a Compliance Algebra opinion object."""
+    return json.dumps({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "ComplianceOpinion",
+        "description": (
+            "A compliance opinion \u03c9 = (l, v, u, a) modeling regulatory "
+            "compliance as an uncertain epistemic state. Extends Subjective "
+            "Logic opinions with compliance-domain semantics. "
+            "Constraint: lawfulness + violation + uncertainty = 1."
+        ),
+        "type": "object",
+        "required": ["lawfulness", "violation", "uncertainty"],
+        "properties": {
+            "lawfulness": {
+                "type": "number", "minimum": 0, "maximum": 1,
+                "description": "Evidence of compliance (alias: belief)",
+            },
+            "violation": {
+                "type": "number", "minimum": 0, "maximum": 1,
+                "description": "Evidence of violation (alias: disbelief)",
+            },
+            "uncertainty": {
+                "type": "number", "minimum": 0, "maximum": 1,
+                "description": "Absence of evidence",
+            },
+            "base_rate": {
+                "type": "number", "minimum": 0, "maximum": 1,
+                "default": 0.5,
+                "description": "Prior compliance probability",
+            },
+        },
+        "additionalProperties": False,
+    })
+
+
+@mcp.resource("jsonld-ex://context/compliance")
+def get_compliance_context() -> str:
+    """JSON-LD context for compliance algebra extensions."""
+    return json.dumps({
+        "@context": {
+            "jsonld-ex": "http://www.w3.org/ns/jsonld-ex/",
+            "@lawfulness": "jsonld-ex:lawfulness",
+            "@violation": "jsonld-ex:violation",
+            "@jurisdiction": "jsonld-ex:jurisdiction",
+            "@legalBasis": "jsonld-ex:legalBasis",
+            "@consentStatus": "jsonld-ex:consentStatus",
+            "@retentionUntil": "jsonld-ex:retentionUntil",
+            "@erasureStatus": "jsonld-ex:erasureStatus",
+        }
+    })
+
+
+# ═════════════════════════════════════════════════════════════════
+# Group 8c: Compliance Algebra — Prompts
+# ═════════════════════════════════════════════════════════════════
+
+
+@mcp.prompt()
+def gdpr_compliance_assessment(jurisdiction_list: str) -> str:
+    """Guide for multi-jurisdictional GDPR compliance assessment.
+
+    Generates a step-by-step workflow for assessing compliance
+    across multiple regulatory jurisdictions using the compliance
+    algebra operators.
+    """
+    return (
+        f"Assess compliance across jurisdictions: {jurisdiction_list}\n\n"
+        "Step-by-step workflow:\n"
+        "1. For each jurisdiction, use create_compliance_opinion to model\n"
+        "   the current compliance status with lawfulness, violation, and\n"
+        "   uncertainty components.\n"
+        "2. Use jurisdictional_meet to compute the composite compliance\n"
+        "   across all jurisdictions. The result satisfies all requirements\n"
+        "   simultaneously (conjunction).\n"
+        "3. Check the composite projected_probability:\n"
+        "   - P > 0.8: strong composite compliance\n"
+        "   - 0.5 < P < 0.8: moderate — investigate weaker jurisdictions\n"
+        "   - P < 0.5: composite non-compliance likely\n"
+        "4. Check uncertainty: high u means absence of evidence, not\n"
+        "   evidence of compliance. Gather more evidence before deciding.\n"
+        "5. If data flows between jurisdictions, use compliance_propagation\n"
+        "   to model how compliance degrades through derivation chains.\n"
+        "6. For temporal aspects (consent expiry, retention deadlines),\n"
+        "   apply expiry_trigger or review_due_trigger to model how\n"
+        "   compliance evolves over time.\n"
+    )
+
+
+@mcp.prompt()
+def consent_lifecycle(purpose: str) -> str:
+    """Guide for managing the full GDPR consent lifecycle.
+
+    Generates a step-by-step workflow for consent assessment,
+    monitoring, withdrawal handling, and erasure propagation
+    for a specific processing purpose.
+    """
+    return (
+        f"Manage consent lifecycle for purpose: {purpose}\n\n"
+        "Step-by-step workflow:\n"
+        "1. ASSESS CONSENT VALIDITY:\n"
+        "   Use consent_validity with 6 opinions (one per Art. 7 condition):\n"
+        "   freely_given, specific, informed, unambiguous, demonstrable,\n"
+        "   distinguishable. Each should reflect current evidence.\n"
+        "2. MONITOR CONSENT:\n"
+        "   Periodically re-assess. Use review_due_trigger if mandatory\n"
+        "   review deadlines apply. Use expiry_trigger if consent has\n"
+        "   a fixed duration.\n"
+        "3. HANDLE WITHDRAWAL:\n"
+        "   When the data subject withdraws consent, use withdrawal_override\n"
+        "   with the withdrawal time. Post-withdrawal, compliance depends\n"
+        "   on whether processing has ceased, NOT on original consent.\n"
+        "4. PROPAGATE TO DERIVED DATA:\n"
+        "   Use compliance_propagation to assess how withdrawal affects\n"
+        "   downstream datasets derived from the original.\n"
+        "5. ERASURE OBLIGATION:\n"
+        "   Use erasure_scope_opinion to assess completeness of erasure\n"
+        "   across all nodes. Use residual_contamination to check for\n"
+        "   lingering personal data in the lineage graph.\n"
+        "6. REGULATORY CHANGES:\n"
+        "   If the legal framework changes, use regulatory_change_trigger\n"
+        "   to replace the compliance assessment with a new evaluation.\n"
     )

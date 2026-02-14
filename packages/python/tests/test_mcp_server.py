@@ -82,9 +82,9 @@ class TestToolRegistration:
             assert name in registered, f"Tool '{name}' not registered"
 
     def test_tool_count(self):
-        """16 original + 21 Phase 1 + 4 MQTT = 41 tools should be registered."""
+        """16 original + 21 Phase 1 + 4 MQTT + 10 Compliance = 51 tools."""
         tool_manager = mcp_server._tool_manager
-        assert len(tool_manager._tools) == 41
+        assert len(tool_manager._tools) == 51
 
     def test_all_tools_have_descriptions(self):
         """Every tool must have a non-empty description."""
