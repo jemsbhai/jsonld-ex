@@ -7,7 +7,7 @@
 
 ## Status
 
-**Feature Complete (v0.1.1)** — All extensions, including Subjective Logic, AI/ML Provenance, GDPR Compliance, and Interop modules are fully implemented and tested, achieving 100% feature parity with the Python reference implementation.
+**Feature Complete (v0.1.2)** — All extensions, including Subjective Logic, AI/ML Provenance, GDPR Compliance, and Interop modules are fully implemented and tested, achieving 100% feature parity with the Python reference implementation.
 
 ### Implemented Modules
 
