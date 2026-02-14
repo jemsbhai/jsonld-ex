@@ -6,14 +6,42 @@ from typing import Any, Optional
 
 
 def vector_term_definition(
-    term_name: str, iri: str, dimensions: Optional[int] = None
+    term_name: str,
+    iri: str,
+    dimensions: Optional[int] = None,
+    *,
+    similarity: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Create a context term definition for a vector embedding property."""
+    """Create a context term definition for a vector embedding property.
+
+    Parameters
+    ----------
+    term_name:
+        The JSON key that will hold the vector in documents.
+    iri:
+        The IRI that this term maps to.
+    dimensions:
+        Optional expected dimensionality (positive integer).
+    similarity:
+        Optional name of the recommended similarity metric for this
+        vector (e.g. ``"cosine"``, ``"euclidean"``).  Stored as
+        ``@similarity`` in the term definition.  This is declarative
+        metadata — validation against the metric registry happens at
+        use-time, not at definition-time.
+    """
     defn: dict[str, Any] = {"@id": iri, "@container": "@vector"}
     if dimensions is not None:
         if not isinstance(dimensions, int) or isinstance(dimensions, bool) or dimensions < 1:
             raise ValueError(f"@dimensions must be a positive integer, got: {dimensions}")
         defn["@dimensions"] = dimensions
+    if similarity is not None:
+        if not isinstance(similarity, str):
+            raise TypeError(
+                f"similarity must be a string, got: {type(similarity).__name__}"
+            )
+        if not similarity.strip():
+            raise ValueError("similarity must be a non-empty string")
+        defn["@similarity"] = similarity
     return {term_name: defn}
 
 

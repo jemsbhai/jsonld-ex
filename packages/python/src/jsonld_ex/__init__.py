@@ -10,6 +10,20 @@ __version__ = "0.5.0"
 from jsonld_ex.processor import JsonLdEx
 from jsonld_ex.ai_ml import annotate, get_confidence, get_provenance, filter_by_confidence
 from jsonld_ex.vector import validate_vector, cosine_similarity, vector_term_definition
+from jsonld_ex.similarity import (
+    similarity,
+    euclidean_distance,
+    dot_product,
+    manhattan_distance,
+    chebyshev_distance,
+    hamming_distance,
+    jaccard_similarity,
+    register_similarity_metric,
+    get_similarity_metric,
+    list_similarity_metrics,
+    unregister_similarity_metric,
+    BUILTIN_METRIC_NAMES,
+)
 from jsonld_ex.security import compute_integrity, verify_integrity, is_context_allowed
 from jsonld_ex.validation import validate_node, validate_document
 from jsonld_ex.owl_interop import (
@@ -188,6 +202,19 @@ __all__ = [
     "validate_vector",
     "cosine_similarity",
     "vector_term_definition",
+    # Similarity metrics & registry
+    "similarity",
+    "euclidean_distance",
+    "dot_product",
+    "manhattan_distance",
+    "chebyshev_distance",
+    "hamming_distance",
+    "jaccard_similarity",
+    "register_similarity_metric",
+    "get_similarity_metric",
+    "list_similarity_metrics",
+    "unregister_similarity_metric",
+    "BUILTIN_METRIC_NAMES",
     # Security
     "compute_integrity",
     "verify_integrity",
