@@ -220,3 +220,75 @@ class TestStripVectorsForRdf:
 
     def test_scalar_passthrough(self):
         assert strip_vectors_for_rdf("hello", ["embedding"]) == "hello"
+
+
+# ── @similarity in term definitions (Step 4) ────────────────────────────
+
+
+class TestVectorTermDefinitionSimilarity:
+    """The optional *similarity* parameter stores a ``@similarity`` key
+    in the term definition.  It is purely declarative metadata —
+    validation against the metric registry happens at use-time, not
+    at definition-time.
+    """
+
+    def test_similarity_omitted_by_default(self):
+        defn = vector_term_definition("emb", "http://ex.org/emb", 768)
+        assert "@similarity" not in defn["emb"]
+
+    def test_similarity_none_omits_key(self):
+        defn = vector_term_definition("emb", "http://ex.org/emb", similarity=None)
+        assert "@similarity" not in defn["emb"]
+
+    def test_similarity_stored(self):
+        defn = vector_term_definition(
+            "emb", "http://ex.org/emb", 768, similarity="cosine"
+        )
+        assert defn["emb"]["@similarity"] == "cosine"
+
+    def test_similarity_euclidean(self):
+        defn = vector_term_definition(
+            "emb", "http://ex.org/emb", similarity="euclidean"
+        )
+        assert defn["emb"]["@similarity"] == "euclidean"
+
+    def test_similarity_custom_name(self):
+        """Any non-empty string is accepted — not validated at
+        definition time so users can register the metric later."""
+        defn = vector_term_definition(
+            "emb", "http://ex.org/emb", similarity="my_custom_metric"
+        )
+        assert defn["emb"]["@similarity"] == "my_custom_metric"
+
+    def test_similarity_empty_string_raises(self):
+        with pytest.raises(ValueError, match="similarity"):
+            vector_term_definition(
+                "emb", "http://ex.org/emb", similarity=""
+            )
+
+    def test_similarity_whitespace_raises(self):
+        with pytest.raises(ValueError, match="similarity"):
+            vector_term_definition(
+                "emb", "http://ex.org/emb", similarity="   "
+            )
+
+    def test_similarity_non_string_raises(self):
+        with pytest.raises(TypeError, match="similarity"):
+            vector_term_definition(
+                "emb", "http://ex.org/emb", similarity=42
+            )
+
+    def test_similarity_coexists_with_dimensions(self):
+        defn = vector_term_definition(
+            "emb", "http://ex.org/emb", 768, similarity="dot_product"
+        )
+        assert defn["emb"]["@dimensions"] == 768
+        assert defn["emb"]["@similarity"] == "dot_product"
+        assert defn["emb"]["@container"] == "@vector"
+
+    def test_backwards_compat_positional_args(self):
+        """Existing callers using positional args must not break."""
+        defn = vector_term_definition("emb", "http://ex.org/emb", 768)
+        assert defn["emb"]["@container"] == "@vector"
+        assert defn["emb"]["@dimensions"] == 768
+        assert "@similarity" not in defn["emb"]
