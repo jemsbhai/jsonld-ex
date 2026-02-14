@@ -1,7 +1,7 @@
 """
 jsonld-ex MCP Server — Model Context Protocol integration.
 
-Exposes jsonld-ex capabilities as 51 MCP tools for LLM agents,
+Exposes jsonld-ex capabilities as 53 MCP tools for LLM agents,
 covering 10 groups: AI/ML annotation, confidence algebra (Subjective
 Logic), confidence bridge, inference/propagation, security, vector
 operations, graph operations, temporal extensions, standards
@@ -66,6 +66,11 @@ from jsonld_ex.vector import (
     validate_vector as _validate_vector_raw,
     cosine_similarity as _cosine_similarity_raw,
 )
+from jsonld_ex.similarity import (
+    similarity as _similarity_raw,
+    list_similarity_metrics as _list_metrics_raw,
+    BUILTIN_METRIC_NAMES as _BUILTIN_NAMES,
+)
 from jsonld_ex.merge import (
     merge_graphs as _merge_graphs_raw,
     diff_graphs as _diff_graphs_raw,
@@ -118,7 +123,9 @@ mcp = FastMCP(
         "Provides confidence algebra (Subjective Logic), "
         "compliance algebra (GDPR regulatory modeling), "
         "provenance tracking, security verification, vector "
-        "operations, temporal queries, standards interop "
+        "operations with 7 similarity metrics (cosine, euclidean, "
+        "dot_product, manhattan, chebyshev, hamming, jaccard), "
+        "temporal queries, standards interop "
         "(PROV-O, SHACL), and MQTT/IoT transport optimization. "
         "All tools are read-only and stateless."
     ),
@@ -848,6 +855,76 @@ def cosine_similarity(vector_a_json: str, vector_b_json: str) -> float:
     if not isinstance(a, list) or not isinstance(b, list):
         raise ValueError("Both inputs must be JSON arrays of numbers")
     return _cosine_similarity_raw(a, b)
+
+
+@mcp.tool()
+def compute_similarity(
+    vector_a_json: str,
+    vector_b_json: str,
+    metric: str = "cosine",
+) -> dict:
+    """Compute similarity or distance between two vectors using a named metric.
+
+    Supports seven built-in metrics covering the Lp norm family,
+    inner product, and binary/set similarity. The metric name can
+    reference any built-in or user-registered custom metric.
+
+    Built-in metrics:
+        - "cosine": Cosine similarity. Range [-1, 1]. Higher = more similar.
+        - "euclidean": L2 distance. Range [0, ∞). Lower = more similar.
+        - "dot_product": Inner product. Range (-∞, ∞). Higher = more similar.
+          For unit vectors, equals cosine similarity.
+        - "manhattan": L1 / city-block distance. Range [0, ∞). Lower = more similar.
+        - "chebyshev": L-infinity distance. Range [0, ∞). Lower = more similar.
+          Completes the Lp norm family (L1, L2, L∞).
+        - "hamming": Count of differing positions. Most meaningful on binary
+          or integer vectors. Range [0, n].
+        - "jaccard": Binary-set IoU. Treats nonzero elements as set membership.
+          Range [0, 1]. Higher = more similar.
+
+    Norm ordering guarantee: chebyshev ≤ euclidean ≤ manhattan.
+
+    Args:
+        vector_a_json: JSON array of floats for vector A.
+        vector_b_json: JSON array of floats for vector B.
+        metric: Name of the similarity metric to use. Default "cosine".
+
+    Returns:
+        Dict with 'metric', 'score', and 'vectors_dimension'.
+    """
+    a = _parse_json(vector_a_json, "vector_a_json")
+    b = _parse_json(vector_b_json, "vector_b_json")
+    if not isinstance(a, list) or not isinstance(b, list):
+        raise ValueError("Both inputs must be JSON arrays of numbers")
+    score = _similarity_raw(a, b, metric=metric)
+    return {
+        "metric": metric,
+        "score": score,
+        "vectors_dimension": len(a),
+    }
+
+
+@mcp.tool()
+def list_metrics() -> dict:
+    """List all available similarity metrics.
+
+    Returns the names of all registered metrics, distinguishing
+    built-in metrics (shipped with jsonld-ex) from any custom
+    metrics registered at runtime.
+
+    Returns:
+        Dict with 'builtin' (list of built-in names),
+        'custom' (list of user-registered names),
+        and 'all' (sorted list of all available names).
+    """
+    all_names = _list_metrics_raw()
+    builtin = sorted(_BUILTIN_NAMES)
+    custom = sorted(n for n in all_names if n not in _BUILTIN_NAMES)
+    return {
+        "builtin": builtin,
+        "custom": custom,
+        "all": all_names,
+    }
 
 
 @mcp.tool()
