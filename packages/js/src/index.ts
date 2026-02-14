@@ -28,3 +28,6 @@ export * from './inference.js';
 export * from './confidence/algebra.js';
 export * from './confidence/decay.js';
 export * from './data-protection.js';
+export * from './data-rights.js';
+export * from './dpv.js';
+export * from './context.js';

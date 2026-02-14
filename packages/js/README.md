@@ -15,6 +15,9 @@
 |--------|-----------|-------------|
 | **AI/ML** | `annotate`, `provenance` | Confidence scores, data lineage, method tracking. |
 | **Data Protection** | `annotateProtection` | GDPR metadata, consent records, and graph filtering. |
+| **Data Rights** | `DataRightsOps` | Erasure, Restriction, Portability, Rectification, Access. |
+| **DPV Interop** | `toDpv`, `fromDpv` | W3C Data Privacy Vocabulary bidirectional mapping. |
+| **Context** | `diff`, `compat` | Context versioning and breaking change detection. |
 | **Confidence** | `Opinion`, `fuse`, `discount` | Subjective Logic algebra for uncertainty propagation. |
 | **Logic** | `decay`, `deduce` | Temporal belief decay and conditional reasoning. |
 | **Inference** | `merge`, `diff`, `conflict` | Graph merging with confidence-aware conflict resolution. |
@@ -75,10 +78,42 @@ const profile = annotateProtection("John Doe", {
   legalBasis: "consent",
   jurisdiction: "EU",
   consent: createConsentRecord("2024-01-01T00:00:00Z", ["marketing", "analytics"])
+  consent: createConsentRecord("2024-01-01T00:00:00Z", ["marketing", "analytics"])
 });
 ```
 
-### 2. Subjective Logic (Uncertainty)
+### 2. Data Rights & DPV (GDPR II)
+
+Exercise data subject rights and interoperate with W3C Data Privacy Vocabulary.
+
+```typescript
+import { requestErasure, toDpv } from '@jsonld-ex/core';
+
+// 1. Handle Right to Erasure
+const erasurePlan = requestErasure(graph, {
+  dataSubject: "https://id.example/user/123",
+  requestedAt: "2024-03-20T10:00:00Z"
+});
+
+// 2. Convert to DPV for interoperability
+const { dpvDoc } = toDpv(myDoc);
+```
+
+### 3. Context Versioning
+
+Manage schema evolution and detect breaking changes.
+
+```typescript
+import { contextDiff, checkCompatibility } from '@jsonld-ex/core';
+
+// Check if v2 is compatible with v1
+const result = checkCompatibility(v1Context, v2Context);
+if (!result.compatible) {
+  console.warn("Breaking changes:", result.breaking);
+}
+```
+
+### 4. Subjective Logic (Uncertainty)
 
 Work directly with Subjective Logic opinions (Belief, Disbelief, Uncertainty).
 
@@ -100,7 +135,7 @@ const opinionC = Opinion.fromConfidence(0.6);
 const fused = cumulativeFuse(opinionAX, opinionC);
 ```
 
-### 3. Standards Interoperability
+### 5. Standards Interoperability
 
 Convert between `jsonld-ex` extensions and established W3C standards.
 
@@ -117,7 +152,7 @@ const shaclShapes = shapeToShacl(myShape);
 const owlClasses = shapeToOwlRestrictions(myShape);
 ```
 
-### 4. MQTT & IoT Transport
+### 6. MQTT & IoT Transport
 
 Optimize payloads for bandwidth-constrained environments.
 
@@ -131,7 +166,7 @@ const payload = toMqttPayload(doc, { compress: true });
 const qos = deriveMqttQos(doc);
 ```
 
-### 5. Batch Processing
+### 7. Batch Processing
 
 High-performance API for processing annotation and validation in bulk.
 
@@ -142,7 +177,8 @@ const items = ["A", "B", "C"];
 const annotated = annotateBatch(items, { confidence: 0.9 });
 ```
 
-### 6. Dataset (Croissant)
+
+### 8. Dataset (Croissant)
 
 Interoperability with MLCommons Croissant metadata for datasets.
 
@@ -153,7 +189,7 @@ const metadata = createDatasetMetadata("My Dataset");
 const croissant = toCroissant(metadata);
 ```
 
-### 7. MCP Server
+### 9. MCP Server
 
 Run `jsonld-ex` as a Model Context Protocol (MCP) server to give AI agents access to these tools.
 
@@ -174,6 +210,9 @@ src/
 ├── schemas.ts            # Zod Validation Schemas
 ├── processor.ts          # JsonLdEx Processor (Legacy Wrapper)
 ├── data-protection.ts    # GDPR & Privacy (New)
+├── data-rights.ts        # Data Rights Operations (New)
+├── dpv.ts                # DPV Interop (New)
+├── context.ts            # Context Versioning (New)
 ├── batch.ts              # Batch Processing (New)
 ├── dataset.ts            # Croissant Support (New)
 ├── mqtt.ts               # IoT Transport (New)
