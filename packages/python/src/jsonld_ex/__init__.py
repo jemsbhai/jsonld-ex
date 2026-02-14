@@ -124,6 +124,20 @@ from jsonld_ex.data_rights import (
     AuditEntry,
 )
 
+from jsonld_ex.compliance_algebra import (
+    ComplianceOpinion,
+    jurisdictional_meet,
+    compliance_propagation,
+    ProvenanceChain,
+    consent_validity,
+    withdrawal_override,
+    expiry_trigger,
+    review_due_trigger,
+    regulatory_change_trigger,
+    erasure_scope_opinion,
+    residual_contamination,
+)
+
 from jsonld_ex.dpv_interop import (
     to_dpv,
     from_dpv,
@@ -134,6 +148,19 @@ from jsonld_ex.dpv_interop import (
     DPV_PD,
     LEGAL_BASIS_TO_DPV,
     CATEGORY_TO_DPV,
+)
+from jsonld_ex.compliance_algebra import (
+    ComplianceOpinion,
+    jurisdictional_meet,
+    compliance_propagation,
+    ProvenanceChain,
+    consent_validity,
+    withdrawal_override,
+    expiry_trigger,
+    review_due_trigger,
+    regulatory_change_trigger,
+    erasure_scope_opinion,
+    residual_contamination,
 )
 
 # Optional modules — import only if dependencies are available
@@ -291,4 +318,16 @@ __all__ = [
     "DPV_PD",
     "LEGAL_BASIS_TO_DPV",
     "CATEGORY_TO_DPV",
+    # Compliance algebra (Subjective Logic)
+    "ComplianceOpinion",
+    "jurisdictional_meet",
+    "compliance_propagation",
+    "ProvenanceChain",
+    "consent_validity",
+    "withdrawal_override",
+    "expiry_trigger",
+    "review_due_trigger",
+    "regulatory_change_trigger",
+    "erasure_scope_opinion",
+    "residual_contamination",
 ]

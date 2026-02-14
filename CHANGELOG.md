@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+**Compliance Algebra** (`compliance_algebra`) — Regulatory uncertainty modeling with Subjective Logic
+- New `ComplianceOpinion` class extending `Opinion` with domain semantics (lawfulness, violation, uncertainty, base_rate)
+- Jurisdictional Meet (`jurisdictional_meet`): conjunction of compliance across jurisdictions (GDPR Art. 44–49). Binary and n-ary. Proven: constraint, non-negativity, monotonicity, commutativity, associativity, identity, annihilator.
+- Compliance Propagation (`compliance_propagation`): uncertainty propagation through data derivation chains (Art. 5, 6, 25). Multiplicative lawfulness decay.
+- Provenance Chain (`ProvenanceChain`): ordered audit trail with iterative computation (Art. 30, Art. 5(2)).
+- Consent Assessment (`consent_validity`): six-condition GDPR Art. 7 composition via keyword or positional arguments.
+- Withdrawal Override (`withdrawal_override`): novel proposition-replacement operator at consent withdrawal (Art. 7(3)).
+- Expiry Trigger (`expiry_trigger`): asymmetric l→v transition modeling hard/soft deadline expiry (Art. 5(1)(e)).
+- Review-Due Trigger (`review_due_trigger`): accelerated decay toward vacuity for missed reviews (Art. 45(3), 35(11)).
+- Regulatory Change Trigger (`regulatory_change_trigger`): proposition replacement for discrete legal events.
+- Erasure Scope (`erasure_scope_opinion`): composite erasure completeness across data lineage graphs (Art. 17).
+- Residual Contamination (`residual_contamination`): disjunctive contamination risk at individual nodes (Art. 17).
+- 103 new tests covering all operators, theorem properties, edge cases, and operator interactions.
+- Mathematical formalization: compliance_algebra.md (all definitions, theorems, proofs).
+
+### Migration from 0.4.0
+No breaking changes. The `compliance_algebra` module is entirely additive. No existing modules were modified.
+
 ## [0.4.0] — 2026-02-13
 
 ### Added
