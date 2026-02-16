@@ -2,6 +2,73 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.5] — 2026-02-15
+
+### Added
+
+**Metric Selection Advisory System** — Four-phase feature for intelligent metric selection
+
+- `MetricProperties` frozen dataclass: 11 fields capturing mathematical facts about metrics (kind, range, boundedness, metric space, symmetry, normalization sensitivity, zero-vector behavior, computational complexity, best-for domains)
+- Pre-defined properties for all 7 built-in metrics and 10 example metrics, each mathematically defensible with documented justifications
+- `get_metric_properties()` and `get_all_metric_properties()` registry API
+- `register_similarity_metric()` now accepts optional `properties` kwarg with name-match validation
+- `compare_metrics(a, b)`: compute all (or selected) registered metrics on a single vector pair with structured output (score, kind, error per metric)
+- `VectorProperties` frozen dataclass: deterministic statistical properties of vector samples (binary detection, sparsity, unit normalization, non-negativity, magnitude coefficient of variation)
+- `analyze_vectors(vectors)`: single-pass data property detection with input validation
+- `HeuristicRecommender`: rule-based recommendation engine with 6 rules grounded in mathematical properties, documented thresholds, and academic citations (Aggarwal et al., 2001)
+- `recommend_metric(vectors, engine=...)`: pluggable recommendation with `RecommendationEngine` protocol for custom engines (ML-based, domain-specific, LLM-backed)
+- `evaluate_metrics(labeled_pairs)`: empirical evaluation on labeled vector pairs with three mathematically rigorous measures:
+  - Exact ROC-AUC via Mann–Whitney U statistic (not trapezoidal approximation)
+  - Spearman rank correlation with average-rank tie handling
+  - Direction-corrected mean separation
+- Three-tier direction resolution for custom metrics: explicit override → MetricProperties.kind → default with warning
+- All measures direction-corrected: positive always means better separation regardless of distance vs similarity
+- Undefined measures (single class, constant scores) return `None`, never fabricated values
+- 141 new tests across 13 test classes
+
+### Changed
+- Version bumped to 0.6.5
+
+### Gap Analysis Status
+**All 28 gaps from the competitive gap analysis are now closed:**
+- CRITICAL (4/4): GAP-V1 (@minCount/@maxCount), GAP-V2 (@in/@enum), GAP-D1 (dataset metadata), GAP-D3 (Croissant interop)
+- HIGH (8/8): GAP-V3 (logical combinators), GAP-V4 (cross-property), GAP-MM1 (multimodal), GAP-ML1 (language confidence), GAP-ML2 (translation provenance), GAP-IOT1 (measurement uncertainty), GAP-D2 (splits/distributions), GAP-API1 (batch API)
+- MEDIUM (13/13): GAP-V5 (nested shapes), GAP-V6 (severity), GAP-V7 (conditional constraints), GAP-MM2 (multi-embedding), GAP-MM3 (content addressing), GAP-IOT2 (calibration metadata), GAP-IOT3 (SSN/SOSA interop), GAP-IOT4 (aggregation metadata), GAP-P1 (delegation chains), GAP-P2 (@derivedFrom), GAP-P3 (invalidation/retraction), GAP-OWL1 (shape inheritance), GAP-CTX1 (context versioning)
+
+### Migration from 0.6.0
+No breaking changes. All new functions are additive exports. `register_similarity_metric()` gains an optional `properties` keyword argument with no effect on existing calls.
+
+## [0.6.0] — 2026-02-14
+
+### Added
+
+**Similarity Metric Registry** (`similarity`) — Extensible metric system for vector embeddings
+- 7 built-in metrics: cosine, euclidean, dot_product, manhattan, chebyshev, hamming, jaccard
+- Full registry API: `register_similarity_metric()`, `get_similarity_metric()`, `list_similarity_metrics()`, `unregister_similarity_metric()`
+- `similarity(a, b)` dispatcher resolving metric from explicit name, `@similarity` in term definition, or cosine default
+- Shared input validation via `_validate_vector_pair()` for DRY consistency
+- Built-in protection: cannot overwrite built-ins without `force=True`
+- `BUILTIN_METRIC_NAMES` frozenset for programmatic access
+
+**Example Metrics** (`similarity_examples`) — 10 domain-specific metric recipes
+- Ecology/composition: Canberra distance, Bray-Curtis dissimilarity
+- Geographic: Haversine distance
+- Time series: Dynamic Time Warping (DTW)
+- Correlated features: Mahalanobis distance
+- Semantic text: Soft Cosine similarity
+- Distributions: KL divergence, Wasserstein (Earth Mover's) distance
+- Ordinal/rank: Spearman correlation, Kendall Tau correlation
+- All with graceful skip when numpy/scipy not available
+
+**Vector Term Definition Enhancement**
+- `vector_term_definition()` gains keyword-only `similarity` parameter for `@similarity` metadata
+
+### Changed
+- Version bumped to 0.6.0
+
+### Migration from 0.5.0
+No breaking changes. `vector_term_definition()` new parameter is keyword-only with no default change.
+
 ## [0.5.0] — 2026-02-14
 
 ### Added

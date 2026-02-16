@@ -224,6 +224,16 @@ __all__ = [
     "list_similarity_metrics",
     "unregister_similarity_metric",
     "BUILTIN_METRIC_NAMES",
+    # Metric selection advisory
+    "MetricProperties",
+    "VectorProperties",
+    "HeuristicRecommender",
+    "compare_metrics",
+    "analyze_vectors",
+    "recommend_metric",
+    "evaluate_metrics",
+    "get_metric_properties",
+    "get_all_metric_properties",
     # Security
     "compute_integrity",
     "verify_integrity",
