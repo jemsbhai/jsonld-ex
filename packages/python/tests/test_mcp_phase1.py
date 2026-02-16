@@ -671,4 +671,4 @@ class TestToolRegistration:
     def test_total_tool_count(self):
         """16 original + 21 Phase 1 + 4 MQTT + 10 Compliance = 51 total."""
         registered = list(mcp_server._tool_manager._tools.values())
-        assert len(registered) == 51
+        assert len(registered) == 53

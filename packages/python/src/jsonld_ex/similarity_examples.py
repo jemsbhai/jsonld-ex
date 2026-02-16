@@ -35,7 +35,7 @@ from __future__ import annotations
 import math
 from typing import Callable, List
 
-from jsonld_ex.similarity import _validate_vector_pair, SimilarityFunction
+from jsonld_ex.similarity import _validate_vector_pair, MetricProperties, SimilarityFunction
 
 
 # =====================================================================
@@ -403,3 +403,148 @@ def kendall_tau(a: list[float], b: list[float]) -> float:
     if denom == 0:
         return 0.0
     return (concordant - discordant) / denom
+
+
+# =====================================================================
+# Companion MetricProperties for each example metric
+# =====================================================================
+
+CANBERRA_PROPERTIES = MetricProperties(
+    name="canberra",
+    kind="distance",
+    range_min=0.0,
+    range_max=None,  # upper bound = dimension
+    bounded=False,
+    metric_space=True,  # Lance & Williams (1967)
+    symmetric=True,
+    normalization_sensitive=True,
+    zero_vector_behavior="convention",  # 0/0 terms contribute 0.0
+    computational_complexity="O(n)",
+    best_for=("composition data", "ecology", "values near zero"),
+)
+
+BRAY_CURTIS_PROPERTIES = MetricProperties(
+    name="bray_curtis",
+    kind="distance",
+    range_min=0.0,
+    range_max=1.0,  # |a-b|/(|a|+|b|) ≤ 1 by triangle inequality
+    bounded=True,
+    metric_space=False,  # fails triangle inequality
+    symmetric=True,
+    normalization_sensitive=False,  # ratio cancels uniform scaling
+    zero_vector_behavior="convention",  # returns 0.0 for (0, 0)
+    computational_complexity="O(n)",
+    best_for=("ecology", "microbiome analysis", "species abundance"),
+)
+
+HAVERSINE_PROPERTIES = MetricProperties(
+    name="haversine",
+    kind="distance",
+    range_min=0.0,
+    range_max=math.pi * 6371.0088,  # half circumference ≈ 20015.087 km
+    bounded=True,
+    metric_space=True,  # great-circle distance is a proper metric
+    symmetric=True,
+    normalization_sensitive=True,
+    zero_vector_behavior="accepts",
+    computational_complexity="O(1)",  # fixed 2-element vectors
+    best_for=("geographic coordinates", "geospatial queries"),
+)
+
+DTW_PROPERTIES = MetricProperties(
+    name="dtw",
+    kind="distance",
+    range_min=0.0,
+    range_max=None,
+    bounded=False,
+    metric_space=False,  # unconstrained DTW fails triangle inequality
+    symmetric=True,
+    normalization_sensitive=True,
+    zero_vector_behavior="accepts",
+    computational_complexity="O(n^2)",  # full DP matrix
+    best_for=("time series", "sequence alignment", "temporal patterns"),
+)
+
+MAHALANOBIS_PROPERTIES = MetricProperties(
+    name="mahalanobis",
+    kind="distance",
+    range_min=0.0,
+    range_max=None,
+    bounded=False,
+    metric_space=True,  # with valid positive-definite inverse covariance
+    symmetric=True,
+    normalization_sensitive=True,
+    zero_vector_behavior="accepts",
+    computational_complexity="O(n^2)",  # matrix-vector multiply
+    best_for=("correlated features", "outlier detection", "multivariate data"),
+)
+
+SOFT_COSINE_PROPERTIES = MetricProperties(
+    name="soft_cosine",
+    kind="similarity",
+    range_min=-1.0,
+    range_max=1.0,
+    bounded=True,
+    metric_space=False,
+    symmetric=True,
+    normalization_sensitive=False,  # normalises internally
+    zero_vector_behavior="rejects",  # division by zero
+    computational_complexity="O(n^2)",  # matrix-vector multiply
+    best_for=("semantic text similarity", "feature-correlated embeddings"),
+)
+
+KL_DIVERGENCE_PROPERTIES = MetricProperties(
+    name="kl_divergence",
+    kind="divergence",
+    range_min=0.0,
+    range_max=None,  # can be +inf
+    bounded=False,
+    metric_space=False,  # asymmetric, fails triangle inequality
+    symmetric=False,  # KL(P||Q) != KL(Q||P)
+    normalization_sensitive=True,  # inputs must be distributions
+    zero_vector_behavior="rejects",  # zero in Q with nonzero P is undefined
+    computational_complexity="O(n)",
+    best_for=("probability distributions", "information theory", "model comparison"),
+)
+
+WASSERSTEIN_PROPERTIES = MetricProperties(
+    name="wasserstein",
+    kind="distance",
+    range_min=0.0,
+    range_max=None,
+    bounded=False,
+    metric_space=True,  # Wasserstein-1 is a proper metric on distributions
+    symmetric=True,
+    normalization_sensitive=True,
+    zero_vector_behavior="accepts",
+    computational_complexity="O(n log n)",  # CDF sort + linear pass
+    best_for=("probability distributions", "generative model evaluation"),
+)
+
+SPEARMAN_PROPERTIES = MetricProperties(
+    name="spearman",
+    kind="correlation",
+    range_min=-1.0,
+    range_max=1.0,
+    bounded=True,
+    metric_space=False,
+    symmetric=True,
+    normalization_sensitive=False,  # rank-based, only order matters
+    zero_vector_behavior="convention",  # all-tied ranks → 0.0
+    computational_complexity="O(n log n)",  # ranking step dominates
+    best_for=("ranked data", "monotonic relationships", "ordinal scales"),
+)
+
+KENDALL_TAU_PROPERTIES = MetricProperties(
+    name="kendall_tau",
+    kind="correlation",
+    range_min=-1.0,
+    range_max=1.0,
+    bounded=True,
+    metric_space=False,
+    symmetric=True,
+    normalization_sensitive=False,  # ordinal, magnitude-invariant
+    zero_vector_behavior="convention",  # all-tied → 0.0
+    computational_complexity="O(n^2)",  # all-pairs comparison
+    best_for=("ranked data", "ordinal association", "concordance analysis"),
+)

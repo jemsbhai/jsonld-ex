@@ -84,7 +84,7 @@ class TestToolRegistration:
     def test_tool_count(self):
         """16 original + 21 Phase 1 + 4 MQTT + 10 Compliance = 51 tools."""
         tool_manager = mcp_server._tool_manager
-        assert len(tool_manager._tools) == 51
+        assert len(tool_manager._tools) == 53
 
     def test_all_tools_have_descriptions(self):
         """Every tool must have a non-empty description."""

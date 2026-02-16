@@ -5,13 +5,17 @@ Reference implementation of proposed JSON-LD 1.2 extensions.
 Wraps PyLD for core JSON-LD processing and adds extension layers.
 """
 
-__version__ = "0.6.0"
+__version__ = "0.6.5"
 
 from jsonld_ex.processor import JsonLdEx
 from jsonld_ex.ai_ml import annotate, get_confidence, get_provenance, filter_by_confidence
 from jsonld_ex.vector import validate_vector, cosine_similarity, vector_term_definition
 from jsonld_ex.similarity import (
     similarity,
+    compare_metrics,
+    analyze_vectors,
+    recommend_metric,
+    evaluate_metrics,
     euclidean_distance,
     dot_product,
     manhattan_distance,
@@ -23,6 +27,11 @@ from jsonld_ex.similarity import (
     list_similarity_metrics,
     unregister_similarity_metric,
     BUILTIN_METRIC_NAMES,
+    MetricProperties,
+    VectorProperties,
+    HeuristicRecommender,
+    get_metric_properties,
+    get_all_metric_properties,
 )
 from jsonld_ex.security import compute_integrity, verify_integrity, is_context_allowed
 from jsonld_ex.validation import validate_node, validate_document

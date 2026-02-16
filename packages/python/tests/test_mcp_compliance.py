@@ -106,7 +106,7 @@ class TestComplianceToolRegistration:
     def test_total_tool_count(self):
         """41 existing + 10 compliance = 51 tools."""
         tool_manager = mcp_server._tool_manager
-        assert len(tool_manager._tools) == 51
+        assert len(tool_manager._tools) == 53
 
     def test_all_compliance_tools_have_descriptions(self):
         """Every compliance tool must have a substantive description."""
