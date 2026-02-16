@@ -2689,3 +2689,1852 @@ class TestFhirPhase2RoundTrip:
             refs.append(ref_obj.get("reference"))
         assert "Observation/obs-1" in refs
         assert "Condition/cond-1" in refs
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 3, Step 1: from_fhir() for DetectedIssue, Immunization,
+#                  FamilyMemberHistory, Procedure
+# ═══════════════════════════════════════════════════════════════════
+#
+# Phase 3 adds 4 new FHIR R4 resource types focused on clinical
+# decision support and temporal reasoning:
+#
+#   DetectedIssue       — severity-based alert confidence
+#                         (drug-drug interactions, duplicate therapy)
+#   Immunization        — seroconversion base confidence
+#                         (temporal decay applied separately)
+#   FamilyMemberHistory — reported-vs-confirmed evidence opinion
+#                         (inherently uncertain patient-reported data)
+#   Procedure           — outcome confidence with complication/follow-up
+#                         signals
+#
+# ═══════════════════════════════════════════════════════════════════
+
+
+# ── Phase 3 fixture helpers ───────────────────────────────────────
+
+
+def _detected_issue(
+    *,
+    status="final",
+    severity="high",
+    code_text="Drug-drug interaction",
+    evidence=None,
+    implicated=None,
+    extensions=None,
+):
+    """Build a minimal FHIR R4 DetectedIssue resource."""
+    resource = {
+        "resourceType": "DetectedIssue",
+        "id": "detected-issue-example-1",
+        "status": status,
+        "code": {"text": code_text},
+    }
+    if severity is not None:
+        resource["severity"] = severity
+    if evidence is not None:
+        resource["evidence"] = evidence
+    if implicated is not None:
+        resource["implicated"] = [
+            {"reference": ref} for ref in implicated
+        ]
+    if extensions is not None:
+        resource["_severity"] = {"extension": extensions}
+    return resource
+
+
+def _immunization(
+    *,
+    status="completed",
+    status_reason=None,
+    vaccine_code_text="COVID-19 mRNA Vaccine",
+    protocol_applied=None,
+    protocol_dose_count=None,
+    occurrence_date_time=None,
+    extensions=None,
+):
+    """Build a minimal FHIR R4 Immunization resource."""
+    resource = {
+        "resourceType": "Immunization",
+        "id": "immunization-example-1",
+        "status": status,
+        "vaccineCode": {"text": vaccine_code_text},
+        "patient": {"reference": "Patient/example"},
+    }
+    if status_reason is not None:
+        resource["statusReason"] = {"text": status_reason}
+    if protocol_dose_count is not None and protocol_applied is None:
+        protocol_applied = [
+            {"doseNumberPositiveInt": i + 1, "seriesDoses": protocol_dose_count}
+            for i in range(protocol_dose_count)
+        ]
+    if protocol_applied is not None:
+        resource["protocolApplied"] = protocol_applied
+    if occurrence_date_time is not None:
+        resource["occurrenceDateTime"] = occurrence_date_time
+    if extensions is not None:
+        resource["_status"] = {"extension": extensions}
+    return resource
+
+
+def _family_member_history(
+    *,
+    status="completed",
+    relationship_text="Mother",
+    condition=None,
+    condition_count=None,
+    data_absent_reason=None,
+    extensions=None,
+):
+    """Build a minimal FHIR R4 FamilyMemberHistory resource."""
+    resource = {
+        "resourceType": "FamilyMemberHistory",
+        "id": "family-history-example-1",
+        "status": status,
+        "patient": {"reference": "Patient/example"},
+        "relationship": {"text": relationship_text},
+    }
+    if condition_count is not None and condition is None:
+        condition = [
+            {"code": {"text": f"Condition {i + 1}"}}
+            for i in range(condition_count)
+        ]
+    if condition is not None:
+        resource["condition"] = condition
+    if data_absent_reason is not None:
+        resource["dataAbsentReason"] = {"coding": [{"code": data_absent_reason}]}
+    if extensions is not None:
+        resource["_status"] = {"extension": extensions}
+    return resource
+
+
+def _procedure(
+    *,
+    status="completed",
+    code_text="Appendectomy",
+    outcome=None,
+    complication=None,
+    complication_count=None,
+    follow_up=None,
+    extensions=None,
+):
+    """Build a minimal FHIR R4 Procedure resource."""
+    resource = {
+        "resourceType": "Procedure",
+        "id": "procedure-example-1",
+        "status": status,
+        "code": {"text": code_text},
+        "subject": {"reference": "Patient/example"},
+    }
+    if outcome is not None:
+        resource["outcome"] = {"text": outcome}
+    if complication_count is not None and complication is None:
+        complication = [
+            {"text": f"Complication {i + 1}"}
+            for i in range(complication_count)
+        ]
+    if complication is not None:
+        resource["complication"] = complication
+    if follow_up is not None:
+        resource["followUp"] = follow_up
+    if extensions is not None:
+        resource["_status"] = {"extension": extensions}
+    return resource
+
+
+# ── DetectedIssue tests ───────────────────────────────────────────
+
+
+class TestFromFhirDetectedIssue:
+    """from_fhir() for FHIR R4 DetectedIssue resources.
+
+    DetectedIssue captures clinical alerts (drug-drug interactions,
+    duplicate therapy, etc.).  The opinion proposition is:
+    "this detected issue is clinically significant and warrants action."
+
+    Primary field: severity (high/moderate/low) → probability of
+    clinical significance.  Status modulates uncertainty (data
+    quality/lifecycle).  Evidence count reduces uncertainty.
+    """
+
+    def test_basic_high_severity(self):
+        """DetectedIssue with severity='high' → Opinion with high belief."""
+        resource = _detected_issue(severity="high", status="final")
+        doc, report = from_fhir(resource)
+
+        assert report.success is True
+        assert doc["@type"] == "fhir:DetectedIssue"
+        assert len(doc["opinions"]) >= 1
+
+        sev_opinions = [o for o in doc["opinions"] if o["field"] == "severity"]
+        assert len(sev_opinions) == 1
+        op = sev_opinions[0]["opinion"]
+        assert isinstance(op, Opinion)
+        assert abs(op.belief + op.disbelief + op.uncertainty - 1.0) < 1e-9
+        # High severity → strong belief in clinical significance
+        assert op.belief > 0.6
+
+    def test_severity_high_vs_low(self):
+        """severity='high' should produce higher belief than severity='low'."""
+        res_high = _detected_issue(severity="high")
+        res_low = _detected_issue(severity="low")
+
+        doc_high, _ = from_fhir(res_high)
+        doc_low, _ = from_fhir(res_low)
+
+        sev_high = [o for o in doc_high["opinions"] if o["field"] == "severity"][0]
+        sev_low = [o for o in doc_low["opinions"] if o["field"] == "severity"][0]
+
+        assert sev_high["opinion"].belief > sev_low["opinion"].belief
+
+    def test_moderate_severity_intermediate(self):
+        """severity='moderate' → belief between high and low."""
+        res_high = _detected_issue(severity="high")
+        res_mod = _detected_issue(severity="moderate")
+        res_low = _detected_issue(severity="low")
+
+        doc_high, _ = from_fhir(res_high)
+        doc_mod, _ = from_fhir(res_mod)
+        doc_low, _ = from_fhir(res_low)
+
+        b_high = [o for o in doc_high["opinions"] if o["field"] == "severity"][0]["opinion"].belief
+        b_mod = [o for o in doc_mod["opinions"] if o["field"] == "severity"][0]["opinion"].belief
+        b_low = [o for o in doc_low["opinions"] if o["field"] == "severity"][0]["opinion"].belief
+
+        assert b_high > b_mod > b_low
+
+    def test_status_affects_uncertainty(self):
+        """status='final' → less uncertainty than 'preliminary'."""
+        res_final = _detected_issue(severity="high", status="final")
+        res_prelim = _detected_issue(severity="high", status="preliminary")
+
+        doc_final, _ = from_fhir(res_final)
+        doc_prelim, _ = from_fhir(res_prelim)
+
+        u_final = [o for o in doc_final["opinions"] if o["field"] == "severity"][0]["opinion"].uncertainty
+        u_prelim = [o for o in doc_prelim["opinions"] if o["field"] == "severity"][0]["opinion"].uncertainty
+        assert u_final < u_prelim
+
+    def test_evidence_reduces_uncertainty(self):
+        """evidence[] count reduces uncertainty."""
+        res_no_ev = _detected_issue(severity="high", evidence=[])
+        res_ev = _detected_issue(
+            severity="high",
+            evidence=[
+                {"code": [{"text": "Pharmacokinetic study"}]},
+                {"code": [{"text": "Case report"}]},
+                {"code": [{"text": "Clinical trial"}]},
+            ],
+        )
+
+        doc_no, _ = from_fhir(res_no_ev)
+        doc_ev, _ = from_fhir(res_ev)
+
+        u_no = [o for o in doc_no["opinions"] if o["field"] == "severity"][0]["opinion"].uncertainty
+        u_ev = [o for o in doc_ev["opinions"] if o["field"] == "severity"][0]["opinion"].uncertainty
+        assert u_ev < u_no
+
+    def test_no_severity_default(self):
+        """Missing severity → still produces opinion with moderate default."""
+        resource = _detected_issue(severity=None)
+        doc, report = from_fhir(resource)
+
+        assert report.success is True
+        # Should still produce an opinion (from status alone)
+        assert len(doc["opinions"]) >= 1
+        op = doc["opinions"][0]["opinion"]
+        assert abs(op.belief + op.disbelief + op.uncertainty - 1.0) < 1e-9
+
+    def test_extension_recovery(self):
+        """Opinion extension on severity overrides reconstruction."""
+        ext = opinion_to_fhir_extension(
+            Opinion(belief=0.70, disbelief=0.10, uncertainty=0.20, base_rate=0.50)
+        )
+        resource = _detected_issue(extensions=[ext])
+        doc, _ = from_fhir(resource)
+
+        sev_op = [o for o in doc["opinions"] if o["field"] == "severity"][0]
+        assert sev_op["source"] == "extension"
+        assert abs(sev_op["opinion"].belief - 0.70) < 1e-9
+
+    def test_additivity_invariant(self):
+        """b + d + u = 1 for all severity levels and status combinations."""
+        for sev in ["high", "moderate", "low"]:
+            for status in ["final", "preliminary", "entered-in-error"]:
+                resource = _detected_issue(severity=sev, status=status)
+                doc, _ = from_fhir(resource)
+                for entry in doc["opinions"]:
+                    op = entry["opinion"]
+                    total = op.belief + op.disbelief + op.uncertainty
+                    assert abs(total - 1.0) < 1e-9, (
+                        f"Additivity violated for severity={sev}, status={status}: "
+                        f"{op.belief} + {op.disbelief} + {op.uncertainty} = {total}"
+                    )
+
+    def test_implicated_references_captured(self):
+        """implicated[] references are preserved for downstream use."""
+        resource = _detected_issue(
+            implicated=["MedicationRequest/med1", "MedicationRequest/med2"],
+        )
+        doc, _ = from_fhir(resource)
+        refs = doc.get("implicated_references", [])
+        assert "MedicationRequest/med1" in refs
+        assert "MedicationRequest/med2" in refs
+
+
+# ── Immunization tests ────────────────────────────────────────────
+
+
+class TestFromFhirImmunization:
+    """from_fhir() for FHIR R4 Immunization resources.
+
+    Immunization captures vaccine administration events.  The opinion
+    proposition is: "the patient has been effectively immunized."
+
+    from_fhir() produces the base seroconversion opinion only —
+    temporal decay for waning immunity is applied separately via
+    fhir_temporal_decay() (Step 3).  Some immunities are lifelong
+    (e.g. MMR), so decay is not baked in here.
+
+    Primary field: status (completed/not-done/entered-in-error).
+    Protocol dose count modulates uncertainty (more doses in series
+    → more complete protection).
+    """
+
+    def test_basic_completed_immunization(self):
+        """Immunization with status='completed' → high belief."""
+        resource = _immunization(status="completed")
+        doc, report = from_fhir(resource)
+
+        assert report.success is True
+        assert doc["@type"] == "fhir:Immunization"
+        assert len(doc["opinions"]) >= 1
+
+        entry = doc["opinions"][0]
+        assert entry["field"] == "status"
+        assert entry["value"] == "completed"
+        op = entry["opinion"]
+        assert isinstance(op, Opinion)
+        assert abs(op.belief + op.disbelief + op.uncertainty - 1.0) < 1e-9
+        # Completed → vaccine administered, high belief
+        assert op.belief > 0.6
+
+    def test_not_done_low_belief(self):
+        """status='not-done' → very low belief (vaccine not administered)."""
+        resource = _immunization(status="not-done")
+        doc, _ = from_fhir(resource)
+
+        op = doc["opinions"][0]["opinion"]
+        assert op.belief < 0.15
+
+    def test_entered_in_error_high_uncertainty(self):
+        """status='entered-in-error' → high uncertainty."""
+        resource = _immunization(status="entered-in-error")
+        doc, _ = from_fhir(resource)
+
+        op = doc["opinions"][0]["opinion"]
+        assert op.uncertainty > 0.4
+
+    def test_protocol_dose_count_reduces_uncertainty(self):
+        """More doses in protocolApplied → lower uncertainty.
+
+        A multi-dose vaccine series (e.g. Hepatitis B: 3 doses)
+        with all doses completed provides stronger evidence of
+        immunization than a single dose.
+        """
+        res_single = _immunization(
+            protocol_applied=[{"doseNumberPositiveInt": 1}],
+        )
+        res_multi = _immunization(
+            protocol_applied=[
+                {"doseNumberPositiveInt": 1},
+                {"doseNumberPositiveInt": 2},
+                {"doseNumberPositiveInt": 3},
+            ],
+        )
+
+        doc_single, _ = from_fhir(res_single)
+        doc_multi, _ = from_fhir(res_multi)
+
+        u_single = doc_single["opinions"][0]["opinion"].uncertainty
+        u_multi = doc_multi["opinions"][0]["opinion"].uncertainty
+        assert u_multi < u_single
+
+    def test_no_protocol_default_uncertainty(self):
+        """No protocolApplied → default uncertainty (no adjustment)."""
+        res_no_proto = _immunization()
+        res_with_proto = _immunization(
+            protocol_applied=[
+                {"doseNumberPositiveInt": 1},
+                {"doseNumberPositiveInt": 2},
+                {"doseNumberPositiveInt": 3},
+            ],
+        )
+
+        doc_no, _ = from_fhir(res_no_proto)
+        doc_with, _ = from_fhir(res_with_proto)
+
+        # With multi-dose protocol, uncertainty should be lower
+        u_no = doc_no["opinions"][0]["opinion"].uncertainty
+        u_with = doc_with["opinions"][0]["opinion"].uncertainty
+        assert u_with < u_no
+
+    def test_status_reason_captured(self):
+        """statusReason is preserved in the output document."""
+        resource = _immunization(
+            status="not-done",
+            status_reason="Patient refused",
+        )
+        doc, _ = from_fhir(resource)
+        assert doc.get("statusReason") == "Patient refused"
+
+    def test_vaccine_code_captured(self):
+        """vaccineCode text is preserved in the output document."""
+        resource = _immunization(vaccine_code_text="Influenza Vaccine 2024")
+        doc, _ = from_fhir(resource)
+        assert doc.get("vaccineCode") == "Influenza Vaccine 2024"
+
+    def test_occurrence_datetime_captured(self):
+        """occurrenceDateTime is preserved for downstream temporal decay.
+
+        This is critical: fhir_temporal_decay() needs the administration
+        date to compute elapsed time for waning immunity.
+        """
+        resource = _immunization(
+            occurrence_date_time="2024-01-15T10:00:00Z",
+        )
+        doc, _ = from_fhir(resource)
+        assert doc.get("occurrenceDateTime") == "2024-01-15T10:00:00Z"
+
+    def test_extension_recovery(self):
+        """Opinion extension on status overrides reconstruction."""
+        ext = opinion_to_fhir_extension(
+            Opinion(belief=0.90, disbelief=0.02, uncertainty=0.08, base_rate=0.50)
+        )
+        resource = _immunization(extensions=[ext])
+        doc, _ = from_fhir(resource)
+
+        entry = doc["opinions"][0]
+        assert entry["source"] == "extension"
+        assert abs(entry["opinion"].belief - 0.90) < 1e-9
+
+    def test_additivity_invariant(self):
+        """b + d + u = 1 for all status values."""
+        for status in ["completed", "not-done", "entered-in-error"]:
+            resource = _immunization(status=status)
+            doc, _ = from_fhir(resource)
+            for entry in doc["opinions"]:
+                op = entry["opinion"]
+                total = op.belief + op.disbelief + op.uncertainty
+                assert abs(total - 1.0) < 1e-9, (
+                    f"Additivity violated for status={status}: "
+                    f"{op.belief} + {op.disbelief} + {op.uncertainty} = {total}"
+                )
+
+
+# ── FamilyMemberHistory tests ─────────────────────────────────────
+
+
+class TestFromFhirFamilyMemberHistory:
+    """from_fhir() for FHIR R4 FamilyMemberHistory resources.
+
+    FamilyMemberHistory is inherently uncertain — it captures
+    patient-reported family health history.  Self-reported data is
+    subject to recall bias, incomplete knowledge, and communication
+    errors.
+
+    The base uncertainty is intentionally higher than other resources
+    (configurable via FAMILY_HISTORY_DEFAULT_UNCERTAINTY) to reflect
+    this epistemic reality.
+
+    Primary field: status (completed/partial/health-unknown/entered-in-error).
+    condition[] count provides evidence signal.
+    dataAbsentReason explicitly marks missing data.
+    """
+
+    def test_basic_completed_family_history(self):
+        """FamilyMemberHistory with status='completed' → moderate belief.
+
+        Even a 'completed' family history has meaningful uncertainty
+        because the data is patient-reported.
+        """
+        resource = _family_member_history(status="completed")
+        doc, report = from_fhir(resource)
+
+        assert report.success is True
+        assert doc["@type"] == "fhir:FamilyMemberHistory"
+        assert len(doc["opinions"]) >= 1
+
+        entry = doc["opinions"][0]
+        assert entry["field"] == "status"
+        op = entry["opinion"]
+        assert isinstance(op, Opinion)
+        assert abs(op.belief + op.disbelief + op.uncertainty - 1.0) < 1e-9
+        # Completed → moderate belief (still patient-reported)
+        assert op.belief > 0.3
+        # But uncertainty should be meaningful (reported data)
+        assert op.uncertainty > 0.15
+
+    def test_partial_higher_uncertainty_than_completed(self):
+        """status='partial' → more uncertainty than 'completed'."""
+        res_comp = _family_member_history(status="completed")
+        res_part = _family_member_history(status="partial")
+
+        doc_comp, _ = from_fhir(res_comp)
+        doc_part, _ = from_fhir(res_part)
+
+        u_comp = doc_comp["opinions"][0]["opinion"].uncertainty
+        u_part = doc_part["opinions"][0]["opinion"].uncertainty
+        assert u_part > u_comp
+
+    def test_health_unknown_high_uncertainty(self):
+        """status='health-unknown' → very high uncertainty."""
+        resource = _family_member_history(status="health-unknown")
+        doc, _ = from_fhir(resource)
+
+        op = doc["opinions"][0]["opinion"]
+        assert op.uncertainty > 0.4
+
+    def test_entered_in_error_high_uncertainty(self):
+        """status='entered-in-error' → very high uncertainty."""
+        resource = _family_member_history(status="entered-in-error")
+        doc, _ = from_fhir(resource)
+
+        op = doc["opinions"][0]["opinion"]
+        assert op.uncertainty > 0.5
+
+    def test_condition_count_reduces_uncertainty(self):
+        """More reported conditions → lower uncertainty (more complete picture)."""
+        res_no = _family_member_history(condition=[])
+        res_many = _family_member_history(
+            condition=[
+                {"code": {"text": "Breast cancer"}},
+                {"code": {"text": "Type 2 Diabetes"}},
+                {"code": {"text": "Hypertension"}},
+            ],
+        )
+
+        doc_no, _ = from_fhir(res_no)
+        doc_many, _ = from_fhir(res_many)
+
+        u_no = doc_no["opinions"][0]["opinion"].uncertainty
+        u_many = doc_many["opinions"][0]["opinion"].uncertainty
+        assert u_many < u_no
+
+    def test_data_absent_reason_increases_uncertainty(self):
+        """dataAbsentReason presence → higher uncertainty (explicit missing data)."""
+        res_present = _family_member_history(status="completed")
+        res_absent = _family_member_history(
+            status="completed",
+            data_absent_reason="unknown",
+        )
+
+        doc_present, _ = from_fhir(res_present)
+        doc_absent, _ = from_fhir(res_absent)
+
+        u_present = doc_present["opinions"][0]["opinion"].uncertainty
+        u_absent = doc_absent["opinions"][0]["opinion"].uncertainty
+        assert u_absent > u_present
+
+    def test_relationship_captured(self):
+        """Relationship text is preserved in the output document."""
+        resource = _family_member_history(relationship_text="Father")
+        doc, _ = from_fhir(resource)
+        assert doc.get("relationship") == "Father"
+
+    def test_extension_recovery(self):
+        """Opinion extension on status overrides reconstruction."""
+        ext = opinion_to_fhir_extension(
+            Opinion(belief=0.60, disbelief=0.10, uncertainty=0.30, base_rate=0.50)
+        )
+        resource = _family_member_history(extensions=[ext])
+        doc, _ = from_fhir(resource)
+
+        entry = doc["opinions"][0]
+        assert entry["source"] == "extension"
+        assert abs(entry["opinion"].belief - 0.60) < 1e-9
+
+    def test_default_uncertainty_is_tunable(self):
+        """FAMILY_HISTORY_DEFAULT_UNCERTAINTY is importable and > 0.15.
+
+        The constant must be higher than the standard default to reflect
+        the inherent unreliability of patient-reported family history.
+        """
+        from jsonld_ex.fhir_interop import FAMILY_HISTORY_DEFAULT_UNCERTAINTY
+        assert isinstance(FAMILY_HISTORY_DEFAULT_UNCERTAINTY, float)
+        # Must be higher than the standard 0.15 default
+        assert FAMILY_HISTORY_DEFAULT_UNCERTAINTY > 0.15
+        # But must be a valid uncertainty (< 1.0)
+        assert FAMILY_HISTORY_DEFAULT_UNCERTAINTY < 1.0
+
+    def test_additivity_invariant(self):
+        """b + d + u = 1 for all status values."""
+        for status in ["completed", "partial", "health-unknown", "entered-in-error"]:
+            resource = _family_member_history(status=status)
+            doc, _ = from_fhir(resource)
+            for entry in doc["opinions"]:
+                op = entry["opinion"]
+                total = op.belief + op.disbelief + op.uncertainty
+                assert abs(total - 1.0) < 1e-9, (
+                    f"Additivity violated for status={status}: "
+                    f"{op.belief} + {op.disbelief} + {op.uncertainty} = {total}"
+                )
+
+
+# ── Procedure tests ───────────────────────────────────────────────
+
+
+class TestFromFhirProcedure:
+    """from_fhir() for FHIR R4 Procedure resources.
+
+    Procedure captures clinical procedures with outcome assessment.
+    The opinion proposition is: "the procedure was successfully
+    performed (or is being successfully performed)."
+
+    Primary field: status (completed/in-progress/not-done/entered-in-error).
+    outcome presence reduces uncertainty (documented result).
+    complication[] count increases uncertainty (ambiguous success).
+    followUp[] count reduces uncertainty (better assessment quality).
+    """
+
+    def test_basic_completed_procedure(self):
+        """Procedure with status='completed' → high belief."""
+        resource = _procedure(status="completed")
+        doc, report = from_fhir(resource)
+
+        assert report.success is True
+        assert doc["@type"] == "fhir:Procedure"
+        assert len(doc["opinions"]) >= 1
+
+        entry = doc["opinions"][0]
+        assert entry["field"] == "status"
+        assert entry["value"] == "completed"
+        op = entry["opinion"]
+        assert isinstance(op, Opinion)
+        assert abs(op.belief + op.disbelief + op.uncertainty - 1.0) < 1e-9
+        # Completed → high belief in procedure success
+        assert op.belief > 0.5
+
+    def test_in_progress_higher_uncertainty_than_completed(self):
+        """status='in-progress' → more uncertainty than 'completed'."""
+        res_comp = _procedure(status="completed")
+        res_prog = _procedure(status="in-progress")
+
+        doc_comp, _ = from_fhir(res_comp)
+        doc_prog, _ = from_fhir(res_prog)
+
+        u_comp = doc_comp["opinions"][0]["opinion"].uncertainty
+        u_prog = doc_prog["opinions"][0]["opinion"].uncertainty
+        assert u_prog > u_comp
+
+    def test_not_done_low_belief(self):
+        """status='not-done' → very low belief (procedure not performed)."""
+        resource = _procedure(status="not-done")
+        doc, _ = from_fhir(resource)
+
+        op = doc["opinions"][0]["opinion"]
+        assert op.belief < 0.20
+
+    def test_entered_in_error_high_uncertainty(self):
+        """status='entered-in-error' → very high uncertainty."""
+        resource = _procedure(status="entered-in-error")
+        doc, _ = from_fhir(resource)
+
+        op = doc["opinions"][0]["opinion"]
+        assert op.uncertainty > 0.4
+
+    def test_complications_increase_uncertainty(self):
+        """complication[] presence → higher uncertainty (ambiguous success)."""
+        res_clean = _procedure(status="completed", complication=[])
+        res_complicated = _procedure(
+            status="completed",
+            complication=[
+                {"coding": [{"display": "Wound infection"}]},
+                {"coding": [{"display": "Bleeding"}]},
+            ],
+        )
+
+        doc_clean, _ = from_fhir(res_clean)
+        doc_complicated, _ = from_fhir(res_complicated)
+
+        u_clean = doc_clean["opinions"][0]["opinion"].uncertainty
+        u_complicated = doc_complicated["opinions"][0]["opinion"].uncertainty
+        assert u_complicated > u_clean
+
+    def test_followup_reduces_uncertainty(self):
+        """followUp[] presence → lower uncertainty (better assessment)."""
+        res_no_fu = _procedure(status="completed", follow_up=[])
+        res_fu = _procedure(
+            status="completed",
+            follow_up=[
+                {"text": "Wound check at 1 week"},
+                {"text": "Follow-up imaging at 6 weeks"},
+            ],
+        )
+
+        doc_no, _ = from_fhir(res_no_fu)
+        doc_fu, _ = from_fhir(res_fu)
+
+        u_no = doc_no["opinions"][0]["opinion"].uncertainty
+        u_fu = doc_fu["opinions"][0]["opinion"].uncertainty
+        assert u_fu < u_no
+
+    def test_outcome_present_reduces_uncertainty(self):
+        """outcome presence → lower uncertainty (documented result)."""
+        res_no_out = _procedure(status="completed")
+        res_out = _procedure(
+            status="completed",
+            outcome="Successful, no complications",
+        )
+
+        doc_no, _ = from_fhir(res_no_out)
+        doc_out, _ = from_fhir(res_out)
+
+        u_no = doc_no["opinions"][0]["opinion"].uncertainty
+        u_out = doc_out["opinions"][0]["opinion"].uncertainty
+        assert u_out < u_no
+
+    def test_outcome_text_captured(self):
+        """Outcome text is preserved in the output document."""
+        resource = _procedure(outcome="Complete excision achieved")
+        doc, _ = from_fhir(resource)
+        assert doc.get("outcome") == "Complete excision achieved"
+
+    def test_extension_recovery(self):
+        """Opinion extension on status overrides reconstruction."""
+        ext = opinion_to_fhir_extension(
+            Opinion(belief=0.85, disbelief=0.05, uncertainty=0.10, base_rate=0.50)
+        )
+        resource = _procedure(extensions=[ext])
+        doc, _ = from_fhir(resource)
+
+        entry = doc["opinions"][0]
+        assert entry["source"] == "extension"
+        assert abs(entry["opinion"].belief - 0.85) < 1e-9
+
+    def test_additivity_invariant(self):
+        """b + d + u = 1 for all status values."""
+        for status in ["completed", "in-progress", "not-done", "entered-in-error"]:
+            resource = _procedure(status=status)
+            doc, _ = from_fhir(resource)
+            for entry in doc["opinions"]:
+                op = entry["opinion"]
+                total = op.belief + op.disbelief + op.uncertainty
+                assert abs(total - 1.0) < 1e-9, (
+                    f"Additivity violated for status={status}: "
+                    f"{op.belief} + {op.disbelief} + {op.uncertainty} = {total}"
+                )
+
+
+# ── Phase 3 Step 1 cross-resource tests ───────────────────────────
+
+
+class TestFromFhirPhase3General:
+    """Cross-cutting from_fhir() tests for Phase 3 resources."""
+
+    def test_phase3_types_in_supported_set(self):
+        """All Phase 3 resource types are handled by from_fhir()."""
+        # DetectedIssue — minimal valid resource
+        di = {"resourceType": "DetectedIssue", "id": "di-1", "status": "final"}
+        doc_di, report_di = from_fhir(di)
+        assert report_di.success is True
+        assert doc_di["@type"] == "fhir:DetectedIssue"
+
+        # Immunization — minimal valid resource
+        imm = {
+            "resourceType": "Immunization", "id": "imm-1",
+            "status": "completed",
+            "vaccineCode": {"text": "Test"},
+            "patient": {"reference": "Patient/p1"},
+        }
+        doc_imm, report_imm = from_fhir(imm)
+        assert report_imm.success is True
+        assert doc_imm["@type"] == "fhir:Immunization"
+
+        # FamilyMemberHistory — minimal valid resource
+        fmh = {
+            "resourceType": "FamilyMemberHistory", "id": "fmh-1",
+            "status": "completed",
+            "patient": {"reference": "Patient/p1"},
+            "relationship": {"text": "Mother"},
+        }
+        doc_fmh, report_fmh = from_fhir(fmh)
+        assert report_fmh.success is True
+        assert doc_fmh["@type"] == "fhir:FamilyMemberHistory"
+
+        # Procedure — minimal valid resource
+        proc = {
+            "resourceType": "Procedure", "id": "proc-1",
+            "status": "completed",
+            "code": {"text": "Test"},
+            "subject": {"reference": "Patient/p1"},
+        }
+        doc_proc, report_proc = from_fhir(proc)
+        assert report_proc.success is True
+        assert doc_proc["@type"] == "fhir:Procedure"
+
+    def test_additivity_holds_for_phase3_resources(self):
+        """b + d + u = 1 invariant holds across all Phase 3 resource types."""
+        resources = [
+            _detected_issue(severity="moderate"),
+            _immunization(status="completed"),
+            _family_member_history(status="completed"),
+            _procedure(status="completed"),
+        ]
+        for resource in resources:
+            doc, _ = from_fhir(resource)
+            for entry in doc["opinions"]:
+                op = entry["opinion"]
+                total = op.belief + op.disbelief + op.uncertainty
+                assert abs(total - 1.0) < 1e-9, (
+                    f"Additivity violated for {resource['resourceType']}: "
+                    f"{op.belief} + {op.disbelief} + {op.uncertainty} = {total}"
+                )
+
+    def test_phase3_resources_fusable_with_earlier_phases(self):
+        """Phase 3 documents can be fused with Phase 1 and Phase 2 documents."""
+        # Phase 1
+        risk = _risk_assessment(probability=0.75, status="final")
+        doc_risk, _ = from_fhir(risk)
+
+        # Phase 2
+        impression = _clinical_impression(
+            status="completed", summary="Elevated risk"
+        )
+        doc_impression, _ = from_fhir(impression)
+
+        # Phase 3
+        procedure = _procedure(status="completed")
+        doc_proc, _ = from_fhir(procedure)
+
+        # All three should fuse without error
+        fused, report = fhir_clinical_fuse([doc_risk, doc_impression, doc_proc])
+        assert isinstance(fused, Opinion)
+        assert report.opinions_fused == 3
+        assert abs(fused.belief + fused.disbelief + fused.uncertainty - 1.0) < 1e-9
+
+    def test_phase3_ids_preserved(self):
+        """Resource id is preserved through from_fhir for Phase 3 types."""
+        resources = [
+            _detected_issue(),
+            _immunization(),
+            _family_member_history(),
+            _procedure(),
+        ]
+        expected_ids = [
+            "detected-issue-example-1",
+            "immunization-example-1",
+            "family-history-example-1",
+            "procedure-example-1",
+        ]
+        for resource, expected_id in zip(resources, expected_ids):
+            doc, _ = from_fhir(resource)
+            assert doc["id"] == expected_id
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 3, Step 2: to_fhir() for DetectedIssue, Immunization,
+#                  FamilyMemberHistory, Procedure
+#                  + full round-trip tests
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestToFhirDetectedIssue:
+    """to_fhir() for DetectedIssue jsonld-ex documents."""
+
+    def test_basic_export(self):
+        """jsonld-ex DetectedIssue → valid FHIR DetectedIssue."""
+        op = Opinion(belief=0.76, disbelief=0.09, uncertainty=0.15)
+        doc = {
+            "@type": "fhir:DetectedIssue",
+            "id": "di-1",
+            "status": "final",
+            "opinions": [{
+                "field": "severity",
+                "value": "high",
+                "opinion": op,
+                "source": "reconstructed",
+            }],
+        }
+        resource, report = to_fhir(doc)
+
+        assert report.success is True
+        assert resource["resourceType"] == "DetectedIssue"
+        assert resource["id"] == "di-1"
+        assert resource["status"] == "final"
+
+    def test_severity_preserved(self):
+        """severity code is preserved from the opinion value."""
+        op = Opinion(belief=0.76, disbelief=0.09, uncertainty=0.15)
+        doc = {
+            "@type": "fhir:DetectedIssue",
+            "id": "di-1",
+            "status": "final",
+            "opinions": [{
+                "field": "severity",
+                "value": "moderate",
+                "opinion": op,
+                "source": "reconstructed",
+            }],
+        }
+        resource, _ = to_fhir(doc)
+        assert resource.get("severity") == "moderate"
+
+    def test_extension_on_severity(self):
+        """Opinion extension is attached to _severity."""
+        op = Opinion(belief=0.76, disbelief=0.09, uncertainty=0.15)
+        doc = {
+            "@type": "fhir:DetectedIssue",
+            "id": "di-1",
+            "status": "final",
+            "opinions": [{
+                "field": "severity",
+                "value": "high",
+                "opinion": op,
+                "source": "reconstructed",
+            }],
+        }
+        resource, _ = to_fhir(doc)
+
+        assert "_severity" in resource
+        exts = resource["_severity"]["extension"]
+        our_ext = [e for e in exts if e.get("url") == FHIR_EXTENSION_URL]
+        assert len(our_ext) == 1
+
+    def test_implicated_references_exported(self):
+        """implicated_references are converted to FHIR implicated array."""
+        op = Opinion(belief=0.76, disbelief=0.09, uncertainty=0.15)
+        doc = {
+            "@type": "fhir:DetectedIssue",
+            "id": "di-1",
+            "status": "final",
+            "implicated_references": ["MedicationRequest/med1", "MedicationRequest/med2"],
+            "opinions": [{
+                "field": "severity",
+                "value": "high",
+                "opinion": op,
+                "source": "reconstructed",
+            }],
+        }
+        resource, _ = to_fhir(doc)
+
+        implicated = resource.get("implicated", [])
+        assert len(implicated) == 2
+        refs = [r["reference"] for r in implicated]
+        assert "MedicationRequest/med1" in refs
+
+
+class TestToFhirImmunization:
+    """to_fhir() for Immunization jsonld-ex documents."""
+
+    def test_basic_export(self):
+        """jsonld-ex Immunization → valid FHIR Immunization."""
+        op = Opinion(belief=0.72, disbelief=0.13, uncertainty=0.15)
+        doc = {
+            "@type": "fhir:Immunization",
+            "id": "imm-1",
+            "status": "completed",
+            "vaccineCode": "COVID-19 mRNA Vaccine",
+            "opinions": [{
+                "field": "status",
+                "value": "completed",
+                "opinion": op,
+                "source": "reconstructed",
+            }],
+        }
+        resource, report = to_fhir(doc)
+
+        assert report.success is True
+        assert resource["resourceType"] == "Immunization"
+        assert resource["status"] == "completed"
+
+    def test_vaccine_code_preserved(self):
+        """vaccineCode from doc is preserved in output."""
+        op = Opinion(belief=0.72, disbelief=0.13, uncertainty=0.15)
+        doc = {
+            "@type": "fhir:Immunization",
+            "id": "imm-1",
+            "status": "completed",
+            "vaccineCode": "Influenza Vaccine 2024",
+            "opinions": [{
+                "field": "status",
+                "value": "completed",
+                "opinion": op,
+                "source": "reconstructed",
+            }],
+        }
+        resource, _ = to_fhir(doc)
+
+        vc = resource.get("vaccineCode", {})
+        assert vc.get("text") == "Influenza Vaccine 2024"
+
+    def test_occurrence_datetime_preserved(self):
+        """occurrenceDateTime from doc is preserved in output."""
+        op = Opinion(belief=0.72, disbelief=0.13, uncertainty=0.15)
+        doc = {
+            "@type": "fhir:Immunization",
+            "id": "imm-1",
+            "status": "completed",
+            "occurrenceDateTime": "2024-01-15T10:00:00Z",
+            "opinions": [{
+                "field": "status",
+                "value": "completed",
+                "opinion": op,
+                "source": "reconstructed",
+            }],
+        }
+        resource, _ = to_fhir(doc)
+        assert resource.get("occurrenceDateTime") == "2024-01-15T10:00:00Z"
+
+    def test_extension_on_status(self):
+        """Opinion extension is attached to _status."""
+        op = Opinion(belief=0.72, disbelief=0.13, uncertainty=0.15)
+        doc = {
+            "@type": "fhir:Immunization",
+            "id": "imm-1",
+            "status": "completed",
+            "opinions": [{
+                "field": "status",
+                "value": "completed",
+                "opinion": op,
+                "source": "reconstructed",
+            }],
+        }
+        resource, _ = to_fhir(doc)
+
+        assert "_status" in resource
+        exts = resource["_status"]["extension"]
+        our_ext = [e for e in exts if e.get("url") == FHIR_EXTENSION_URL]
+        assert len(our_ext) == 1
+
+
+class TestToFhirFamilyMemberHistory:
+    """to_fhir() for FamilyMemberHistory jsonld-ex documents."""
+
+    def test_basic_export(self):
+        """jsonld-ex FamilyMemberHistory → valid FHIR FamilyMemberHistory."""
+        op = Opinion(belief=0.49, disbelief=0.21, uncertainty=0.30)
+        doc = {
+            "@type": "fhir:FamilyMemberHistory",
+            "id": "fmh-1",
+            "status": "completed",
+            "relationship": "Mother",
+            "opinions": [{
+                "field": "status",
+                "value": "completed",
+                "opinion": op,
+                "source": "reconstructed",
+            }],
+        }
+        resource, report = to_fhir(doc)
+
+        assert report.success is True
+        assert resource["resourceType"] == "FamilyMemberHistory"
+        assert resource["status"] == "completed"
+
+    def test_relationship_preserved(self):
+        """relationship from doc is preserved in output."""
+        op = Opinion(belief=0.49, disbelief=0.21, uncertainty=0.30)
+        doc = {
+            "@type": "fhir:FamilyMemberHistory",
+            "id": "fmh-1",
+            "status": "completed",
+            "relationship": "Father",
+            "opinions": [{
+                "field": "status",
+                "value": "completed",
+                "opinion": op,
+                "source": "reconstructed",
+            }],
+        }
+        resource, _ = to_fhir(doc)
+
+        rel = resource.get("relationship", {})
+        assert rel.get("text") == "Father"
+
+    def test_extension_on_status(self):
+        """Opinion extension is attached to _status."""
+        op = Opinion(belief=0.49, disbelief=0.21, uncertainty=0.30)
+        doc = {
+            "@type": "fhir:FamilyMemberHistory",
+            "id": "fmh-1",
+            "status": "completed",
+            "opinions": [{
+                "field": "status",
+                "value": "completed",
+                "opinion": op,
+                "source": "reconstructed",
+            }],
+        }
+        resource, _ = to_fhir(doc)
+
+        assert "_status" in resource
+        exts = resource["_status"]["extension"]
+        our_ext = [e for e in exts if e.get("url") == FHIR_EXTENSION_URL]
+        assert len(our_ext) == 1
+
+
+class TestToFhirProcedure:
+    """to_fhir() for Procedure jsonld-ex documents."""
+
+    def test_basic_export(self):
+        """jsonld-ex Procedure → valid FHIR Procedure."""
+        op = Opinion(belief=0.72, disbelief=0.13, uncertainty=0.15)
+        doc = {
+            "@type": "fhir:Procedure",
+            "id": "proc-1",
+            "status": "completed",
+            "opinions": [{
+                "field": "status",
+                "value": "completed",
+                "opinion": op,
+                "source": "reconstructed",
+            }],
+        }
+        resource, report = to_fhir(doc)
+
+        assert report.success is True
+        assert resource["resourceType"] == "Procedure"
+        assert resource["status"] == "completed"
+
+    def test_outcome_text_preserved(self):
+        """outcome from doc is preserved in output."""
+        op = Opinion(belief=0.72, disbelief=0.13, uncertainty=0.15)
+        doc = {
+            "@type": "fhir:Procedure",
+            "id": "proc-1",
+            "status": "completed",
+            "outcome": "Complete excision achieved",
+            "opinions": [{
+                "field": "status",
+                "value": "completed",
+                "opinion": op,
+                "source": "reconstructed",
+            }],
+        }
+        resource, _ = to_fhir(doc)
+
+        outcome = resource.get("outcome", {})
+        assert outcome.get("text") == "Complete excision achieved"
+
+    def test_extension_on_status(self):
+        """Opinion extension is attached to _status."""
+        op = Opinion(belief=0.72, disbelief=0.13, uncertainty=0.15)
+        doc = {
+            "@type": "fhir:Procedure",
+            "id": "proc-1",
+            "status": "completed",
+            "opinions": [{
+                "field": "status",
+                "value": "completed",
+                "opinion": op,
+                "source": "reconstructed",
+            }],
+        }
+        resource, _ = to_fhir(doc)
+
+        assert "_status" in resource
+        exts = resource["_status"]["extension"]
+        our_ext = [e for e in exts if e.get("url") == FHIR_EXTENSION_URL]
+        assert len(our_ext) == 1
+
+
+# ── Phase 3 full round-trip: FHIR → jsonld-ex → FHIR ─────────────
+
+
+class TestFhirPhase3RoundTrip:
+    """FHIR resource → from_fhir() → to_fhir() round-trip for Phase 3."""
+
+    def test_detected_issue_round_trip_severity(self):
+        """DetectedIssue: severity survives round-trip."""
+        original = _detected_issue(severity="moderate", status="final")
+        doc, _ = from_fhir(original)
+        recovered, _ = to_fhir(doc)
+
+        assert recovered["severity"] == "moderate"
+        assert recovered["status"] == "final"
+
+    def test_detected_issue_round_trip_extension_exact(self):
+        """DetectedIssue with extension: exact opinion preserved."""
+        op = Opinion(belief=0.70, disbelief=0.10, uncertainty=0.20, base_rate=0.45)
+        ext = opinion_to_fhir_extension(op)
+        original = _detected_issue(extensions=[ext])
+
+        doc, _ = from_fhir(original)
+        recovered, _ = to_fhir(doc)
+
+        sev_ext = recovered["_severity"]["extension"]
+        our_ext = [e for e in sev_ext if e.get("url") == FHIR_EXTENSION_URL][0]
+        recovered_op = fhir_extension_to_opinion(our_ext)
+
+        assert abs(recovered_op.belief - op.belief) < 1e-9
+        assert abs(recovered_op.disbelief - op.disbelief) < 1e-9
+        assert abs(recovered_op.uncertainty - op.uncertainty) < 1e-9
+        assert abs(recovered_op.base_rate - op.base_rate) < 1e-9
+
+    def test_detected_issue_round_trip_implicated(self):
+        """DetectedIssue: implicated references survive round-trip."""
+        original = _detected_issue(
+            implicated=["MedicationRequest/med1", "MedicationRequest/med2"],
+        )
+        doc, _ = from_fhir(original)
+        recovered, _ = to_fhir(doc)
+
+        refs = [r["reference"] for r in recovered.get("implicated", [])]
+        assert "MedicationRequest/med1" in refs
+        assert "MedicationRequest/med2" in refs
+
+    def test_immunization_round_trip_status(self):
+        """Immunization: status survives round-trip."""
+        original = _immunization(status="not-done", status_reason="Patient refused")
+        doc, _ = from_fhir(original)
+        recovered, _ = to_fhir(doc)
+
+        assert recovered["status"] == "not-done"
+
+    def test_immunization_round_trip_vaccine_code(self):
+        """Immunization: vaccineCode survives round-trip."""
+        original = _immunization(vaccine_code_text="Hepatitis B Vaccine")
+        doc, _ = from_fhir(original)
+        recovered, _ = to_fhir(doc)
+
+        vc = recovered.get("vaccineCode", {})
+        assert vc.get("text") == "Hepatitis B Vaccine"
+
+    def test_immunization_round_trip_occurrence(self):
+        """Immunization: occurrenceDateTime survives round-trip."""
+        original = _immunization(occurrence_date_time="2024-03-01T09:00:00Z")
+        doc, _ = from_fhir(original)
+        recovered, _ = to_fhir(doc)
+
+        assert recovered.get("occurrenceDateTime") == "2024-03-01T09:00:00Z"
+
+    def test_family_member_history_round_trip_status(self):
+        """FamilyMemberHistory: status survives round-trip."""
+        original = _family_member_history(status="partial")
+        doc, _ = from_fhir(original)
+        recovered, _ = to_fhir(doc)
+
+        assert recovered["status"] == "partial"
+
+    def test_family_member_history_round_trip_relationship(self):
+        """FamilyMemberHistory: relationship survives round-trip."""
+        original = _family_member_history(relationship_text="Sister")
+        doc, _ = from_fhir(original)
+        recovered, _ = to_fhir(doc)
+
+        rel = recovered.get("relationship", {})
+        assert rel.get("text") == "Sister"
+
+    def test_procedure_round_trip_status(self):
+        """Procedure: status survives round-trip."""
+        original = _procedure(status="in-progress")
+        doc, _ = from_fhir(original)
+        recovered, _ = to_fhir(doc)
+
+        assert recovered["status"] == "in-progress"
+
+    def test_procedure_round_trip_outcome(self):
+        """Procedure: outcome text survives round-trip."""
+        original = _procedure(outcome="Successful, no complications")
+        doc, _ = from_fhir(original)
+        recovered, _ = to_fhir(doc)
+
+        outcome = recovered.get("outcome", {})
+        assert outcome.get("text") == "Successful, no complications"
+
+
+class TestPhase3RoundTripFidelityScope:
+    """Document what IS and ISN'T preserved in the round-trip.
+
+    These tests codify a deliberate design decision:
+    raw FHIR arrays (evidence[], protocolApplied[], condition[],
+    complication[], followUp[]) are used to INFER the opinion during
+    from_fhir() but are NOT stored in the jsonld-ex document.  Their
+    evidential weight is encoded in the resulting opinion tuple.
+
+    Systems needing the original FHIR arrays should retain the
+    source resource alongside the jsonld-ex document.
+    """
+
+    def test_detected_issue_evidence_not_preserved(self):
+        """evidence[] informs opinion but is not stored in jsonld-ex doc."""
+        original = _detected_issue(
+            evidence=[{"detail": [{"reference": "Obs/1"}]}],
+        )
+        doc, _ = from_fhir(original)
+        recovered, _ = to_fhir(doc)
+
+        # evidence[] NOT in round-tripped output (by design)
+        assert "evidence" not in recovered
+        # But the opinion was influenced by evidence count
+        assert doc["opinions"][0]["opinion"] is not None
+
+    def test_immunization_protocol_not_preserved(self):
+        """protocolApplied[] informs opinion but is not stored."""
+        original = _immunization(protocol_dose_count=3)
+        doc, _ = from_fhir(original)
+        recovered, _ = to_fhir(doc)
+
+        assert "protocolApplied" not in recovered
+
+    def test_family_history_conditions_not_preserved(self):
+        """condition[] informs opinion but is not stored."""
+        original = _family_member_history(condition_count=3)
+        doc, _ = from_fhir(original)
+        recovered, _ = to_fhir(doc)
+
+        assert "condition" not in recovered
+
+    def test_procedure_complications_not_preserved(self):
+        """complication[] informs opinion but is not stored."""
+        original = _procedure(complication_count=2)
+        doc, _ = from_fhir(original)
+        recovered, _ = to_fhir(doc)
+
+        assert "complication" not in recovered
+        assert "followUp" not in recovered
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 3, Step 3: fhir_temporal_decay()
+# ═══════════════════════════════════════════════════════════════════
+
+from jsonld_ex.fhir_interop import fhir_temporal_decay
+
+
+class TestFhirTemporalDecay:
+    """fhir_temporal_decay() applies temporal decay to clinical evidence.
+
+    Clinical evidence ages: lab results from 6 months ago are less
+    relevant than today's labs; vaccine effectiveness wanes over years.
+    This function bridges jsonld-ex's decay_opinion() to FHIR resource
+    timestamps.
+    """
+
+    def test_basic_decay_reduces_belief(self):
+        """Decaying a document reduces belief and increases uncertainty."""
+        op = Opinion(belief=0.70, disbelief=0.10, uncertainty=0.20)
+        doc = _make_doc("Observation", op, field="interpretation", value="H")
+        doc["effectiveDateTime"] = "2023-01-01T00:00:00Z"
+
+        decayed_doc, report = fhir_temporal_decay(
+            doc,
+            reference_time="2024-01-01T00:00:00Z",
+            half_life_days=365.0,
+        )
+
+        decayed_op = decayed_doc["opinions"][0]["opinion"]
+        # After one half-life, belief should be roughly halved
+        assert decayed_op.belief < op.belief
+        assert decayed_op.uncertainty > op.uncertainty
+        assert abs(decayed_op.belief + decayed_op.disbelief + decayed_op.uncertainty - 1.0) < 1e-9
+
+    def test_no_elapsed_time_preserves_opinion(self):
+        """Zero elapsed time → opinion unchanged."""
+        op = Opinion(belief=0.70, disbelief=0.10, uncertainty=0.20)
+        doc = _make_doc("Observation", op)
+        doc["effectiveDateTime"] = "2024-01-01T00:00:00Z"
+
+        decayed_doc, _ = fhir_temporal_decay(
+            doc,
+            reference_time="2024-01-01T00:00:00Z",
+            half_life_days=365.0,
+        )
+
+        decayed_op = decayed_doc["opinions"][0]["opinion"]
+        assert abs(decayed_op.belief - op.belief) < 1e-9
+        assert abs(decayed_op.uncertainty - op.uncertainty) < 1e-9
+
+    def test_long_elapsed_time_near_vacuous(self):
+        """Very long elapsed time → near-vacuous opinion (high uncertainty)."""
+        op = Opinion(belief=0.80, disbelief=0.10, uncertainty=0.10)
+        doc = _make_doc("Observation", op)
+        doc["effectiveDateTime"] = "2000-01-01T00:00:00Z"
+
+        decayed_doc, _ = fhir_temporal_decay(
+            doc,
+            reference_time="2024-01-01T00:00:00Z",
+            half_life_days=365.0,
+        )
+
+        decayed_op = decayed_doc["opinions"][0]["opinion"]
+        # 24 years with 1-year half-life → ~2^24 reduction
+        assert decayed_op.uncertainty > 0.95
+
+    def test_half_life_one_half_life(self):
+        """After exactly one half-life, belief ≈ original/2."""
+        op = Opinion(belief=0.80, disbelief=0.10, uncertainty=0.10)
+        doc = _make_doc("Observation", op)
+        doc["effectiveDateTime"] = "2023-01-01T00:00:00Z"
+
+        decayed_doc, _ = fhir_temporal_decay(
+            doc,
+            reference_time="2024-01-01T00:00:00Z",
+            half_life_days=365.0,
+        )
+
+        decayed_op = decayed_doc["opinions"][0]["opinion"]
+        # Exponential decay: after 1 half-life, factor = 0.5
+        assert abs(decayed_op.belief - 0.40) < 0.02
+        assert abs(decayed_op.disbelief - 0.05) < 0.02
+
+    def test_different_half_lives(self):
+        """Shorter half-life decays faster than longer half-life."""
+        op = Opinion(belief=0.80, disbelief=0.10, uncertainty=0.10)
+        doc_short = _make_doc("Observation", op)
+        doc_short["effectiveDateTime"] = "2023-01-01T00:00:00Z"
+        doc_long = _make_doc("Observation", op)
+        doc_long["effectiveDateTime"] = "2023-01-01T00:00:00Z"
+
+        decayed_short, _ = fhir_temporal_decay(
+            doc_short,
+            reference_time="2024-01-01T00:00:00Z",
+            half_life_days=180.0,
+        )
+        decayed_long, _ = fhir_temporal_decay(
+            doc_long,
+            reference_time="2024-01-01T00:00:00Z",
+            half_life_days=730.0,
+        )
+
+        b_short = decayed_short["opinions"][0]["opinion"].belief
+        b_long = decayed_long["opinions"][0]["opinion"].belief
+        assert b_short < b_long
+
+    def test_immunization_occurrence_datetime_used(self):
+        """Immunization uses occurrenceDateTime as decay anchor."""
+        resource = _immunization(
+            status="completed",
+            occurrence_date_time="2023-06-01T00:00:00Z",
+        )
+        doc, _ = from_fhir(resource)
+
+        decayed_doc, _ = fhir_temporal_decay(
+            doc,
+            reference_time="2024-06-01T00:00:00Z",
+            half_life_days=365.0,
+        )
+
+        original_b = doc["opinions"][0]["opinion"].belief
+        decayed_b = decayed_doc["opinions"][0]["opinion"].belief
+        assert decayed_b < original_b
+
+    def test_no_timestamp_returns_unchanged(self):
+        """Document without any timestamp → returned unchanged with warning."""
+        op = Opinion(belief=0.70, disbelief=0.10, uncertainty=0.20)
+        doc = _make_doc("Observation", op)
+        # No timestamp fields set
+
+        decayed_doc, report = fhir_temporal_decay(
+            doc,
+            reference_time="2024-01-01T00:00:00Z",
+            half_life_days=365.0,
+        )
+
+        # Opinion should be unchanged
+        decayed_op = decayed_doc["opinions"][0]["opinion"]
+        assert abs(decayed_op.belief - op.belief) < 1e-9
+        # Should have a warning
+        assert len(report.warnings) >= 1
+
+    def test_future_timestamp_returns_unchanged(self):
+        """Document with future timestamp → returned unchanged with warning.
+
+        A timestamp in the future (relative to reference_time) means
+        negative elapsed time, which is nonsensical for decay.
+        """
+        op = Opinion(belief=0.70, disbelief=0.10, uncertainty=0.20)
+        doc = _make_doc("Observation", op)
+        doc["effectiveDateTime"] = "2025-01-01T00:00:00Z"
+
+        decayed_doc, report = fhir_temporal_decay(
+            doc,
+            reference_time="2024-01-01T00:00:00Z",
+            half_life_days=365.0,
+        )
+
+        decayed_op = decayed_doc["opinions"][0]["opinion"]
+        assert abs(decayed_op.belief - op.belief) < 1e-9
+        assert len(report.warnings) >= 1
+
+    def test_default_reference_time_is_now(self):
+        """Omitting reference_time defaults to current time."""
+        op = Opinion(belief=0.80, disbelief=0.10, uncertainty=0.10)
+        doc = _make_doc("Observation", op)
+        # Set a timestamp far in the past
+        doc["effectiveDateTime"] = "2000-01-01T00:00:00Z"
+
+        decayed_doc, _ = fhir_temporal_decay(
+            doc,
+            half_life_days=365.0,
+        )
+
+        decayed_op = decayed_doc["opinions"][0]["opinion"]
+        # 25+ years old with 1-year half-life → nearly vacuous
+        assert decayed_op.uncertainty > 0.95
+
+    def test_does_not_mutate_original(self):
+        """Original document is not mutated by decay."""
+        op = Opinion(belief=0.70, disbelief=0.10, uncertainty=0.20)
+        doc = _make_doc("Observation", op)
+        doc["effectiveDateTime"] = "2023-01-01T00:00:00Z"
+
+        original_belief = doc["opinions"][0]["opinion"].belief
+        decayed_doc, _ = fhir_temporal_decay(
+            doc,
+            reference_time="2024-01-01T00:00:00Z",
+            half_life_days=365.0,
+        )
+
+        # Original should be untouched
+        assert abs(doc["opinions"][0]["opinion"].belief - original_belief) < 1e-9
+        # Decayed should differ
+        assert decayed_doc["opinions"][0]["opinion"].belief < original_belief
+
+    def test_multiple_opinions_all_decayed(self):
+        """All opinions in a document are decayed."""
+        op1 = Opinion(belief=0.70, disbelief=0.10, uncertainty=0.20)
+        op2 = Opinion(belief=0.60, disbelief=0.15, uncertainty=0.25)
+        doc = {
+            "@type": "fhir:RiskAssessment",
+            "id": "multi",
+            "status": "final",
+            "effectiveDateTime": "2023-01-01T00:00:00Z",
+            "opinions": [
+                {"field": "prediction[0]", "value": 0.80, "opinion": op1, "source": "reconstructed"},
+                {"field": "prediction[1]", "value": 0.60, "opinion": op2, "source": "reconstructed"},
+            ],
+        }
+
+        decayed_doc, _ = fhir_temporal_decay(
+            doc,
+            reference_time="2024-01-01T00:00:00Z",
+            half_life_days=365.0,
+        )
+
+        for entry in decayed_doc["opinions"]:
+            decayed_op = entry["opinion"]
+            assert abs(decayed_op.belief + decayed_op.disbelief + decayed_op.uncertainty - 1.0) < 1e-9
+        # Both should have reduced belief
+        assert decayed_doc["opinions"][0]["opinion"].belief < op1.belief
+        assert decayed_doc["opinions"][1]["opinion"].belief < op2.belief
+
+    def test_additivity_invariant(self):
+        """b + d + u = 1 after decay for various half-lives."""
+        op = Opinion(belief=0.80, disbelief=0.10, uncertainty=0.10)
+        doc = _make_doc("Observation", op)
+        doc["effectiveDateTime"] = "2023-01-01T00:00:00Z"
+
+        for half_life in [30.0, 90.0, 365.0, 730.0, 3650.0]:
+            decayed_doc, _ = fhir_temporal_decay(
+                doc,
+                reference_time="2024-01-01T00:00:00Z",
+                half_life_days=half_life,
+            )
+            decayed_op = decayed_doc["opinions"][0]["opinion"]
+            total = decayed_op.belief + decayed_op.disbelief + decayed_op.uncertainty
+            assert abs(total - 1.0) < 1e-9, (
+                f"Additivity violated for half_life={half_life}: {total}"
+            )
+
+    def test_report_success(self):
+        """ConversionReport indicates success."""
+        op = Opinion(belief=0.70, disbelief=0.10, uncertainty=0.20)
+        doc = _make_doc("Observation", op)
+        doc["effectiveDateTime"] = "2023-01-01T00:00:00Z"
+
+        _, report = fhir_temporal_decay(
+            doc,
+            reference_time="2024-01-01T00:00:00Z",
+            half_life_days=365.0,
+        )
+        assert report.success is True
+
+    def test_recorded_date_as_fallback(self):
+        """recordedDate is used when effectiveDateTime is absent."""
+        op = Opinion(belief=0.70, disbelief=0.10, uncertainty=0.20)
+        doc = _make_doc("Condition", op, field="verificationStatus", value="confirmed")
+        doc["recordedDate"] = "2023-01-01T00:00:00Z"
+
+        decayed_doc, report = fhir_temporal_decay(
+            doc,
+            reference_time="2024-01-01T00:00:00Z",
+            half_life_days=365.0,
+        )
+
+        decayed_op = decayed_doc["opinions"][0]["opinion"]
+        assert decayed_op.belief < op.belief
+        assert len(report.warnings) == 0
+
+    def test_empty_opinions_no_error(self):
+        """Document with no opinions → no error, returned unchanged."""
+        doc = {
+            "@type": "fhir:Observation",
+            "id": "empty",
+            "status": "final",
+            "effectiveDateTime": "2023-01-01T00:00:00Z",
+            "opinions": [],
+        }
+
+        decayed_doc, report = fhir_temporal_decay(
+            doc,
+            reference_time="2024-01-01T00:00:00Z",
+            half_life_days=365.0,
+        )
+        assert report.success is True
+        assert decayed_doc["opinions"] == []
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 3, Step 4: fhir_escalation_policy()
+# ═══════════════════════════════════════════════════════════════════
+
+from jsonld_ex.fhir_interop import fhir_escalation_policy
+
+
+class TestFhirEscalationPolicy:
+    """fhir_escalation_policy() categorises documents for clinical triage.
+
+    Buckets:
+      - auto_accept:  high belief, low uncertainty → safe to act on
+      - human_review: moderate confidence → needs clinician review
+      - reject:       high disbelief → evidence contradicts claim
+      - escalate:     high conflict between inputs → specialist needed
+    """
+
+    def test_high_confidence_auto_accept(self):
+        """High belief, low uncertainty → auto_accept."""
+        op = Opinion(belief=0.85, disbelief=0.05, uncertainty=0.10)
+        doc = _make_doc("Observation", op)
+
+        result = fhir_escalation_policy([doc])
+
+        assert len(result["auto_accept"]) == 1
+        assert len(result["human_review"]) == 0
+
+    def test_moderate_confidence_human_review(self):
+        """Moderate belief → human_review."""
+        op = Opinion(belief=0.50, disbelief=0.10, uncertainty=0.40)
+        doc = _make_doc("Observation", op)
+
+        result = fhir_escalation_policy([doc])
+
+        assert len(result["human_review"]) == 1
+        assert len(result["auto_accept"]) == 0
+
+    def test_high_disbelief_reject(self):
+        """High disbelief → reject."""
+        op = Opinion(belief=0.05, disbelief=0.85, uncertainty=0.10)
+        doc = _make_doc("Observation", op)
+
+        result = fhir_escalation_policy([doc])
+
+        assert len(result["reject"]) == 1
+
+    def test_mixed_inputs_sorted(self):
+        """Multiple documents are sorted into correct buckets.
+
+        Uses conflict_threshold=1.0 to disable escalation so we
+        test per-document bucketing in isolation.
+        """
+        high = _make_doc("Observation", Opinion(belief=0.90, disbelief=0.02, uncertainty=0.08))
+        mid = _make_doc("Condition", Opinion(belief=0.45, disbelief=0.15, uncertainty=0.40))
+        low = _make_doc("Observation", Opinion(belief=0.05, disbelief=0.80, uncertainty=0.15))
+
+        result = fhir_escalation_policy(
+            [high, mid, low], conflict_threshold=1.0,
+        )
+
+        assert len(result["auto_accept"]) == 1
+        assert len(result["human_review"]) == 1
+        assert len(result["reject"]) == 1
+
+    def test_custom_thresholds(self):
+        """Custom escalation_threshold changes bucket boundaries."""
+        op = Opinion(belief=0.65, disbelief=0.10, uncertainty=0.25)
+        doc = _make_doc("Observation", op)
+
+        # Default threshold 0.7 → human_review
+        result_default = fhir_escalation_policy([doc])
+        assert len(result_default["human_review"]) == 1
+
+        # Lower threshold 0.6 → auto_accept
+        result_low = fhir_escalation_policy(
+            [doc], escalation_threshold=0.6
+        )
+        assert len(result_low["auto_accept"]) == 1
+
+    def test_empty_input(self):
+        """Empty input → all buckets empty."""
+        result = fhir_escalation_policy([])
+
+        assert result["auto_accept"] == []
+        assert result["human_review"] == []
+        assert result["reject"] == []
+        assert result["escalate"] == []
+
+    def test_escalate_on_high_conflict(self):
+        """Documents with conflicting opinions → escalate bucket."""
+        # Two documents with contradictory opinions
+        doc_for = _make_doc(
+            "Observation",
+            Opinion(belief=0.85, disbelief=0.05, uncertainty=0.10),
+        )
+        doc_against = _make_doc(
+            "Observation",
+            Opinion(belief=0.05, disbelief=0.85, uncertainty=0.10),
+        )
+
+        result = fhir_escalation_policy(
+            [doc_for, doc_against],
+            conflict_threshold=0.3,
+        )
+
+        assert len(result["escalate"]) == 2
+
+    def test_result_keys(self):
+        """Result dict always contains all four bucket keys."""
+        result = fhir_escalation_policy([])
+
+        assert set(result.keys()) == {"auto_accept", "human_review", "reject", "escalate"}
+
+    def test_belief_exactly_at_threshold_auto_accepts(self):
+        """Belief exactly at threshold (>=) → auto_accept."""
+        op = Opinion(belief=0.70, disbelief=0.10, uncertainty=0.20)
+        doc = _make_doc("Observation", op)
+
+        result = fhir_escalation_policy([doc], escalation_threshold=0.70)
+
+        assert len(result["auto_accept"]) == 1
+        assert len(result["human_review"]) == 0
+
+    def test_disbelief_exactly_at_threshold_rejects(self):
+        """Disbelief exactly at threshold (>=) → reject."""
+        op = Opinion(belief=0.10, disbelief=0.70, uncertainty=0.20)
+        doc = _make_doc("Observation", op)
+
+        result = fhir_escalation_policy([doc], escalation_threshold=0.70)
+
+        assert len(result["reject"]) == 1
+        assert len(result["human_review"]) == 0
+
+    def test_single_document_no_conflict_possible(self):
+        """Single document: no pairwise conflict; categorised individually."""
+        op = Opinion(belief=0.80, disbelief=0.05, uncertainty=0.15)
+        doc = _make_doc("Observation", op)
+
+        result = fhir_escalation_policy([doc])
+
+        assert len(result["auto_accept"]) == 1
+        assert len(result["escalate"]) == 0
+
+    def test_document_with_no_opinions_goes_to_human_review(self):
+        """Document with empty opinions list → human_review."""
+        doc = {
+            "@type": "fhir:Observation",
+            "id": "empty-op",
+            "status": "final",
+            "opinions": [],
+        }
+
+        result = fhir_escalation_policy([doc])
+
+        assert len(result["human_review"]) == 1
+
+    def test_escalation_takes_priority_over_individual_bucket(self):
+        """Conflicting pair: even high-belief doc goes to escalate, not auto_accept."""
+        strong_for = _make_doc(
+            "Observation",
+            Opinion(belief=0.90, disbelief=0.02, uncertainty=0.08),
+        )
+        strong_against = _make_doc(
+            "Observation",
+            Opinion(belief=0.02, disbelief=0.90, uncertainty=0.08),
+        )
+
+        result = fhir_escalation_policy(
+            [strong_for, strong_against],
+            conflict_threshold=0.3,
+        )
+
+        # Both routed to escalate despite individually qualifying for
+        # auto_accept and reject respectively.
+        assert len(result["escalate"]) == 2
+        assert len(result["auto_accept"]) == 0
+        assert len(result["reject"]) == 0
+
+    def test_disbelief_priority_over_belief(self):
+        """When disbelief >= threshold, reject takes priority even if belief is also high.
+
+        With b+d+u=1, both b>=0.7 and d>=0.7 is impossible (would need
+        b+d>=1.4).  But we verify the implementation checks disbelief
+        FIRST, which is the clinically safer ordering: rejecting a
+        false positive is less harmful than auto-accepting it.
+        """
+        # b=0.25, d=0.70 — disbelief at threshold, belief below
+        op = Opinion(belief=0.25, disbelief=0.70, uncertainty=0.05)
+        doc = _make_doc("Observation", op)
+
+        result = fhir_escalation_policy([doc], escalation_threshold=0.70)
+
+        assert len(result["reject"]) == 1
+        assert len(result["auto_accept"]) == 0
+
+    def test_partial_escalation_non_conflicting_docs_unaffected(self):
+        """Only conflicting docs escalate; bystanders route normally.
+
+        Clinical scenario: three lab results arrive.  Two contradict
+        each other (one says positive, one says negative) — those must
+        be escalated.  A third, unrelated result has high uncertainty
+        and should be routed to human_review without being dragged
+        into the conflict.
+
+        Verified conflict values (con = b_A·d_B + d_A·b_B):
+          pos vs neg:       0.88×0.88 + 0.04×0.04 = 0.776 ≥ 0.3 → escalate
+          pos vs bystander: 0.15×0.04 + 0.05×0.88 = 0.050 < 0.3 → no conflict
+          neg vs bystander: 0.15×0.88 + 0.05×0.04 = 0.134 < 0.3 → no conflict
+        """
+        # Conflicting pair
+        pos = _make_doc(
+            "Observation",
+            Opinion(belief=0.88, disbelief=0.04, uncertainty=0.08),
+        )
+        neg = _make_doc(
+            "Observation",
+            Opinion(belief=0.04, disbelief=0.88, uncertainty=0.08),
+        )
+        # Uninvolved bystander — high uncertainty, low belief & disbelief
+        # so conflict with both pos and neg stays below 0.3.
+        bystander = _make_doc(
+            "Condition",
+            Opinion(belief=0.15, disbelief=0.05, uncertainty=0.80),
+        )
+
+        result = fhir_escalation_policy(
+            [pos, neg, bystander], conflict_threshold=0.3,
+        )
+
+        # The conflicting pair must escalate
+        assert len(result["escalate"]) == 2
+        # The bystander is moderate (b=0.15 < 0.7) → human_review
+        assert len(result["human_review"]) == 1
+        # Nothing auto-accepted or rejected (pos would be auto_accept
+        # individually, but it conflicts with neg)
+        assert len(result["auto_accept"]) == 0
+        assert len(result["reject"]) == 0
+
+    def test_no_document_in_multiple_buckets(self):
+        """Every input document appears in exactly one bucket."""
+        docs = [
+            _make_doc("Observation", Opinion(belief=0.90, disbelief=0.02, uncertainty=0.08)),
+            _make_doc("Observation", Opinion(belief=0.50, disbelief=0.10, uncertainty=0.40)),
+            _make_doc("Observation", Opinion(belief=0.05, disbelief=0.80, uncertainty=0.15)),
+        ]
+
+        result = fhir_escalation_policy(docs, conflict_threshold=1.0)
+
+        total = sum(len(v) for v in result.values())
+        assert total == len(docs), (
+            f"Expected {len(docs)} documents across buckets, got {total}"
+        )

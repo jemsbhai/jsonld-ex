@@ -16,6 +16,11 @@ Supported FHIR R4 resources:
   - AllergyIntolerance   — verificationStatus + criticality → dual Opinion
   - MedicationStatement  — status → adherence confidence Opinion
   - ClinicalImpression   — status + findings → assessment Opinion
+  Phase 3:
+  - DetectedIssue        — severity → alert confidence Opinion
+  - Immunization         — status → seroconversion base confidence Opinion
+  - FamilyMemberHistory  — status → reported-vs-confirmed evidence Opinion
+  - Procedure            — status + outcome/complication/followUp → Opinion
 
 Architecture notes:
   - All public functions accept a ``fhir_version`` parameter (default "R4")
@@ -23,6 +28,19 @@ Architecture notes:
   - Version-specific logic is isolated in private ``_*_r4()`` functions.
   - The SL opinion is embedded in FHIR resources via the standard extension
     mechanism, ensuring zero breaking changes to existing FHIR infrastructure.
+
+Round-trip fidelity scope:
+  The ``from_fhir() → to_fhir()`` round-trip preserves:
+    - Resource id, status, and type
+    - Opinion tuples (exact when via extension, reconstructed otherwise)
+    - Key metadata: vaccineCode, occurrenceDateTime, relationship,
+      outcome text, statusReason, implicated references
+  It does NOT preserve raw FHIR arrays that were used to *infer* the
+  opinion (evidence[], protocolApplied[], condition[], complication[],
+  followUp[], derivedFrom[], etc.).  This is by design: these arrays
+  inform the uncertainty budget during ``from_fhir()`` and their
+  evidential weight is encoded in the resulting opinion.  Systems
+  needing the original FHIR arrays should retain the source resource.
 
 References:
   - HL7 FHIR R4: https://hl7.org/fhir/R4/
@@ -33,6 +51,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
 
 from jsonld_ex.confidence_algebra import (
@@ -42,6 +61,7 @@ from jsonld_ex.confidence_algebra import (
     robust_fuse,
     pairwise_conflict,
 )
+from jsonld_ex.confidence_decay import decay_opinion
 from jsonld_ex.owl_interop import ConversionReport
 
 # ── Namespace & Version Constants ──────────────────────────────────
@@ -418,6 +438,111 @@ _CLINICAL_IMPRESSION_STATUS_MULTIPLIER: dict[str, float] = {
     "entered-in-error": 5.0, # data integrity compromised
 }
 
+# ── Phase 3: DetectedIssue severity → alert confidence ────────────
+#
+# severity codes represent how clinically significant the detected
+# issue is.  We map to probability-of-clinical-significance:
+#   high     → 0.90  (likely clinically significant, warrants action)
+#   moderate → 0.60  (possibly significant, review recommended)
+#   low      → 0.30  (unlikely significant, informational)
+
+_DETECTED_ISSUE_SEVERITY_PROBABILITY: dict[str, float] = {
+    "high": 0.90,
+    "moderate": 0.60,
+    "low": 0.30,
+}
+
+_DETECTED_ISSUE_SEVERITY_UNCERTAINTY: dict[str, float] = {
+    "high": 0.15,
+    "moderate": 0.25,
+    "low": 0.20,
+}
+
+# ── Phase 3: Immunization status → seroconversion confidence ─────
+#
+# Immunization.status captures whether the vaccine was administered.
+# The opinion proposition: "patient has been effectively immunized."
+#   completed        → 0.85  (vaccine administered)
+#   not-done         → 0.05  (vaccine not administered)
+#   entered-in-error → 0.50  (data integrity compromised)
+
+_IMMUNIZATION_STATUS_PROBABILITY: dict[str, float] = {
+    "completed": 0.85,
+    "not-done": 0.05,
+    "entered-in-error": 0.50,
+}
+
+_IMMUNIZATION_STATUS_UNCERTAINTY: dict[str, float] = {
+    "completed": 0.15,
+    "not-done": 0.10,
+    "entered-in-error": 0.70,
+}
+
+# ── Phase 3: FamilyMemberHistory ──────────────────────────────────
+#
+# Family history is inherently uncertain — patient-reported data
+# subject to recall bias, incomplete knowledge, and communication
+# errors.  The base uncertainty is intentionally higher than other
+# resources to reflect this epistemic reality.
+
+FAMILY_HISTORY_DEFAULT_UNCERTAINTY: float = 0.30
+"""Default uncertainty budget for FamilyMemberHistory opinions.
+
+Higher than the standard 0.15 default to reflect the inherent
+unreliability of patient-reported family health history.  Recall
+bias, incomplete knowledge of family members' health, and
+communication errors all contribute to elevated baseline uncertainty.
+"""
+
+_FAMILY_HISTORY_STATUS_PROBABILITY: dict[str, float] = {
+    "completed": 0.70,        # full history reported
+    "partial": 0.50,          # incomplete history
+    "health-unknown": 0.30,   # family health not known
+    "entered-in-error": 0.50, # data integrity compromised
+}
+
+_FAMILY_HISTORY_STATUS_UNCERTAINTY: dict[str, float] = {
+    "completed": 0.25,
+    "partial": 0.40,
+    "health-unknown": 0.55,
+    "entered-in-error": 0.70,
+}
+
+# ── Phase 3: Procedure status → outcome confidence ───────────────
+#
+# Procedure.status captures the lifecycle of a clinical procedure.
+# The opinion proposition: "the procedure was successfully performed."
+#   completed        → 0.85  (procedure done)
+#   in-progress      → 0.60  (still underway, outcome uncertain)
+#   not-done         → 0.05  (procedure not performed)
+#   entered-in-error → 0.50  (data integrity compromised)
+#   preparation      → 0.50  (not yet started)
+#   on-hold          → 0.40  (paused)
+#   stopped          → 0.20  (discontinued before completion)
+#   unknown          → 0.50  (no information)
+
+_PROCEDURE_STATUS_PROBABILITY: dict[str, float] = {
+    "completed": 0.85,
+    "in-progress": 0.60,
+    "not-done": 0.05,
+    "entered-in-error": 0.50,
+    "preparation": 0.50,
+    "on-hold": 0.40,
+    "stopped": 0.20,
+    "unknown": 0.50,
+}
+
+_PROCEDURE_STATUS_UNCERTAINTY: dict[str, float] = {
+    "completed": 0.15,
+    "in-progress": 0.35,
+    "not-done": 0.10,
+    "entered-in-error": 0.70,
+    "preparation": 0.40,
+    "on-hold": 0.30,
+    "stopped": 0.20,
+    "unknown": 0.45,
+}
+
 
 _SUPPORTED_RESOURCE_TYPES = frozenset({
     # Phase 1
@@ -429,6 +554,11 @@ _SUPPORTED_RESOURCE_TYPES = frozenset({
     "AllergyIntolerance",
     "MedicationStatement",
     "ClinicalImpression",
+    # Phase 3
+    "DetectedIssue",
+    "Immunization",
+    "FamilyMemberHistory",
+    "Procedure",
 })
 
 
@@ -1074,6 +1204,398 @@ def _from_clinical_impression_r4(
     return doc, report
 
 
+# ── DetectedIssue handler (from_fhir) ─────────────────────────────
+
+
+def _from_detected_issue_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 DetectedIssue → jsonld-ex document.
+
+    DetectedIssue captures clinical alerts such as drug-drug
+    interactions, duplicate therapy, and dose range violations.
+    The opinion proposition is: "this detected issue is clinically
+    significant and warrants action."
+
+    Primary field: ``severity`` (high/moderate/low) maps to
+    probability of clinical significance.  ``status`` modulates
+    uncertainty via the standard multiplier.  ``evidence[]`` count
+    provides an evidence signal.
+    """
+    status = resource.get("status")
+    severity = resource.get("severity")
+
+    # Count evidence items
+    evidence = resource.get("evidence")
+    evidence_count = len(evidence) if evidence is not None else None
+
+    # Capture implicated references
+    implicated = resource.get("implicated", [])
+    implicated_refs = [
+        r.get("reference", "") for r in implicated if isinstance(r, dict)
+    ]
+
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    # Try extension recovery on severity
+    if severity is not None:
+        sev_ext = resource.get("_severity")
+        recovered = _try_recover_opinion(sev_ext)
+
+        if recovered is not None:
+            opinions.append({
+                "field": "severity",
+                "value": severity,
+                "opinion": recovered,
+                "source": "extension",
+            })
+        else:
+            prob = _DETECTED_ISSUE_SEVERITY_PROBABILITY.get(severity, 0.50)
+            default_u = _DETECTED_ISSUE_SEVERITY_UNCERTAINTY.get(severity, 0.25)
+            op = scalar_to_opinion(
+                prob,
+                status=status,
+                basis_count=evidence_count,
+                default_uncertainty=default_u,
+            )
+            opinions.append({
+                "field": "severity",
+                "value": severity,
+                "opinion": op,
+                "source": "reconstructed",
+            })
+        nodes_converted += 1
+    else:
+        # No severity — produce a default opinion from status alone
+        prob = 0.50
+        default_u = 0.30
+        op = scalar_to_opinion(
+            prob,
+            status=status,
+            basis_count=evidence_count,
+            default_uncertainty=default_u,
+        )
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+        nodes_converted += 1
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:DetectedIssue",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+    if implicated_refs:
+        doc["implicated_references"] = implicated_refs
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return doc, report
+
+
+# ── Immunization handler (from_fhir) ──────────────────────────────
+
+
+def _from_immunization_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 Immunization → jsonld-ex document.
+
+    Immunization captures vaccine administration events.  The opinion
+    proposition is: "the patient has been effectively immunized."
+
+    This produces the *base* seroconversion opinion only — temporal
+    decay for waning immunity is applied separately via
+    ``fhir_temporal_decay()``.  Some immunities are lifelong (e.g.
+    MMR after full series), so decay is not baked in here.
+
+    Primary field: ``status`` (completed/not-done/entered-in-error).
+    ``protocolApplied[]`` dose count modulates uncertainty — more
+    doses in a multi-dose series means stronger evidence of
+    effective immunization.
+    """
+    status = resource.get("status", "completed")
+
+    # Count protocol doses (evidence of series completion)
+    protocol = resource.get("protocolApplied")
+    dose_count = len(protocol) if protocol is not None else None
+
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    # Try extension recovery
+    status_ext = resource.get("_status")
+    recovered = _try_recover_opinion(status_ext)
+
+    if recovered is not None:
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": recovered,
+            "source": "extension",
+        })
+    else:
+        prob = _IMMUNIZATION_STATUS_PROBABILITY.get(status, 0.50)
+        default_u = _IMMUNIZATION_STATUS_UNCERTAINTY.get(status, 0.30)
+
+        # Protocol dose count signal: more doses → lower uncertainty
+        if dose_count is not None:
+            if dose_count == 0:
+                default_u *= 1.3
+            elif dose_count >= 3:
+                default_u *= 0.7
+            else:
+                default_u *= 0.9
+
+        op = scalar_to_opinion(prob, default_uncertainty=default_u)
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+    nodes_converted += 1
+
+    # Extract metadata for downstream use
+    vaccine_code = None
+    vc_obj = resource.get("vaccineCode")
+    if isinstance(vc_obj, dict):
+        vaccine_code = vc_obj.get("text")
+
+    status_reason = None
+    sr_obj = resource.get("statusReason")
+    if isinstance(sr_obj, dict):
+        status_reason = sr_obj.get("text")
+
+    occurrence_dt = resource.get("occurrenceDateTime")
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:Immunization",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+    if vaccine_code is not None:
+        doc["vaccineCode"] = vaccine_code
+    if status_reason is not None:
+        doc["statusReason"] = status_reason
+    if occurrence_dt is not None:
+        doc["occurrenceDateTime"] = occurrence_dt
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return doc, report
+
+
+# ── FamilyMemberHistory handler (from_fhir) ───────────────────────
+
+
+def _from_family_member_history_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 FamilyMemberHistory → jsonld-ex document.
+
+    FamilyMemberHistory is inherently uncertain — it captures
+    patient-reported family health history.  Self-reported data is
+    subject to recall bias, incomplete knowledge, and communication
+    errors.
+
+    The base uncertainty budget is ``FAMILY_HISTORY_DEFAULT_UNCERTAINTY``
+    (0.30), intentionally higher than the standard 0.15 default.
+
+    Primary field: ``status`` (completed/partial/health-unknown/
+    entered-in-error).  ``condition[]`` count provides an evidence
+    signal (more reported conditions → more complete picture).
+    ``dataAbsentReason`` explicitly marks missing data and increases
+    uncertainty.
+    """
+    status = resource.get("status", "completed")
+
+    # Count conditions (evidence of completeness)
+    conditions = resource.get("condition")
+    condition_count = len(conditions) if conditions is not None else None
+
+    # Check for dataAbsentReason
+    data_absent = resource.get("dataAbsentReason")
+    has_data_absent = data_absent is not None
+
+    # Extract relationship
+    rel_obj = resource.get("relationship", {})
+    relationship_text = rel_obj.get("text") if isinstance(rel_obj, dict) else None
+
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    # Try extension recovery
+    status_ext = resource.get("_status")
+    recovered = _try_recover_opinion(status_ext)
+
+    if recovered is not None:
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": recovered,
+            "source": "extension",
+        })
+    else:
+        prob = _FAMILY_HISTORY_STATUS_PROBABILITY.get(status, 0.50)
+        default_u = _FAMILY_HISTORY_STATUS_UNCERTAINTY.get(
+            status, FAMILY_HISTORY_DEFAULT_UNCERTAINTY
+        )
+
+        # Condition count signal
+        if condition_count is not None:
+            if condition_count == 0:
+                default_u *= 1.3
+            elif condition_count >= 3:
+                default_u *= 0.7
+            else:
+                default_u *= 0.9
+
+        # dataAbsentReason explicitly marks missing data
+        if has_data_absent:
+            default_u *= 1.3
+
+        op = scalar_to_opinion(prob, default_uncertainty=default_u)
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+    nodes_converted += 1
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:FamilyMemberHistory",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+    if relationship_text is not None:
+        doc["relationship"] = relationship_text
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return doc, report
+
+
+# ── Procedure handler (from_fhir) ─────────────────────────────────
+
+
+def _from_procedure_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 Procedure → jsonld-ex document.
+
+    Procedure captures clinical procedures with outcome assessment.
+    The opinion proposition is: "the procedure was successfully
+    performed (or is being successfully performed)."
+
+    Primary field: ``status`` (completed/in-progress/not-done/etc.).
+    ``outcome`` presence reduces uncertainty (documented result).
+    ``complication[]`` count increases uncertainty (ambiguous success).
+    ``followUp[]`` count reduces uncertainty (better assessment
+    quality from longer observation).
+    """
+    status = resource.get("status", "completed")
+
+    # Outcome presence
+    outcome_obj = resource.get("outcome")
+    has_outcome = outcome_obj is not None
+    outcome_text = None
+    if isinstance(outcome_obj, dict):
+        outcome_text = outcome_obj.get("text")
+
+    # Complication count
+    complications = resource.get("complication")
+    complication_count = len(complications) if complications is not None else None
+
+    # Follow-up count
+    follow_ups = resource.get("followUp")
+    followup_count = len(follow_ups) if follow_ups is not None else None
+
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    # Try extension recovery
+    status_ext = resource.get("_status")
+    recovered = _try_recover_opinion(status_ext)
+
+    if recovered is not None:
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": recovered,
+            "source": "extension",
+        })
+    else:
+        prob = _PROCEDURE_STATUS_PROBABILITY.get(status, 0.50)
+        default_u = _PROCEDURE_STATUS_UNCERTAINTY.get(status, 0.30)
+
+        # Outcome presence → documented result reduces uncertainty
+        if has_outcome:
+            default_u *= 0.7
+
+        # Complication count → ambiguous success increases uncertainty.
+        # We use discrete buckets rather than a continuous formula
+        # (e.g., u×(1+0.15×n)) to avoid unbounded uncertainty growth:
+        # a continuous formula with n=10 complications would yield
+        # u×2.5, potentially pushing uncertainty above 1.0 before
+        # clamping and distorting the opinion geometry.
+        if complication_count is not None:
+            if complication_count == 0:
+                # Explicitly no complications → slight reduction
+                default_u *= 0.9
+            elif complication_count >= 2:
+                default_u *= 1.5
+            else:
+                default_u *= 1.2
+
+        # Follow-up count → better observation reduces uncertainty
+        if followup_count is not None:
+            if followup_count == 0:
+                default_u *= 1.2
+            elif followup_count >= 2:
+                default_u *= 0.7
+            else:
+                default_u *= 0.9
+
+        op = scalar_to_opinion(prob, default_uncertainty=default_u)
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+    nodes_converted += 1
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:Procedure",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+    if outcome_text is not None:
+        doc["outcome"] = outcome_text
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return doc, report
+
+
 # ── from_fhir handler dispatch table ──────────────────────────────
 
 _RESOURCE_HANDLERS = {
@@ -1086,6 +1608,11 @@ _RESOURCE_HANDLERS = {
     "AllergyIntolerance": _from_allergy_intolerance_r4,
     "MedicationStatement": _from_medication_statement_r4,
     "ClinicalImpression": _from_clinical_impression_r4,
+    # Phase 3
+    "DetectedIssue": _from_detected_issue_r4,
+    "Immunization": _from_immunization_r4,
+    "FamilyMemberHistory": _from_family_member_history_r4,
+    "Procedure": _from_procedure_r4,
 }
 
 
@@ -1453,6 +1980,180 @@ def _to_clinical_impression_r4(
     return resource, report
 
 
+# ── DetectedIssue handler (to_fhir) ─────────────────────────────
+
+
+def _to_detected_issue_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex document → FHIR R4 DetectedIssue."""
+    resource: dict[str, Any] = {
+        "resourceType": "DetectedIssue",
+    }
+    if doc.get("id"):
+        resource["id"] = doc["id"]
+    if doc.get("status"):
+        resource["status"] = doc["status"]
+
+    # Restore implicated references
+    implicated_refs = doc.get("implicated_references", [])
+    if implicated_refs:
+        resource["implicated"] = [
+            {"reference": ref} for ref in implicated_refs
+        ]
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field_name = entry.get("field", "")
+        code = entry.get("value")
+
+        if field_name == "severity" and code is not None:
+            resource["severity"] = code
+            ext = opinion_to_fhir_extension(op)
+            resource["_severity"] = {"extension": [ext]}
+            nodes_converted += 1
+        elif field_name == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return resource, report
+
+
+# ── Immunization handler (to_fhir) ──────────────────────────────
+
+
+def _to_immunization_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex document → FHIR R4 Immunization."""
+    resource: dict[str, Any] = {
+        "resourceType": "Immunization",
+    }
+    if doc.get("id"):
+        resource["id"] = doc["id"]
+    if doc.get("status"):
+        resource["status"] = doc["status"]
+
+    # Restore vaccineCode
+    vaccine_code = doc.get("vaccineCode")
+    if vaccine_code is not None:
+        resource["vaccineCode"] = {"text": vaccine_code}
+
+    # Restore occurrenceDateTime
+    occurrence_dt = doc.get("occurrenceDateTime")
+    if occurrence_dt is not None:
+        resource["occurrenceDateTime"] = occurrence_dt
+
+    # Restore statusReason
+    status_reason = doc.get("statusReason")
+    if status_reason is not None:
+        resource["statusReason"] = {"text": status_reason}
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field_name = entry.get("field", "")
+
+        if field_name == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return resource, report
+
+
+# ── FamilyMemberHistory handler (to_fhir) ───────────────────────
+
+
+def _to_family_member_history_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex document → FHIR R4 FamilyMemberHistory."""
+    resource: dict[str, Any] = {
+        "resourceType": "FamilyMemberHistory",
+    }
+    if doc.get("id"):
+        resource["id"] = doc["id"]
+    if doc.get("status"):
+        resource["status"] = doc["status"]
+
+    # Restore relationship
+    relationship = doc.get("relationship")
+    if relationship is not None:
+        resource["relationship"] = {"text": relationship}
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field_name = entry.get("field", "")
+
+        if field_name == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return resource, report
+
+
+# ── Procedure handler (to_fhir) ─────────────────────────────────
+
+
+def _to_procedure_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex document → FHIR R4 Procedure."""
+    resource: dict[str, Any] = {
+        "resourceType": "Procedure",
+    }
+    if doc.get("id"):
+        resource["id"] = doc["id"]
+    if doc.get("status"):
+        resource["status"] = doc["status"]
+
+    # Restore outcome
+    outcome = doc.get("outcome")
+    if outcome is not None:
+        resource["outcome"] = {"text": outcome}
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field_name = entry.get("field", "")
+
+        if field_name == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return resource, report
+
+
 # ── to_fhir handler dispatch table ───────────────────────────────
 
 _TO_FHIR_HANDLERS = {
@@ -1465,6 +2166,11 @@ _TO_FHIR_HANDLERS = {
     "AllergyIntolerance": _to_allergy_intolerance_r4,
     "MedicationStatement": _to_medication_statement_r4,
     "ClinicalImpression": _to_clinical_impression_r4,
+    # Phase 3
+    "DetectedIssue": _to_detected_issue_r4,
+    "Immunization": _to_immunization_r4,
+    "FamilyMemberHistory": _to_family_member_history_r4,
+    "Procedure": _to_procedure_r4,
 }
 
 
@@ -1600,3 +2306,248 @@ def fhir_clinical_fuse(
     )
 
     return fused, report
+
+
+# ═════════════════════════════════════════════════════════════════
+# Phase 3: Clinical Decision Support — Temporal Decay
+# ═════════════════════════════════════════════════════════════════
+
+# Timestamp field priority: we search these keys in order to find
+# the most clinically relevant timestamp for a FHIR-derived document.
+_TIMESTAMP_FIELDS: tuple[str, ...] = (
+    "effectiveDateTime",   # Observation, DiagnosticReport
+    "occurrenceDateTime",  # Immunization, Procedure
+    "onsetDateTime",       # Condition, AllergyIntolerance
+    "recordedDate",        # Condition, AllergyIntolerance (fallback)
+    "date",                # ClinicalImpression, DetectedIssue
+    "assertedDate",        # AllergyIntolerance
+)
+
+
+def _extract_timestamp(doc: dict[str, Any]) -> datetime | None:
+    """Extract the best available timestamp from a jsonld-ex document.
+
+    Searches ``_TIMESTAMP_FIELDS`` in priority order and returns the
+    first successfully parsed ISO-8601 datetime.  Returns ``None``
+    if no parseable timestamp is found.
+    """
+    for field_name in _TIMESTAMP_FIELDS:
+        raw = doc.get(field_name)
+        if raw is None:
+            continue
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            # Ensure timezone-aware
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except (ValueError, AttributeError):
+            continue
+    return None
+
+
+def fhir_temporal_decay(
+    doc: dict[str, Any],
+    *,
+    reference_time: str | None = None,
+    half_life_days: float = 365.0,
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Apply temporal decay to all opinions in a FHIR-derived document.
+
+    Clinical evidence ages: a lab result from last week is more
+    relevant than one from two years ago.  This function bridges
+    the jsonld-ex ``decay_opinion()`` operator to FHIR resource
+    timestamps, producing a new document whose opinions reflect
+    evidential aging.
+
+    The decay model is exponential by default: after one half-life,
+    belief and disbelief are halved, with the freed mass migrating
+    to uncertainty.  The belief/disbelief *ratio* is preserved —
+    we forget *how much* evidence we had, not *which direction* it
+    pointed.
+
+    Args:
+        doc:             A jsonld-ex document (output of ``from_fhir()``).
+        reference_time:  ISO-8601 datetime string for "now".
+                         Defaults to ``datetime.now(timezone.utc)``.
+        half_life_days:  Time (in days) for belief/disbelief to halve.
+                         Default 365 days (1 year).  Shorter values
+                         model fast-changing evidence (e.g., vital
+                         signs → hours); longer values model stable
+                         evidence (e.g., genetic tests → decades).
+
+    Returns:
+        ``(decayed_doc, report)`` where ``decayed_doc`` is a deep
+        copy with all opinions decayed, and ``report`` contains
+        success status and any warnings.
+
+    Notes:
+        - If no timestamp is found, the document is returned
+          unchanged with a warning.
+        - If the timestamp is in the future (relative to
+          ``reference_time``), the document is returned unchanged
+          with a warning.
+        - The original document is never mutated.
+    """
+    # Parse reference time
+    if reference_time is not None:
+        ref_dt = datetime.fromisoformat(
+            reference_time.replace("Z", "+00:00")
+        )
+        if ref_dt.tzinfo is None:
+            ref_dt = ref_dt.replace(tzinfo=timezone.utc)
+    else:
+        ref_dt = datetime.now(timezone.utc)
+
+    # Deep-copy to avoid mutating the original
+    result = copy.deepcopy(doc)
+    warnings: list[str] = []
+
+    # Extract timestamp
+    doc_dt = _extract_timestamp(result)
+
+    if doc_dt is None:
+        warnings.append(
+            "No parseable timestamp found in document; "
+            "opinions returned unchanged."
+        )
+        report = ConversionReport(
+            success=True,
+            warnings=warnings,
+        )
+        return result, report
+
+    # Compute elapsed time in days
+    elapsed_seconds = (ref_dt - doc_dt).total_seconds()
+
+    if elapsed_seconds < 0:
+        warnings.append(
+            f"Document timestamp ({doc_dt.isoformat()}) is in the "
+            f"future relative to reference_time "
+            f"({ref_dt.isoformat()}); opinions returned unchanged."
+        )
+        report = ConversionReport(
+            success=True,
+            warnings=warnings,
+        )
+        return result, report
+
+    elapsed_days = elapsed_seconds / 86400.0
+
+    # Apply decay to each opinion
+    opinions = result.get("opinions", [])
+    for entry in opinions:
+        op = entry["opinion"]
+        decayed_op = decay_opinion(
+            op,
+            elapsed=elapsed_days,
+            half_life=half_life_days,
+        )
+        entry["opinion"] = decayed_op
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=len(opinions),
+        warnings=warnings,
+    )
+    return result, report
+
+
+# ═════════════════════════════════════════════════════════════════
+# Phase 3: Clinical Decision Support — Escalation Policy
+# ═════════════════════════════════════════════════════════════════
+
+
+def _primary_opinion(doc: dict[str, Any]) -> Opinion | None:
+    """Extract the first opinion from a jsonld-ex document, or None."""
+    opinions = doc.get("opinions", [])
+    if not opinions:
+        return None
+    return opinions[0].get("opinion")
+
+
+def fhir_escalation_policy(
+    resources: list[dict[str, Any]],
+    *,
+    escalation_threshold: float = 0.7,
+    conflict_threshold: float = 0.3,
+) -> dict[str, list[dict[str, Any]]]:
+    """Categorise jsonld-ex documents into clinical triage buckets.
+
+    Implements confidence-based triage for clinical decision support.
+    Each document is routed to exactly one bucket based on its
+    primary opinion's belief/disbelief/uncertainty profile.
+
+    Buckets:
+        ``auto_accept``
+            High belief (≥ escalation_threshold) and low disbelief.
+            Safe to act on without clinician review.
+        ``human_review``
+            Moderate confidence.  Needs clinician review before
+            action.  This is the default bucket for ambiguous cases.
+        ``reject``
+            High disbelief (≥ escalation_threshold).  Evidence
+            contradicts the claim; should not be acted on.
+        ``escalate``
+            High pairwise conflict between any two documents
+            (≥ conflict_threshold).  Contradictory evidence requires
+            specialist review.
+
+    Args:
+        resources:            List of jsonld-ex documents.
+        escalation_threshold: Belief/disbelief threshold for
+                              auto_accept/reject (default 0.7).
+        conflict_threshold:   Pairwise conflict threshold for
+                              escalation (default 0.3).
+
+    Returns:
+        Dict with keys ``auto_accept``, ``human_review``, ``reject``,
+        ``escalate``.  Each value is a list of documents.
+    """
+    result: dict[str, list[dict[str, Any]]] = {
+        "auto_accept": [],
+        "human_review": [],
+        "reject": [],
+        "escalate": [],
+    }
+
+    if not resources:
+        return result
+
+    # First pass: detect pairwise conflicts for escalation
+    escalated_indices: set[int] = set()
+    opinions_list: list[Opinion | None] = [
+        _primary_opinion(doc) for doc in resources
+    ]
+
+    for i in range(len(resources)):
+        for j in range(i + 1, len(resources)):
+            op_i = opinions_list[i]
+            op_j = opinions_list[j]
+            if op_i is None or op_j is None:
+                continue
+            conflict = pairwise_conflict(op_i, op_j)
+            if conflict >= conflict_threshold:
+                escalated_indices.add(i)
+                escalated_indices.add(j)
+
+    # Second pass: categorise each document
+    for idx, doc in enumerate(resources):
+        if idx in escalated_indices:
+            result["escalate"].append(doc)
+            continue
+
+        op = opinions_list[idx]
+        if op is None:
+            # No opinion → human review by default
+            result["human_review"].append(doc)
+            continue
+
+        if op.disbelief >= escalation_threshold:
+            result["reject"].append(doc)
+        elif op.belief >= escalation_threshold:
+            result["auto_accept"].append(doc)
+        else:
+            result["human_review"].append(doc)
+
+    return result

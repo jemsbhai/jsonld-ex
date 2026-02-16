@@ -210,6 +210,8 @@ try:
         FusionReport,
         FHIR_EXTENSION_URL,
         SUPPORTED_FHIR_VERSIONS,
+        fhir_temporal_decay,
+        fhir_escalation_policy,
     )
 except ImportError:
     pass
@@ -400,4 +402,6 @@ __all__ = [
     "FusionReport",
     "FHIR_EXTENSION_URL",
     "SUPPORTED_FHIR_VERSIONS",
+    "fhir_temporal_decay",
+    "fhir_escalation_policy",
 ]
