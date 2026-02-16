@@ -36,7 +36,9 @@ from jsonld_ex.confidence_algebra import Opinion
 from jsonld_ex.compliance_algebra import (
     ComplianceOpinion,
     consent_validity,
+    expiry_trigger,
     jurisdictional_meet,
+    regulatory_change_trigger,
     withdrawal_override,
 )
 from jsonld_ex.fhir_interop._constants import (
@@ -211,6 +213,7 @@ def opinion_to_fhir_consent(
     scope: Optional[str] = None,
     policy_rule: Optional[str] = None,
     resource_id: Optional[str] = None,
+    date_time: Optional[str] = None,
     fhir_version: str = "R4",
 ) -> dict[str, Any]:
     """Convert a ComplianceOpinion to a FHIR R4 Consent resource.
@@ -226,6 +229,7 @@ def opinion_to_fhir_consent(
         scope: Optional scope code (e.g. "patient-privacy").
         policy_rule: Optional policy rule code (e.g. "HIPAA").
         resource_id: Optional resource id.
+        date_time: Optional ISO date/dateTime string.
         fhir_version: FHIR version (currently only "R4").
 
     Returns:
@@ -261,6 +265,8 @@ def opinion_to_fhir_consent(
 
     if resource_id is not None:
         resource["id"] = resource_id
+    if date_time is not None:
+        resource["dateTime"] = date_time
     if patient is not None:
         resource["patient"] = {"reference": patient}
     if policy_rule is not None:
@@ -580,3 +586,155 @@ def fhir_multi_site_meet(
         opinions.append(fhir_consent_to_opinion(res))
 
     return jurisdictional_meet(*opinions)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# fhir_consent_expiry() — provision.period.end → expiry_trigger
+# ═══════════════════════════════════════════════════════════════════
+
+
+def fhir_consent_expiry(
+    resource: dict[str, Any],
+    assessment_time: str,
+    *,
+    residual_factor: float = 0.0,
+    fhir_version: str = "R4",
+) -> ComplianceOpinion:
+    """Bridge FHIR Consent provision.period.end to expiry_trigger.
+
+    Per compliance_algebra.md §8.2 (Definition 12):
+    At trigger time t_T, lawfulness transfers to violation (not
+    uncertainty). An expired consent is a known fact.
+
+    FHIR mapping:
+      provision.period.end → trigger time (t_T)
+      assessment_time      → evaluation time (t)
+
+    If the consent has no provision.period or no period.end, the
+    consent is treated as non-expiring and the opinion is returned
+    unchanged.
+
+    Theorem 4 properties:
+      (b) Constraint preservation: l' + v' + u' = 1
+      (c) Monotonicity: l' ≤ l, v' ≥ v, u' = u
+      (d) Hard expiry: γ=0 → l'=0, v'=v+l
+
+    Args:
+        resource:        A FHIR R4 Consent resource dict.
+        assessment_time: ISO date string for evaluation time.
+        residual_factor: γ ∈ [0, 1], fraction of lawfulness retained
+                         post-expiry. Default 0.0 (hard expiry).
+        fhir_version:    FHIR version (currently only "R4").
+
+    Returns:
+        ComplianceOpinion after applying expiry (if triggered).
+
+    Raises:
+        ValueError: If resource is not a Consent.
+    """
+    _validate_consent_resource(resource)
+
+    consent_op = fhir_consent_to_opinion(resource)
+
+    # Extract provision.period.end
+    provision = resource.get("provision")
+    if not isinstance(provision, dict):
+        return consent_op
+
+    period = provision.get("period")
+    if not isinstance(period, dict):
+        return consent_op
+
+    end_str = period.get("end")
+    if end_str is None:
+        return consent_op
+
+    t_assess = _parse_date(assessment_time)
+    t_expiry = _parse_date(end_str)
+
+    if t_assess is None or t_expiry is None:
+        return consent_op
+
+    return expiry_trigger(
+        opinion=consent_op,
+        assessment_time=float(t_assess.toordinal()),
+        trigger_time=float(t_expiry.toordinal()),
+        residual_factor=residual_factor,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# fhir_consent_regulatory_change()
+# ═══════════════════════════════════════════════════════════════════
+
+
+def fhir_consent_regulatory_change(
+    old_consent: dict[str, Any],
+    new_consent: dict[str, Any],
+    assessment_time: str,
+    *,
+    fhir_version: str = "R4",
+) -> ComplianceOpinion:
+    """Bridge FHIR Consent policyRule transition to regulatory_change_trigger.
+
+    Per compliance_algebra.md §8.2 (Definition 14):
+    At trigger time, the compliance opinion is replaced by a new
+    assessment reflecting the changed legal framework. Same
+    proposition-replacement semantics as withdrawal_override.
+
+    FHIR mapping:
+      old_consent.dateTime  → original assessment time
+      new_consent.dateTime  → regulatory change time (t_T)
+      assessment_time       → evaluation time (t)
+
+    Pre-trigger (t < t_T): old consent's opinion applies.
+    Post-trigger (t ≥ t_T): new consent's opinion applies.
+
+    Theorem 4(e): trigger ordering is non-commutative — the order
+    of regulatory events matters.
+
+    Args:
+        old_consent:     FHIR Consent under previous regulation.
+        new_consent:     FHIR Consent under new regulation, with
+                         dateTime representing the change time.
+        assessment_time: ISO date string for evaluation time.
+        fhir_version:    FHIR version (currently only "R4").
+
+    Returns:
+        ComplianceOpinion — old if t < t_T, new if t ≥ t_T.
+
+    Raises:
+        ValueError: If either consent lacks dateTime or resourceType.
+    """
+    _validate_consent_resource(old_consent)
+    _validate_consent_resource(new_consent)
+
+    old_dt = old_consent.get("dateTime")
+    new_dt = new_consent.get("dateTime")
+
+    if old_dt is None:
+        raise ValueError(
+            "Old consent must have a 'dateTime' field"
+        )
+    if new_dt is None:
+        raise ValueError(
+            "New consent must have a 'dateTime' field"
+        )
+
+    t_assess = _parse_date(assessment_time)
+    t_change = _parse_date(new_dt)
+
+    if t_assess is None:
+        raise ValueError("assessment_time must be a valid ISO date string")
+    if t_change is None:
+        raise ValueError("New consent dateTime must be a valid date")
+
+    old_op = fhir_consent_to_opinion(old_consent)
+    new_op = fhir_consent_to_opinion(new_consent)
+
+    return regulatory_change_trigger(
+        opinion=old_op,
+        assessment_time=float(t_assess.toordinal()),
+        trigger_time=float(t_change.toordinal()),
+        new_opinion=new_op,
+    )

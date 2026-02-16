@@ -79,6 +79,8 @@ from jsonld_ex.fhir_interop._compliance import (
     fhir_consent_validity,
     fhir_consent_withdrawal,
     fhir_multi_site_meet,
+    fhir_consent_expiry,
+    fhir_consent_regulatory_change,
 )
 
 __all__ = [
@@ -100,6 +102,8 @@ __all__ = [
     "fhir_consent_validity",
     "fhir_consent_withdrawal",
     "fhir_multi_site_meet",
+    "fhir_consent_expiry",
+    "fhir_consent_regulatory_change",
     "CONSENT_STATUS_PROBABILITY",
     "CONSENT_STATUS_UNCERTAINTY",
 ]
