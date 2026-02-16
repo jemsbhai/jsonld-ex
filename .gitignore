@@ -22,7 +22,11 @@ Thumbs.db
 benchmarks/results/*_latest.*
 .hypothesis/
 
+# Internal/private documents — NOT for public repo
 docs/experiment_collation.md
+docs/neurips_experiment_roadmap.md
+benchmarks/E*_*.md
+DOCS_PLAN.md
 
 # Experiment artifacts (notebooks tracked selectively, not outputs)
 experiments/**/*.csv
