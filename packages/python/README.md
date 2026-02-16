@@ -3,7 +3,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/jsonld-ex)](https://pypi.org/project/jsonld-ex/)
 [![Python](https://img.shields.io/pypi/pyversions/jsonld-ex)](https://pypi.org/project/jsonld-ex/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1396%2B%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-2025%2B%20passing-brightgreen)]()
 
 **JSON-LD 1.2 Extensions for AI/ML Data Exchange, Security, and Validation**
 
@@ -60,14 +60,16 @@ print(f"Fused: b={fused.belief:.3f}, u={fused.uncertainty:.3f}")
 
 ## Features
 
-jsonld-ex provides **15 modules** organized into four extension categories:
+jsonld-ex provides **23 modules** organized into six extension categories:
 
 | Category | Modules | Purpose |
 |----------|---------|---------|
-| **AI/ML Data Modeling** | ai_ml, confidence_algebra, confidence_bridge, confidence_decay, inference, vector | Confidence scores, Subjective Logic, provenance, embeddings |
-| **Security Hardening** | security, validation | Context integrity, allowlists, resource limits, native shapes |
-| **Data Protection** | data_protection | GDPR/privacy compliance, consent lifecycle, data classification |
-| **Interoperability** | owl_interop, temporal, merge, processor, cbor_ld, mqtt | PROV-O, SHACL, OWL, RDF-Star, temporal queries, IoT transport |
+| **AI/ML Data Modeling** | ai_ml, confidence_algebra, confidence_bridge, confidence_decay, inference, vector, similarity | Confidence scores, Subjective Logic, provenance, embeddings, 7+10 similarity metrics, advisory system |
+| **Compliance & Privacy** | compliance_algebra, data_protection, data_rights, dpv_interop | GDPR regulatory algebra, consent lifecycle, data subject rights (Art. 15–20), W3C DPV v2.2 |
+| **Security & Validation** | security, validation | Context integrity, allowlists, resource limits, native shapes with `@if`/`@then`, `@extends` |
+| **Interoperability** | owl_interop, dataset, context | PROV-O, SHACL, OWL, RDF-Star, SSN/SOSA, Croissant, context versioning |
+| **Graph & Temporal** | merge, temporal, batch | Graph merge/diff, time-aware queries, batch operations |
+| **Transport** | cbor_ld, mqtt, processor | CBOR-LD binary serialization, MQTT topic/QoS derivation, core processing |
 
 ---
 
@@ -279,7 +281,7 @@ result = validate_node(
 # result.errors[0].message → age exceeds @maximum
 ```
 
-Supported constraints: `@required`, `@type`, `@minimum`, `@maximum`, `@minLength`, `@maxLength`, `@pattern`.
+Supported constraints: `@required`, `@type`, `@minimum`, `@maximum`, `@minLength`, `@maxLength`, `@pattern`, `@minCount`, `@maxCount`, `@in`/`@enum`, `@and`/`@or`/`@not` (logical combinators), `@if`/`@then`/`@else` (conditional), `@extends` (shape inheritance), nested shapes, and configurable severity levels.
 
 ## Data Protection & Privacy Compliance
 
@@ -483,7 +485,7 @@ qos_info = derive_mqtt_qos_detailed(document)
 
 ## MCP Server
 
-jsonld-ex includes a [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes all library capabilities as **41 tools** for LLM agents. The server is stateless and read-only — safe for autonomous agent use.
+jsonld-ex includes a [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes all library capabilities as **53 tools** for LLM agents. The server is stateless and read-only — safe for autonomous agent use.
 
 ### Setup
 
@@ -519,12 +521,13 @@ python -m jsonld_ex.mcp --http
 | 3 | Confidence Bridge | 2 | Scalar-to-opinion conversion and fusion |
 | 4 | Inference | 4 | Chain propagation, source combination, conflict resolution |
 | 5 | Security | 5 | Integrity hashing, allowlists, validation, resource limits |
-| 6 | Vector Operations | 2 | Cosine similarity, vector validation |
+| 6 | Vector / Similarity | 4 | Cosine similarity, vector validation, multi-metric comparison, metric listing |
 | 7 | Graph Operations | 2 | Merge and diff JSON-LD graphs |
 | 8 | Temporal | 3 | Point-in-time queries, annotations, temporal diff |
 | 9 | Interop / Standards | 8 | PROV-O, SHACL, OWL, RDF-Star conversion and comparison |
 | 10 | MQTT / IoT | 4 | Encode, decode, topic derivation, QoS mapping |
-| | **Total** | **41** | |
+| 11 | Compliance Algebra | 10 | GDPR: jurisdictional meet, consent, propagation, triggers, erasure |
+| | **Total** | **53** | |
 
 ### Tool Details
 
@@ -599,20 +602,37 @@ python -m jsonld_ex.mcp --http
 - **`mqtt_derive_topic`** — Derive a hierarchical MQTT topic from document metadata.
 - **`mqtt_derive_qos`** — Map confidence metadata to MQTT QoS level (0/1/2).
 
-### Resources (3)
+#### Compliance Algebra (10 tools)
+
+- **`create_compliance_opinion`** — Create a compliance opinion ω = (l, v, u, a) modeling regulatory compliance as uncertain state.
+- **`jurisdictional_meet`** — Conjunctive composition across multiple regulatory jurisdictions (e.g., GDPR + CCPA).
+- **`compliance_propagation`** — Propagate compliance through data derivation steps with multiplicative degradation.
+- **`consent_validity`** — Assess GDPR Art. 7 consent validity via six-condition composition.
+- **`withdrawal_override`** — Apply consent withdrawal override with proposition replacement (Art. 7(3)).
+- **`expiry_trigger`** — Asymmetric lawfulness→violation transition at expiry (retention deadlines, consent expiry).
+- **`review_due_trigger`** — Accelerated decay toward vacuity for missed mandatory reviews (Art. 35(11)).
+- **`regulatory_change_trigger`** — Proposition replacement at regulatory change events.
+- **`erasure_scope_opinion`** — Composite erasure completeness across data lineage (Art. 17).
+- **`residual_contamination`** — Contamination risk from incomplete erasure in ancestor nodes.
+
+### Resources (5)
 
 | URI | Description |
 |-----|-------------|
 | `jsonld-ex://context/ai-ml` | JSON-LD context for AI/ML annotation extensions |
 | `jsonld-ex://context/security` | JSON-LD context for security extensions |
+| `jsonld-ex://context/compliance` | JSON-LD context for compliance algebra extensions |
 | `jsonld-ex://schema/opinion` | JSON Schema for a Subjective Logic opinion object |
+| `jsonld-ex://schema/compliance-opinion` | JSON Schema for a Compliance Algebra opinion object |
 
-### Prompts (2)
+### Prompts (4)
 
 | Prompt | Description |
 |--------|-------------|
 | `annotate_tool_results` | Guided workflow for adding provenance annotations to any MCP tool output |
 | `trust_chain_analysis` | Step-by-step workflow for multi-hop trust propagation analysis |
+| `gdpr_compliance_assessment` | Multi-jurisdictional GDPR compliance assessment workflow |
+| `consent_lifecycle` | Full consent lifecycle management for a processing purpose |
 
 ---
 
