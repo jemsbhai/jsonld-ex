@@ -25,6 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write # Required for PyPI trusted publishing
+      attestations: write # Required for verified details on PyPI
     steps:
       - uses: actions/checkout@v4
 
@@ -43,3 +44,4 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: packages/python/dist/
+          attestations: true
