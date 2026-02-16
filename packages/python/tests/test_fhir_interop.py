@@ -4538,3 +4538,187 @@ class TestFhirEscalationPolicy:
         assert total == len(docs), (
             f"Expected {len(docs)} documents across buckets, got {total}"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Regression: Consent dispatch via from_fhir / to_fhir
+#
+# Consent is in SUPPORTED_RESOURCE_TYPES but was missing from
+# _RESOURCE_HANDLERS / _TO_FHIR_HANDLERS, causing a KeyError.
+# These tests verify the fix integrates Consent into the uniform
+# from_fhir / to_fhir API by delegating to _constants mappings.
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _consent(*, status="active", scope_code="patient-privacy", patient_ref=None):
+    """Build a minimal FHIR R4 Consent resource for testing."""
+    resource = {
+        "resourceType": "Consent",
+        "id": f"consent-{status}-1",
+        "status": status,
+    }
+    if scope_code is not None:
+        resource["scope"] = {"coding": [{"code": scope_code}]}
+    if patient_ref is not None:
+        resource["patient"] = {"reference": patient_ref}
+    return resource
+
+
+class TestConsentFromFhirDispatch:
+    """Regression: Consent must work through from_fhir() uniformly."""
+
+    def test_from_fhir_consent_does_not_keyerror(self):
+        """from_fhir() must not raise KeyError for Consent resources."""
+        consent = _consent(status="active")
+        doc, report = from_fhir(consent)
+        assert report.success is True
+        assert doc["@type"] == "fhir:Consent"
+
+    def test_from_fhir_consent_produces_opinion(self):
+        """Consent conversion via from_fhir() should produce an opinion."""
+        doc, report = from_fhir(_consent(status="active"))
+        assert len(doc.get("opinions", [])) >= 1
+        op = doc["opinions"][0]["opinion"]
+        assert isinstance(op, Opinion)
+        assert abs(op.belief + op.disbelief + op.uncertainty - 1.0) < 1e-9
+
+    def test_from_fhir_consent_active_high_belief(self):
+        """Active consent should produce high belief (lawfulness)."""
+        doc, _ = from_fhir(_consent(status="active"))
+        op = doc["opinions"][0]["opinion"]
+        assert op.belief > 0.60
+
+    def test_from_fhir_consent_rejected_low_belief(self):
+        """Rejected consent should produce low belief."""
+        doc, _ = from_fhir(_consent(status="rejected"))
+        op = doc["opinions"][0]["opinion"]
+        assert op.belief < 0.20
+
+    def test_from_fhir_consent_draft_high_uncertainty(self):
+        """Draft consent should produce high uncertainty."""
+        doc, _ = from_fhir(_consent(status="draft"))
+        op = doc["opinions"][0]["opinion"]
+        assert op.uncertainty >= 0.30
+
+    def test_from_fhir_consent_preserves_id(self):
+        """Resource id is preserved through from_fhir."""
+        doc, _ = from_fhir(_consent(status="active"))
+        assert doc["id"] == "consent-active-1"
+
+    def test_from_fhir_consent_preserves_status(self):
+        """Status string is preserved in the doc."""
+        doc, _ = from_fhir(_consent(status="inactive"))
+        assert doc["status"] == "inactive"
+
+    def test_from_fhir_consent_scope_preserved(self):
+        """Scope code is preserved when present."""
+        doc, _ = from_fhir(_consent(scope_code="research"))
+        assert doc.get("scope") == "research"
+
+    def test_from_fhir_consent_extension_roundtrip(self):
+        """Opinion recovered from extension takes precedence over reconstruction."""
+        injected = Opinion(belief=0.80, disbelief=0.05, uncertainty=0.15)
+        ext = opinion_to_fhir_extension(injected)
+        consent = _consent(status="active")
+        consent["_status"] = {"extension": [ext]}
+        doc, _ = from_fhir(consent)
+        op = doc["opinions"][0]["opinion"]
+        assert abs(op.belief - 0.80) < 1e-9
+        assert abs(op.disbelief - 0.05) < 1e-9
+        assert doc["opinions"][0]["source"] == "extension"
+
+    def test_from_fhir_consent_all_statuses(self):
+        """Every known Consent status produces a valid opinion."""
+        for status in ("active", "inactive", "draft", "proposed",
+                       "rejected", "entered-in-error"):
+            doc, report = from_fhir(_consent(status=status))
+            assert report.success is True
+            assert len(doc["opinions"]) >= 1
+            op = doc["opinions"][0]["opinion"]
+            assert abs(op.belief + op.disbelief + op.uncertainty - 1.0) < 1e-9, (
+                f"Opinion for status '{status}' does not sum to 1.0"
+            )
+
+
+class TestConsentToFhirDispatch:
+    """Regression: Consent must work through to_fhir() uniformly."""
+
+    def test_to_fhir_consent_basic(self):
+        """to_fhir produces a valid Consent resource."""
+        op = Opinion(belief=0.80, disbelief=0.05, uncertainty=0.15)
+        doc = {
+            "@type": "fhir:Consent",
+            "id": "consent-out-1",
+            "status": "active",
+            "opinions": [{"field": "status", "value": "active", "opinion": op}],
+        }
+        resource, report = to_fhir(doc)
+        assert resource["resourceType"] == "Consent"
+        assert resource["id"] == "consent-out-1"
+        assert resource["status"] == "active"
+        assert report.success is True
+
+    def test_to_fhir_consent_embeds_extension(self):
+        """to_fhir embeds the opinion as a FHIR extension on _status."""
+        op = Opinion(belief=0.70, disbelief=0.10, uncertainty=0.20)
+        doc = {
+            "@type": "fhir:Consent",
+            "id": "consent-ext-1",
+            "status": "active",
+            "opinions": [{"field": "status", "value": "active", "opinion": op}],
+        }
+        resource, _ = to_fhir(doc)
+        assert "_status" in resource
+        exts = resource["_status"]["extension"]
+        assert len(exts) == 1
+        assert exts[0]["url"] == FHIR_EXTENSION_URL
+
+    def test_to_fhir_consent_scope_preserved(self):
+        """Scope is preserved in to_fhir output when present in doc."""
+        op = Opinion(belief=0.80, disbelief=0.05, uncertainty=0.15)
+        doc = {
+            "@type": "fhir:Consent",
+            "id": "consent-scope-1",
+            "status": "active",
+            "scope": "patient-privacy",
+            "opinions": [{"field": "status", "value": "active", "opinion": op}],
+        }
+        resource, _ = to_fhir(doc)
+        assert resource.get("scope") == {"coding": [{"code": "patient-privacy"}]}
+
+    def test_from_fhir_to_fhir_roundtrip(self):
+        """Consent survives from_fhir → to_fhir round-trip."""
+        consent_in = _consent(status="active", scope_code="patient-privacy")
+        doc, _ = from_fhir(consent_in)
+        resource_out, _ = to_fhir(doc)
+        assert resource_out["resourceType"] == "Consent"
+        assert resource_out["id"] == "consent-active-1"
+        assert resource_out["status"] == "active"
+        # Extension must be present for opinion recovery
+        assert "_status" in resource_out
+
+    def test_roundtrip_opinion_fidelity(self):
+        """Opinion tuple survives full round-trip with extension recovery."""
+        consent_in = _consent(status="active")
+        doc1, _ = from_fhir(consent_in)
+        resource_mid, _ = to_fhir(doc1)
+        doc2, _ = from_fhir(resource_mid)
+        op1 = doc1["opinions"][0]["opinion"]
+        op2 = doc2["opinions"][0]["opinion"]
+        assert abs(op1.belief - op2.belief) < 1e-9
+        assert abs(op1.disbelief - op2.disbelief) < 1e-9
+        assert abs(op1.uncertainty - op2.uncertainty) < 1e-9
+        assert doc2["opinions"][0]["source"] == "extension"
+
+    def test_to_fhir_consent_no_opinions_still_valid(self):
+        """to_fhir with empty opinions produces a valid resource."""
+        doc = {
+            "@type": "fhir:Consent",
+            "id": "consent-empty-1",
+            "status": "draft",
+            "opinions": [],
+        }
+        resource, report = to_fhir(doc)
+        assert resource["resourceType"] == "Consent"
+        assert report.success is True
+        assert report.nodes_converted == 0

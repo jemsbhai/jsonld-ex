@@ -21,6 +21,9 @@ Supported FHIR R4 resources:
   - Immunization         — status → seroconversion base confidence Opinion
   - FamilyMemberHistory  — status → reported-vs-confirmed evidence Opinion
   - Procedure            — status + outcome/complication/followUp → Opinion
+  Phase 4:
+  - Consent              — status → consent lawfulness Opinion
+                           (also available via compliance algebra functions)
 
 Architecture notes:
   - All public functions accept a ``fhir_version`` parameter (default "R4")

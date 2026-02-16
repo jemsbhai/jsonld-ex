@@ -33,6 +33,8 @@ from jsonld_ex.fhir_interop._constants import (
     FAMILY_HISTORY_DEFAULT_UNCERTAINTY,
     PROCEDURE_STATUS_PROBABILITY,
     PROCEDURE_STATUS_UNCERTAINTY,
+    CONSENT_STATUS_PROBABILITY,
+    CONSENT_STATUS_UNCERTAINTY,
 )
 from jsonld_ex.fhir_interop._scalar import (
     scalar_to_opinion,
@@ -899,6 +901,71 @@ def _from_procedure_r4(
     return doc, report
 
 
+# ── Consent handler (from_fhir) ────────────────────────────────────
+
+
+def _from_consent_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 Consent → jsonld-ex document.
+
+    Uses CONSENT_STATUS_PROBABILITY / CONSENT_STATUS_UNCERTAINTY to
+    reconstruct an SL opinion from the Consent status code.  This
+    integrates Consent into the uniform from_fhir() / to_fhir() API
+    while the richer compliance algebra functions (fhir_consent_to_opinion,
+    fhir_consent_validity, etc.) remain available for advanced use cases.
+    """
+    status = resource.get("status", "draft")
+
+    scope_code = None
+    scope_obj = resource.get("scope")
+    if isinstance(scope_obj, dict):
+        for coding in scope_obj.get("coding", []):
+            scope_code = coding.get("code")
+            if scope_code:
+                break
+
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    status_ext = resource.get("_status")
+    recovered = _try_recover_opinion(status_ext)
+
+    if recovered is not None:
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": recovered,
+            "source": "extension",
+        })
+    else:
+        prob = CONSENT_STATUS_PROBABILITY.get(status, 0.50)
+        default_u = CONSENT_STATUS_UNCERTAINTY.get(status, 0.35)
+        op = scalar_to_opinion(prob, default_uncertainty=default_u)
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+    nodes_converted += 1
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:Consent",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+    if scope_code is not None:
+        doc["scope"] = scope_code
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return doc, report
+
+
 # ── from_fhir handler dispatch table ──────────────────────────────
 
 _RESOURCE_HANDLERS = {
@@ -913,6 +980,7 @@ _RESOURCE_HANDLERS = {
     "Immunization": _from_immunization_r4,
     "FamilyMemberHistory": _from_family_member_history_r4,
     "Procedure": _from_procedure_r4,
+    "Consent": _from_consent_r4,
 }
 
 
@@ -1364,6 +1432,39 @@ def _to_procedure_r4(
     return resource, report
 
 
+# ── Consent handler (to_fhir) ─────────────────────────────────────
+
+
+def _to_consent_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex document → FHIR R4 Consent."""
+    resource: dict[str, Any] = {"resourceType": "Consent"}
+    if doc.get("id"):
+        resource["id"] = doc["id"]
+    if doc.get("status"):
+        resource["status"] = doc["status"]
+
+    scope = doc.get("scope")
+    if scope is not None:
+        resource["scope"] = {"coding": [{"code": scope}]}
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field_name = entry.get("field", "")
+
+        if field_name == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
 # ── to_fhir handler dispatch table ───────────────────────────────
 
 _TO_FHIR_HANDLERS = {
@@ -1378,4 +1479,5 @@ _TO_FHIR_HANDLERS = {
     "Immunization": _to_immunization_r4,
     "FamilyMemberHistory": _to_family_member_history_r4,
     "Procedure": _to_procedure_r4,
+    "Consent": _to_consent_r4,
 }
