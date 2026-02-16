@@ -1,0 +1,1381 @@
+"""
+FHIR R4 ↔ jsonld-ex bidirectional converters.
+
+Contains ``from_fhir()`` and ``to_fhir()`` public functions plus all
+resource-specific private handlers (``_from_*_r4`` / ``_to_*_r4``).
+"""
+
+from __future__ import annotations
+
+from typing import Any, Optional
+
+from jsonld_ex.confidence_algebra import Opinion
+from jsonld_ex.owl_interop import ConversionReport
+
+from jsonld_ex.fhir_interop._constants import (
+    FHIR_EXTENSION_URL,
+    SUPPORTED_FHIR_VERSIONS,
+    SUPPORTED_RESOURCE_TYPES,
+    VERIFICATION_STATUS_PROBABILITY,
+    VERIFICATION_STATUS_UNCERTAINTY,
+    INTERPRETATION_PROBABILITY,
+    CRITICALITY_PROBABILITY,
+    CRITICALITY_UNCERTAINTY,
+    MEDSTMT_STATUS_PROBABILITY,
+    MEDSTMT_STATUS_UNCERTAINTY,
+    CLINICAL_IMPRESSION_STATUS_MULTIPLIER,
+    DETECTED_ISSUE_SEVERITY_PROBABILITY,
+    DETECTED_ISSUE_SEVERITY_UNCERTAINTY,
+    IMMUNIZATION_STATUS_PROBABILITY,
+    IMMUNIZATION_STATUS_UNCERTAINTY,
+    FAMILY_HISTORY_STATUS_PROBABILITY,
+    FAMILY_HISTORY_STATUS_UNCERTAINTY,
+    FAMILY_HISTORY_DEFAULT_UNCERTAINTY,
+    PROCEDURE_STATUS_PROBABILITY,
+    PROCEDURE_STATUS_UNCERTAINTY,
+)
+from jsonld_ex.fhir_interop._scalar import (
+    scalar_to_opinion,
+    opinion_to_fhir_extension,
+    fhir_extension_to_opinion,
+)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# FHIR → JSONLD-EX IMPORT  (from_fhir)
+# ═══════════════════════════════════════════════════════════════════
+
+
+def from_fhir(
+    resource: dict[str, Any],
+    *,
+    fhir_version: str = "R4",
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Import a FHIR R4 resource into a jsonld-ex document with SL opinions.
+
+    Extracts scalar probabilities or categorical codes from the resource,
+    reconstructs Subjective Logic opinions from available metadata signals,
+    and recovers exact opinions from jsonld-ex FHIR extensions when present.
+
+    Args:
+        resource: A FHIR R4 resource as a Python dict (JSON-parsed).
+        fhir_version: FHIR version string.  Currently only ``"R4"``
+            is supported.
+
+    Returns:
+        A tuple of ``(jsonld_ex_doc, ConversionReport)``.
+
+    Raises:
+        ValueError: If ``resource`` lacks ``resourceType``, or
+            ``fhir_version`` is not supported.
+    """
+    if "resourceType" not in resource:
+        raise ValueError(
+            "FHIR resource must contain a 'resourceType' field"
+        )
+
+    if fhir_version not in SUPPORTED_FHIR_VERSIONS:
+        raise ValueError(
+            f"Unsupported FHIR version '{fhir_version}'. "
+            f"Supported: {', '.join(SUPPORTED_FHIR_VERSIONS)}"
+        )
+
+    resource_type = resource["resourceType"]
+
+    if resource_type not in SUPPORTED_RESOURCE_TYPES:
+        report = ConversionReport(
+            success=True,
+            nodes_converted=0,
+            warnings=[
+                f"Unsupported FHIR resource type '{resource_type}'. "
+                f"Supported types: {', '.join(sorted(SUPPORTED_RESOURCE_TYPES))}"
+            ],
+        )
+        return {"@type": f"fhir:{resource_type}", "opinions": []}, report
+
+    handler = _RESOURCE_HANDLERS[resource_type]
+    return handler(resource)
+
+
+# ── Extension recovery helper ─────────────────────────────────────
+
+
+def _try_recover_opinion(
+    element_extensions: Optional[dict[str, Any]],
+) -> Optional[Opinion]:
+    """Try to recover an Opinion from a FHIR element's extension list."""
+    if not element_extensions:
+        return None
+
+    extensions = element_extensions.get("extension", [])
+    for ext in extensions:
+        if ext.get("url") == FHIR_EXTENSION_URL:
+            return fhir_extension_to_opinion(ext)
+
+    return None
+
+
+# ── RiskAssessment handler (from_fhir) ────────────────────────────
+
+
+def _from_risk_assessment_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 RiskAssessment → jsonld-ex document."""
+    status = resource.get("status")
+    method_text = None
+    method_obj = resource.get("method")
+    if isinstance(method_obj, dict):
+        method_text = method_obj.get("text")
+
+    basis = resource.get("basis")
+    basis_count = len(basis) if basis is not None else None
+
+    predictions = resource.get("prediction", [])
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    for i, pred in enumerate(predictions):
+        prob = pred.get("probabilityDecimal")
+        if prob is None:
+            continue
+
+        pred_ext = pred.get("_probabilityDecimal")
+        recovered = _try_recover_opinion(pred_ext)
+
+        if recovered is not None:
+            opinions.append({
+                "field": f"prediction[{i}].probabilityDecimal",
+                "value": prob,
+                "opinion": recovered,
+                "source": "extension",
+            })
+        else:
+            op = scalar_to_opinion(
+                prob,
+                status=status,
+                basis_count=basis_count,
+                method=method_text,
+            )
+            opinions.append({
+                "field": f"prediction[{i}].probabilityDecimal",
+                "value": prob,
+                "opinion": op,
+                "source": "reconstructed",
+            })
+        nodes_converted += 1
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:RiskAssessment",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return doc, report
+
+
+# ── Observation handler (from_fhir) ──────────────────────────────
+
+
+def _from_observation_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 Observation → jsonld-ex document."""
+    status = resource.get("status")
+    interpretations = resource.get("interpretation", [])
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    for interp in interpretations:
+        codings = interp.get("coding", [])
+        for coding in codings:
+            code = coding.get("code")
+            if code is None:
+                continue
+
+            interp_ext = resource.get("_interpretation")
+            recovered = _try_recover_opinion(interp_ext)
+
+            if recovered is not None:
+                opinions.append({
+                    "field": "interpretation",
+                    "value": code,
+                    "opinion": recovered,
+                    "source": "extension",
+                })
+            else:
+                prob = INTERPRETATION_PROBABILITY.get(code, 0.50)
+                op = scalar_to_opinion(
+                    prob,
+                    status=status,
+                    default_uncertainty=0.20,
+                )
+                opinions.append({
+                    "field": "interpretation",
+                    "value": code,
+                    "opinion": op,
+                    "source": "reconstructed",
+                })
+            nodes_converted += 1
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:Observation",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+
+    value_qty = resource.get("valueQuantity")
+    if value_qty is not None:
+        doc["value"] = value_qty
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return doc, report
+
+
+# ── DiagnosticReport handler (from_fhir) ─────────────────────────
+
+
+def _from_diagnostic_report_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 DiagnosticReport → jsonld-ex document."""
+    status = resource.get("status")
+    conclusion = resource.get("conclusion")
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    results = resource.get("result", [])
+    result_refs = [
+        r.get("reference", "") for r in results if isinstance(r, dict)
+    ]
+
+    if conclusion is not None:
+        conclusion_ext = resource.get("_conclusion")
+        recovered = _try_recover_opinion(conclusion_ext)
+
+        if recovered is not None:
+            opinions.append({
+                "field": "conclusion",
+                "value": conclusion,
+                "opinion": recovered,
+                "source": "extension",
+            })
+            nodes_converted += 1
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:DiagnosticReport",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+        "result_references": result_refs,
+    }
+    if conclusion is not None:
+        doc["conclusion"] = conclusion
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return doc, report
+
+
+# ── Condition handler (from_fhir) ─────────────────────────────────
+
+
+def _from_condition_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 Condition → jsonld-ex document."""
+    vs_obj = resource.get("verificationStatus", {})
+    vs_code = None
+    for coding in vs_obj.get("coding", []):
+        vs_code = coding.get("code")
+        if vs_code:
+            break
+
+    cs_obj = resource.get("clinicalStatus", {})
+    cs_code = None
+    for coding in cs_obj.get("coding", []):
+        cs_code = coding.get("code")
+        if cs_code:
+            break
+
+    evidence = resource.get("evidence")
+    evidence_count = len(evidence) if evidence is not None else None
+
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    if vs_code is not None:
+        vs_ext = resource.get("_verificationStatus")
+        recovered = _try_recover_opinion(vs_ext)
+
+        if recovered is not None:
+            opinions.append({
+                "field": "verificationStatus",
+                "value": vs_code,
+                "opinion": recovered,
+                "source": "extension",
+            })
+        else:
+            prob = VERIFICATION_STATUS_PROBABILITY.get(vs_code, 0.50)
+            default_u = VERIFICATION_STATUS_UNCERTAINTY.get(vs_code, 0.30)
+            op = scalar_to_opinion(
+                prob,
+                basis_count=evidence_count,
+                default_uncertainty=default_u,
+            )
+            opinions.append({
+                "field": "verificationStatus",
+                "value": vs_code,
+                "opinion": op,
+                "source": "reconstructed",
+            })
+        nodes_converted += 1
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:Condition",
+        "id": resource.get("id"),
+        "clinicalStatus": cs_code,
+        "opinions": opinions,
+    }
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return doc, report
+
+
+# ── AllergyIntolerance handler (from_fhir) ───────────────────────
+
+
+def _from_allergy_intolerance_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 AllergyIntolerance → jsonld-ex document."""
+    vs_obj = resource.get("verificationStatus", {})
+    vs_code = None
+    for coding in vs_obj.get("coding", []):
+        vs_code = coding.get("code")
+        if vs_code:
+            break
+
+    cs_obj = resource.get("clinicalStatus", {})
+    cs_code = None
+    for coding in cs_obj.get("coding", []):
+        cs_code = coding.get("code")
+        if cs_code:
+            break
+
+    criticality = resource.get("criticality")
+
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    if vs_code is not None:
+        vs_ext = resource.get("_verificationStatus")
+        recovered = _try_recover_opinion(vs_ext)
+
+        if recovered is not None:
+            opinions.append({
+                "field": "verificationStatus",
+                "value": vs_code,
+                "opinion": recovered,
+                "source": "extension",
+            })
+        else:
+            prob = VERIFICATION_STATUS_PROBABILITY.get(vs_code, 0.50)
+            default_u = VERIFICATION_STATUS_UNCERTAINTY.get(vs_code, 0.30)
+            op = scalar_to_opinion(prob, default_uncertainty=default_u)
+            opinions.append({
+                "field": "verificationStatus",
+                "value": vs_code,
+                "opinion": op,
+                "source": "reconstructed",
+            })
+        nodes_converted += 1
+
+    if criticality is not None:
+        crit_prob = CRITICALITY_PROBABILITY.get(criticality, 0.50)
+        crit_u = CRITICALITY_UNCERTAINTY.get(criticality, 0.30)
+        crit_op = scalar_to_opinion(crit_prob, default_uncertainty=crit_u)
+        opinions.append({
+            "field": "criticality",
+            "value": criticality,
+            "opinion": crit_op,
+            "source": "reconstructed",
+        })
+        nodes_converted += 1
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:AllergyIntolerance",
+        "id": resource.get("id"),
+        "clinicalStatus": cs_code,
+        "opinions": opinions,
+    }
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return doc, report
+
+
+# ── MedicationStatement handler (from_fhir) ──────────────────────
+
+
+def _from_medication_statement_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 MedicationStatement → jsonld-ex document."""
+    status = resource.get("status", "unknown")
+
+    info_source = resource.get("informationSource")
+    source_type = None
+    if isinstance(info_source, dict):
+        ref = info_source.get("reference", "")
+        source_type = ref.split("/")[0] if "/" in ref else None
+
+    derived = resource.get("derivedFrom")
+    derived_count = len(derived) if derived is not None else None
+
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    status_ext = resource.get("_status")
+    recovered = _try_recover_opinion(status_ext)
+
+    if recovered is not None:
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": recovered,
+            "source": "extension",
+        })
+    else:
+        prob = MEDSTMT_STATUS_PROBABILITY.get(status, 0.50)
+        default_u = MEDSTMT_STATUS_UNCERTAINTY.get(status, 0.30)
+
+        if source_type in ("Practitioner", "PractitionerRole"):
+            default_u *= 0.7
+        elif source_type in ("Patient", "RelatedPerson"):
+            default_u *= 1.3
+
+        op = scalar_to_opinion(
+            prob,
+            basis_count=derived_count,
+            default_uncertainty=default_u,
+        )
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+    nodes_converted += 1
+
+    med_text = None
+    med_cc = resource.get("medicationCodeableConcept")
+    if isinstance(med_cc, dict):
+        med_text = med_cc.get("text")
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:MedicationStatement",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+    if med_text is not None:
+        doc["medication"] = med_text
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return doc, report
+
+
+# ── ClinicalImpression handler (from_fhir) ───────────────────────
+
+
+def _from_clinical_impression_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 ClinicalImpression → jsonld-ex document."""
+    status = resource.get("status", "in-progress")
+    summary = resource.get("summary")
+    findings = resource.get("finding", [])
+    finding_count = len(findings) if findings else 0
+
+    finding_refs: list[str] = []
+    for f in findings:
+        item_ref = f.get("itemReference")
+        if isinstance(item_ref, dict):
+            ref = item_ref.get("reference")
+            if ref:
+                finding_refs.append(ref)
+
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    opinion_field = "summary" if summary is not None else "status"
+
+    if summary is not None:
+        summary_ext = resource.get("_summary")
+        recovered = _try_recover_opinion(summary_ext)
+
+        if recovered is not None:
+            opinions.append({
+                "field": "summary",
+                "value": summary,
+                "opinion": recovered,
+                "source": "extension",
+            })
+            nodes_converted += 1
+
+    if not opinions:
+        base_u = 0.20
+        multiplier = CLINICAL_IMPRESSION_STATUS_MULTIPLIER.get(status, 1.0)
+        adjusted_u = base_u * multiplier
+
+        if finding_count == 0:
+            adjusted_u *= 1.3
+        elif finding_count >= 3:
+            adjusted_u *= 0.7
+        else:
+            adjusted_u *= 0.9
+
+        adjusted_u = max(0.0, min(adjusted_u, 0.99))
+
+        prob = 0.75
+        op = scalar_to_opinion(prob, default_uncertainty=adjusted_u)
+        opinions.append({
+            "field": opinion_field,
+            "value": summary if summary is not None else status,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+        nodes_converted += 1
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:ClinicalImpression",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+    if summary is not None:
+        doc["summary"] = summary
+    if finding_refs:
+        doc["finding_references"] = finding_refs
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return doc, report
+
+
+# ── DetectedIssue handler (from_fhir) ─────────────────────────────
+
+
+def _from_detected_issue_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 DetectedIssue → jsonld-ex document."""
+    status = resource.get("status")
+    severity = resource.get("severity")
+
+    evidence = resource.get("evidence")
+    evidence_count = len(evidence) if evidence is not None else None
+
+    implicated = resource.get("implicated", [])
+    implicated_refs = [
+        r.get("reference", "") for r in implicated if isinstance(r, dict)
+    ]
+
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    if severity is not None:
+        sev_ext = resource.get("_severity")
+        recovered = _try_recover_opinion(sev_ext)
+
+        if recovered is not None:
+            opinions.append({
+                "field": "severity",
+                "value": severity,
+                "opinion": recovered,
+                "source": "extension",
+            })
+        else:
+            prob = DETECTED_ISSUE_SEVERITY_PROBABILITY.get(severity, 0.50)
+            default_u = DETECTED_ISSUE_SEVERITY_UNCERTAINTY.get(severity, 0.25)
+            op = scalar_to_opinion(
+                prob,
+                status=status,
+                basis_count=evidence_count,
+                default_uncertainty=default_u,
+            )
+            opinions.append({
+                "field": "severity",
+                "value": severity,
+                "opinion": op,
+                "source": "reconstructed",
+            })
+        nodes_converted += 1
+    else:
+        prob = 0.50
+        default_u = 0.30
+        op = scalar_to_opinion(
+            prob,
+            status=status,
+            basis_count=evidence_count,
+            default_uncertainty=default_u,
+        )
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+        nodes_converted += 1
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:DetectedIssue",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+    if implicated_refs:
+        doc["implicated_references"] = implicated_refs
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return doc, report
+
+
+# ── Immunization handler (from_fhir) ──────────────────────────────
+
+
+def _from_immunization_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 Immunization → jsonld-ex document."""
+    status = resource.get("status", "completed")
+
+    protocol = resource.get("protocolApplied")
+    dose_count = len(protocol) if protocol is not None else None
+
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    status_ext = resource.get("_status")
+    recovered = _try_recover_opinion(status_ext)
+
+    if recovered is not None:
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": recovered,
+            "source": "extension",
+        })
+    else:
+        prob = IMMUNIZATION_STATUS_PROBABILITY.get(status, 0.50)
+        default_u = IMMUNIZATION_STATUS_UNCERTAINTY.get(status, 0.30)
+
+        if dose_count is not None:
+            if dose_count == 0:
+                default_u *= 1.3
+            elif dose_count >= 3:
+                default_u *= 0.7
+            else:
+                default_u *= 0.9
+
+        op = scalar_to_opinion(prob, default_uncertainty=default_u)
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+    nodes_converted += 1
+
+    vaccine_code = None
+    vc_obj = resource.get("vaccineCode")
+    if isinstance(vc_obj, dict):
+        vaccine_code = vc_obj.get("text")
+
+    status_reason = None
+    sr_obj = resource.get("statusReason")
+    if isinstance(sr_obj, dict):
+        status_reason = sr_obj.get("text")
+
+    occurrence_dt = resource.get("occurrenceDateTime")
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:Immunization",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+    if vaccine_code is not None:
+        doc["vaccineCode"] = vaccine_code
+    if status_reason is not None:
+        doc["statusReason"] = status_reason
+    if occurrence_dt is not None:
+        doc["occurrenceDateTime"] = occurrence_dt
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return doc, report
+
+
+# ── FamilyMemberHistory handler (from_fhir) ───────────────────────
+
+
+def _from_family_member_history_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 FamilyMemberHistory → jsonld-ex document."""
+    status = resource.get("status", "completed")
+
+    conditions = resource.get("condition")
+    condition_count = len(conditions) if conditions is not None else None
+
+    data_absent = resource.get("dataAbsentReason")
+    has_data_absent = data_absent is not None
+
+    rel_obj = resource.get("relationship", {})
+    relationship_text = rel_obj.get("text") if isinstance(rel_obj, dict) else None
+
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    status_ext = resource.get("_status")
+    recovered = _try_recover_opinion(status_ext)
+
+    if recovered is not None:
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": recovered,
+            "source": "extension",
+        })
+    else:
+        prob = FAMILY_HISTORY_STATUS_PROBABILITY.get(status, 0.50)
+        default_u = FAMILY_HISTORY_STATUS_UNCERTAINTY.get(
+            status, FAMILY_HISTORY_DEFAULT_UNCERTAINTY
+        )
+
+        if condition_count is not None:
+            if condition_count == 0:
+                default_u *= 1.3
+            elif condition_count >= 3:
+                default_u *= 0.7
+            else:
+                default_u *= 0.9
+
+        if has_data_absent:
+            default_u *= 1.3
+
+        op = scalar_to_opinion(prob, default_uncertainty=default_u)
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+    nodes_converted += 1
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:FamilyMemberHistory",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+    if relationship_text is not None:
+        doc["relationship"] = relationship_text
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return doc, report
+
+
+# ── Procedure handler (from_fhir) ─────────────────────────────────
+
+
+def _from_procedure_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 Procedure → jsonld-ex document."""
+    status = resource.get("status", "completed")
+
+    outcome_obj = resource.get("outcome")
+    has_outcome = outcome_obj is not None
+    outcome_text = None
+    if isinstance(outcome_obj, dict):
+        outcome_text = outcome_obj.get("text")
+
+    complications = resource.get("complication")
+    complication_count = len(complications) if complications is not None else None
+
+    follow_ups = resource.get("followUp")
+    followup_count = len(follow_ups) if follow_ups is not None else None
+
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    status_ext = resource.get("_status")
+    recovered = _try_recover_opinion(status_ext)
+
+    if recovered is not None:
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": recovered,
+            "source": "extension",
+        })
+    else:
+        prob = PROCEDURE_STATUS_PROBABILITY.get(status, 0.50)
+        default_u = PROCEDURE_STATUS_UNCERTAINTY.get(status, 0.30)
+
+        if has_outcome:
+            default_u *= 0.7
+
+        if complication_count is not None:
+            if complication_count == 0:
+                default_u *= 0.9
+            elif complication_count >= 2:
+                default_u *= 1.5
+            else:
+                default_u *= 1.2
+
+        if followup_count is not None:
+            if followup_count == 0:
+                default_u *= 1.2
+            elif followup_count >= 2:
+                default_u *= 0.7
+            else:
+                default_u *= 0.9
+
+        op = scalar_to_opinion(prob, default_uncertainty=default_u)
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+    nodes_converted += 1
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:Procedure",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+    if outcome_text is not None:
+        doc["outcome"] = outcome_text
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return doc, report
+
+
+# ── from_fhir handler dispatch table ──────────────────────────────
+
+_RESOURCE_HANDLERS = {
+    "RiskAssessment": _from_risk_assessment_r4,
+    "Observation": _from_observation_r4,
+    "DiagnosticReport": _from_diagnostic_report_r4,
+    "Condition": _from_condition_r4,
+    "AllergyIntolerance": _from_allergy_intolerance_r4,
+    "MedicationStatement": _from_medication_statement_r4,
+    "ClinicalImpression": _from_clinical_impression_r4,
+    "DetectedIssue": _from_detected_issue_r4,
+    "Immunization": _from_immunization_r4,
+    "FamilyMemberHistory": _from_family_member_history_r4,
+    "Procedure": _from_procedure_r4,
+}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# JSONLD-EX → FHIR EXPORT  (to_fhir)
+# ═══════════════════════════════════════════════════════════════════
+
+
+def to_fhir(
+    doc: dict[str, Any],
+    *,
+    fhir_version: str = "R4",
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Export a jsonld-ex document to a FHIR R4 resource.
+
+    Reverses ``from_fhir()``.  Takes a jsonld-ex document and produces
+    a valid FHIR R4 resource with SL opinions embedded as extensions.
+
+    Args:
+        doc: A jsonld-ex document dict with ``@type`` and ``opinions``.
+        fhir_version: FHIR version string.  Currently only ``"R4"``.
+
+    Returns:
+        A tuple of ``(fhir_resource, ConversionReport)``.
+
+    Raises:
+        ValueError: If ``doc`` lacks ``@type``, or the resource type
+            is not supported, or ``fhir_version`` is not supported.
+    """
+    if "@type" not in doc:
+        raise ValueError(
+            "jsonld-ex document must contain an '@type' field"
+        )
+
+    if fhir_version not in SUPPORTED_FHIR_VERSIONS:
+        raise ValueError(
+            f"Unsupported FHIR version '{fhir_version}'. "
+            f"Supported: {', '.join(SUPPORTED_FHIR_VERSIONS)}"
+        )
+
+    doc_type = doc["@type"]
+    if doc_type.startswith("fhir:"):
+        resource_type = doc_type[5:]
+    else:
+        resource_type = doc_type
+
+    if resource_type not in _TO_FHIR_HANDLERS:
+        raise ValueError(
+            f"Unsupported resource type '{resource_type}'. "
+            f"Supported types: {', '.join(sorted(_TO_FHIR_HANDLERS))}"
+        )
+
+    handler = _TO_FHIR_HANDLERS[resource_type]
+    return handler(doc)
+
+
+# ── RiskAssessment handler (to_fhir) ─────────────────────────────
+
+
+def _to_risk_assessment_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex document → FHIR R4 RiskAssessment."""
+    resource: dict[str, Any] = {"resourceType": "RiskAssessment"}
+    if doc.get("id"):
+        resource["id"] = doc["id"]
+    if doc.get("status"):
+        resource["status"] = doc["status"]
+
+    opinions = doc.get("opinions", [])
+    predictions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        pred: dict[str, Any] = {
+            "probabilityDecimal": op.projected_probability(),
+        }
+        ext = opinion_to_fhir_extension(op)
+        pred["_probabilityDecimal"] = {"extension": [ext]}
+        predictions.append(pred)
+        nodes_converted += 1
+
+    resource["prediction"] = predictions
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
+# ── Observation handler (to_fhir) ────────────────────────────────
+
+
+def _to_observation_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex document → FHIR R4 Observation."""
+    resource: dict[str, Any] = {"resourceType": "Observation"}
+    if doc.get("id"):
+        resource["id"] = doc["id"]
+    if doc.get("status"):
+        resource["status"] = doc["status"]
+    if doc.get("value"):
+        resource["valueQuantity"] = doc["value"]
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        code = entry.get("value")
+
+        if code is not None:
+            resource.setdefault("interpretation", []).append({
+                "coding": [{"code": code}],
+            })
+            ext = opinion_to_fhir_extension(op)
+            resource["_interpretation"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
+# ── DiagnosticReport handler (to_fhir) ───────────────────────────
+
+
+def _to_diagnostic_report_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex document → FHIR R4 DiagnosticReport."""
+    resource: dict[str, Any] = {"resourceType": "DiagnosticReport"}
+    if doc.get("id"):
+        resource["id"] = doc["id"]
+    if doc.get("status"):
+        resource["status"] = doc["status"]
+    if doc.get("conclusion"):
+        resource["conclusion"] = doc["conclusion"]
+
+    result_refs = doc.get("result_references", [])
+    if result_refs:
+        resource["result"] = [{"reference": ref} for ref in result_refs]
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field = entry.get("field", "")
+
+        if field == "conclusion":
+            ext = opinion_to_fhir_extension(op)
+            resource["_conclusion"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
+# ── Condition handler (to_fhir) ──────────────────────────────────
+
+
+def _to_condition_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex document → FHIR R4 Condition."""
+    resource: dict[str, Any] = {"resourceType": "Condition"}
+    if doc.get("id"):
+        resource["id"] = doc["id"]
+
+    cs = doc.get("clinicalStatus")
+    if cs:
+        resource["clinicalStatus"] = {"coding": [{"code": cs}]}
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field = entry.get("field", "")
+        code = entry.get("value")
+
+        if field == "verificationStatus" and code is not None:
+            resource["verificationStatus"] = {"coding": [{"code": code}]}
+            ext = opinion_to_fhir_extension(op)
+            resource["_verificationStatus"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
+# ── AllergyIntolerance handler (to_fhir) ─────────────────────────
+
+
+def _to_allergy_intolerance_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex document → FHIR R4 AllergyIntolerance."""
+    resource: dict[str, Any] = {"resourceType": "AllergyIntolerance"}
+    if doc.get("id"):
+        resource["id"] = doc["id"]
+
+    cs = doc.get("clinicalStatus")
+    if cs:
+        resource["clinicalStatus"] = {"coding": [{"code": cs}]}
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field_name = entry.get("field", "")
+        code = entry.get("value")
+
+        if field_name == "verificationStatus" and code is not None:
+            resource["verificationStatus"] = {"coding": [{"code": code}]}
+            ext = opinion_to_fhir_extension(op)
+            resource["_verificationStatus"] = {"extension": [ext]}
+            nodes_converted += 1
+        elif field_name == "criticality" and code is not None:
+            resource["criticality"] = code
+            ext = opinion_to_fhir_extension(op)
+            resource["_criticality"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
+# ── MedicationStatement handler (to_fhir) ────────────────────────
+
+
+def _to_medication_statement_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex document → FHIR R4 MedicationStatement."""
+    resource: dict[str, Any] = {"resourceType": "MedicationStatement"}
+    if doc.get("id"):
+        resource["id"] = doc["id"]
+    if doc.get("status"):
+        resource["status"] = doc["status"]
+
+    med_text = doc.get("medication")
+    if med_text is not None:
+        resource["medicationCodeableConcept"] = {"text": med_text}
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field_name = entry.get("field", "")
+
+        if field_name == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
+# ── ClinicalImpression handler (to_fhir) ─────────────────────────
+
+
+def _to_clinical_impression_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex document → FHIR R4 ClinicalImpression."""
+    resource: dict[str, Any] = {"resourceType": "ClinicalImpression"}
+    if doc.get("id"):
+        resource["id"] = doc["id"]
+    if doc.get("status"):
+        resource["status"] = doc["status"]
+    if doc.get("summary"):
+        resource["summary"] = doc["summary"]
+
+    finding_refs = doc.get("finding_references", [])
+    if finding_refs:
+        resource["finding"] = [
+            {"itemReference": {"reference": ref}} for ref in finding_refs
+        ]
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field_name = entry.get("field", "")
+
+        if field_name == "summary":
+            ext = opinion_to_fhir_extension(op)
+            resource["_summary"] = {"extension": [ext]}
+            nodes_converted += 1
+        elif field_name == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
+# ── DetectedIssue handler (to_fhir) ─────────────────────────────
+
+
+def _to_detected_issue_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex document → FHIR R4 DetectedIssue."""
+    resource: dict[str, Any] = {"resourceType": "DetectedIssue"}
+    if doc.get("id"):
+        resource["id"] = doc["id"]
+    if doc.get("status"):
+        resource["status"] = doc["status"]
+
+    implicated_refs = doc.get("implicated_references", [])
+    if implicated_refs:
+        resource["implicated"] = [
+            {"reference": ref} for ref in implicated_refs
+        ]
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field_name = entry.get("field", "")
+        code = entry.get("value")
+
+        if field_name == "severity" and code is not None:
+            resource["severity"] = code
+            ext = opinion_to_fhir_extension(op)
+            resource["_severity"] = {"extension": [ext]}
+            nodes_converted += 1
+        elif field_name == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
+# ── Immunization handler (to_fhir) ──────────────────────────────
+
+
+def _to_immunization_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex document → FHIR R4 Immunization."""
+    resource: dict[str, Any] = {"resourceType": "Immunization"}
+    if doc.get("id"):
+        resource["id"] = doc["id"]
+    if doc.get("status"):
+        resource["status"] = doc["status"]
+
+    vaccine_code = doc.get("vaccineCode")
+    if vaccine_code is not None:
+        resource["vaccineCode"] = {"text": vaccine_code}
+
+    occurrence_dt = doc.get("occurrenceDateTime")
+    if occurrence_dt is not None:
+        resource["occurrenceDateTime"] = occurrence_dt
+
+    status_reason = doc.get("statusReason")
+    if status_reason is not None:
+        resource["statusReason"] = {"text": status_reason}
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field_name = entry.get("field", "")
+
+        if field_name == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
+# ── FamilyMemberHistory handler (to_fhir) ───────────────────────
+
+
+def _to_family_member_history_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex document → FHIR R4 FamilyMemberHistory."""
+    resource: dict[str, Any] = {"resourceType": "FamilyMemberHistory"}
+    if doc.get("id"):
+        resource["id"] = doc["id"]
+    if doc.get("status"):
+        resource["status"] = doc["status"]
+
+    relationship = doc.get("relationship")
+    if relationship is not None:
+        resource["relationship"] = {"text": relationship}
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field_name = entry.get("field", "")
+
+        if field_name == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
+# ── Procedure handler (to_fhir) ─────────────────────────────────
+
+
+def _to_procedure_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex document → FHIR R4 Procedure."""
+    resource: dict[str, Any] = {"resourceType": "Procedure"}
+    if doc.get("id"):
+        resource["id"] = doc["id"]
+    if doc.get("status"):
+        resource["status"] = doc["status"]
+
+    outcome = doc.get("outcome")
+    if outcome is not None:
+        resource["outcome"] = {"text": outcome}
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field_name = entry.get("field", "")
+
+        if field_name == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
+# ── to_fhir handler dispatch table ───────────────────────────────
+
+_TO_FHIR_HANDLERS = {
+    "RiskAssessment": _to_risk_assessment_r4,
+    "Observation": _to_observation_r4,
+    "DiagnosticReport": _to_diagnostic_report_r4,
+    "Condition": _to_condition_r4,
+    "AllergyIntolerance": _to_allergy_intolerance_r4,
+    "MedicationStatement": _to_medication_statement_r4,
+    "ClinicalImpression": _to_clinical_impression_r4,
+    "DetectedIssue": _to_detected_issue_r4,
+    "Immunization": _to_immunization_r4,
+    "FamilyMemberHistory": _to_family_member_history_r4,
+    "Procedure": _to_procedure_r4,
+}
