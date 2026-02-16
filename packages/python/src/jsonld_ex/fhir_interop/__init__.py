@@ -51,6 +51,8 @@ from jsonld_ex.fhir_interop._constants import (
     FHIR_EXTENSION_URL,
     SUPPORTED_FHIR_VERSIONS,
     FAMILY_HISTORY_DEFAULT_UNCERTAINTY,
+    CONSENT_STATUS_PROBABILITY,
+    CONSENT_STATUS_UNCERTAINTY,
 )
 from jsonld_ex.fhir_interop._scalar import (
     scalar_to_opinion,
@@ -71,6 +73,13 @@ from jsonld_ex.fhir_interop._temporal import (
 from jsonld_ex.fhir_interop._escalation import (
     fhir_escalation_policy,
 )
+from jsonld_ex.fhir_interop._compliance import (
+    fhir_consent_to_opinion,
+    opinion_to_fhir_consent,
+    fhir_consent_validity,
+    fhir_consent_withdrawal,
+    fhir_multi_site_meet,
+)
 
 __all__ = [
     "scalar_to_opinion",
@@ -85,4 +94,12 @@ __all__ = [
     "FAMILY_HISTORY_DEFAULT_UNCERTAINTY",
     "fhir_temporal_decay",
     "fhir_escalation_policy",
+    # Phase 4: Compliance algebra bridge
+    "fhir_consent_to_opinion",
+    "opinion_to_fhir_consent",
+    "fhir_consent_validity",
+    "fhir_consent_withdrawal",
+    "fhir_multi_site_meet",
+    "CONSENT_STATUS_PROBABILITY",
+    "CONSENT_STATUS_UNCERTAINTY",
 ]

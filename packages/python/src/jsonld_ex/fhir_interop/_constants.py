@@ -208,6 +208,39 @@ PROCEDURE_STATUS_UNCERTAINTY: dict[str, float] = {
 }
 
 
+# ── Phase 4: Consent status → compliance opinion ─────────────────
+#
+# FHIR R4 Consent.status codes mapped to the probability that the
+# consent is lawfully valid (the proposition under assessment).
+#
+# Epistemic rationale:
+#   active     — consent is in force; strongest lawfulness signal.
+#   inactive   — was valid, now expired/superseded; moderate lawfulness
+#                (past validity is partial evidence, but no longer current).
+#   draft      — pre-decisional; genuinely uncertain, not low-lawfulness.
+#   proposed   — offered but not yet accepted; similar to draft.
+#   rejected   — explicitly refused; strong violation signal.
+#   entered-in-error — data integrity compromised; high uncertainty.
+
+CONSENT_STATUS_PROBABILITY: dict[str, float] = {
+    "active": 0.90,
+    "inactive": 0.30,
+    "draft": 0.50,
+    "proposed": 0.50,
+    "rejected": 0.05,
+    "entered-in-error": 0.50,
+}
+
+CONSENT_STATUS_UNCERTAINTY: dict[str, float] = {
+    "active": 0.15,
+    "inactive": 0.25,
+    "draft": 0.40,
+    "proposed": 0.35,
+    "rejected": 0.10,
+    "entered-in-error": 0.45,
+}
+
+
 # ── Supported resource types ──────────────────────────────────────
 
 SUPPORTED_RESOURCE_TYPES = frozenset({
@@ -225,4 +258,6 @@ SUPPORTED_RESOURCE_TYPES = frozenset({
     "Immunization",
     "FamilyMemberHistory",
     "Procedure",
+    # Phase 4
+    "Consent",
 })
