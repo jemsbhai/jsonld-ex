@@ -6,11 +6,16 @@ Subjective Logic opinion model.  Provides mathematically grounded
 uncertainty that composes, fuses, and propagates correctly — capabilities
 that FHIR's scalar probability and categorical code model lack.
 
-Supported FHIR R4 resources (Phase 1):
-  - RiskAssessment   — prediction.probabilityDecimal → Opinion
-  - Observation       — interpretation / valueQuantity → Opinion
-  - DiagnosticReport  — aggregates Observations via fusion
-  - Condition         — verificationStatus → continuous Opinion
+Supported FHIR R4 resources:
+  Phase 1:
+  - RiskAssessment      — prediction.probabilityDecimal → Opinion
+  - Observation          — interpretation / valueQuantity → Opinion
+  - DiagnosticReport     — aggregates Observations via fusion
+  - Condition            — verificationStatus → continuous Opinion
+  Phase 2:
+  - AllergyIntolerance   — verificationStatus + criticality → dual Opinion
+  - MedicationStatement  — status → adherence confidence Opinion
+  - ClinicalImpression   — status + findings → assessment Opinion
 
 Architecture notes:
   - All public functions accept a ``fhir_version`` parameter (default "R4")
@@ -353,11 +358,77 @@ _INTERPRETATION_PROBABILITY: dict[str, float] = {
     "I": 0.50,   # Intermediate
 }
 
+# ── Phase 2: Criticality mappings (AllergyIntolerance) ─────────────
+#
+# criticality codes represent the potential clinical harm of the
+# allergy reaction.  We map to probability-of-severity:
+#   high          → 0.90  (life-threatening potential)
+#   low           → 0.30  (minor inconvenience)
+#   unable-to-assess → 0.50  (maximum uncertainty)
+
+_CRITICALITY_PROBABILITY: dict[str, float] = {
+    "high": 0.90,
+    "low": 0.30,
+    "unable-to-assess": 0.50,
+}
+
+_CRITICALITY_UNCERTAINTY: dict[str, float] = {
+    "high": 0.15,
+    "low": 0.15,
+    "unable-to-assess": 0.45,
+}
+
+# ── Phase 2: MedicationStatement status → adherence confidence ────
+#
+# MedicationStatement.status captures whether the patient is/was
+# actually taking a medication.  This is inherently uncertain —
+# the information may come from patient self-report, pharmacy
+# fill data, or clinical observation, each with different reliability.
+
+_MEDSTMT_STATUS_PROBABILITY: dict[str, float] = {
+    "active": 0.85,           # currently taking
+    "completed": 0.90,        # finished medication course
+    "entered-in-error": 0.50, # data integrity compromised
+    "intended": 0.60,         # planned but not yet started
+    "stopped": 0.10,          # discontinued
+    "on-hold": 0.40,          # temporarily paused
+    "unknown": 0.50,          # no information
+    "not-taken": 0.05,        # explicitly not taking
+}
+
+_MEDSTMT_STATUS_UNCERTAINTY: dict[str, float] = {
+    "active": 0.15,
+    "completed": 0.10,
+    "entered-in-error": 0.70,
+    "intended": 0.30,
+    "stopped": 0.15,
+    "on-hold": 0.25,
+    "unknown": 0.45,
+    "not-taken": 0.10,
+}
+
+# ── Phase 2: ClinicalImpression status multipliers ────────────────
+#
+# ClinicalImpression.status reflects assessment completeness.
+# We use the same multiplier pattern as the general status map.
+
+_CLINICAL_IMPRESSION_STATUS_MULTIPLIER: dict[str, float] = {
+    "completed": 0.5,         # assessment finalised
+    "in-progress": 2.0,      # still evaluating
+    "entered-in-error": 5.0, # data integrity compromised
+}
+
+
 _SUPPORTED_RESOURCE_TYPES = frozenset({
+    # Phase 1
     "RiskAssessment",
     "Observation",
     "DiagnosticReport",
     "Condition",
+    # Phase 2
+    "AllergyIntolerance",
+    "MedicationStatement",
+    "ClinicalImpression",
 })
 
 
@@ -716,13 +787,305 @@ def _from_condition_r4(
     return doc, report
 
 
+# ── AllergyIntolerance handler (from_fhir) ───────────────────────
+
+
+def _from_allergy_intolerance_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 AllergyIntolerance → jsonld-ex document.
+
+    AllergyIntolerance has two opinion-producing dimensions:
+
+    1. **verificationStatus** — same categorical codes as Condition
+       (confirmed / unconfirmed / presumed / refuted / entered-in-error).
+       Reuses ``_VERIFICATION_STATUS_PROBABILITY`` mappings.
+
+    2. **criticality** — the potential clinical harm if the patient is
+       exposed (high / low / unable-to-assess).  This produces a
+       *separate* opinion about severity, distinct from the
+       verification opinion about *whether* the allergy exists.
+    """
+    # Extract verificationStatus code
+    vs_obj = resource.get("verificationStatus", {})
+    vs_code = None
+    for coding in vs_obj.get("coding", []):
+        vs_code = coding.get("code")
+        if vs_code:
+            break
+
+    # Extract clinicalStatus code
+    cs_obj = resource.get("clinicalStatus", {})
+    cs_code = None
+    for coding in cs_obj.get("coding", []):
+        cs_code = coding.get("code")
+        if cs_code:
+            break
+
+    criticality = resource.get("criticality")
+
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    # ── verificationStatus opinion ────────────────────────────────
+    if vs_code is not None:
+        vs_ext = resource.get("_verificationStatus")
+        recovered = _try_recover_opinion(vs_ext)
+
+        if recovered is not None:
+            opinions.append({
+                "field": "verificationStatus",
+                "value": vs_code,
+                "opinion": recovered,
+                "source": "extension",
+            })
+        else:
+            prob = _VERIFICATION_STATUS_PROBABILITY.get(vs_code, 0.50)
+            default_u = _VERIFICATION_STATUS_UNCERTAINTY.get(vs_code, 0.30)
+            op = scalar_to_opinion(prob, default_uncertainty=default_u)
+            opinions.append({
+                "field": "verificationStatus",
+                "value": vs_code,
+                "opinion": op,
+                "source": "reconstructed",
+            })
+        nodes_converted += 1
+
+    # ── criticality opinion ───────────────────────────────────────
+    if criticality is not None:
+        crit_prob = _CRITICALITY_PROBABILITY.get(criticality, 0.50)
+        crit_u = _CRITICALITY_UNCERTAINTY.get(criticality, 0.30)
+        crit_op = scalar_to_opinion(crit_prob, default_uncertainty=crit_u)
+        opinions.append({
+            "field": "criticality",
+            "value": criticality,
+            "opinion": crit_op,
+            "source": "reconstructed",
+        })
+        nodes_converted += 1
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:AllergyIntolerance",
+        "id": resource.get("id"),
+        "clinicalStatus": cs_code,
+        "opinions": opinions,
+    }
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return doc, report
+
+
+# ── MedicationStatement handler (from_fhir) ──────────────────────
+
+
+def _from_medication_statement_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 MedicationStatement → jsonld-ex document.
+
+    MedicationStatement.status maps to adherence confidence — the
+    degree to which we believe the patient is/was actually taking
+    the medication.  This is inherently uncertain because FHIR
+    ``MedicationStatement`` data often comes from patient self-report.
+
+    Additional metadata signals:
+
+    - **informationSource** — Practitioner-reported data is more
+      reliable than patient self-report (reduces uncertainty).
+    - **derivedFrom** — supporting evidence (MedicationRequest,
+      MedicationDispense, Observation) reduces uncertainty.
+    """
+    status = resource.get("status", "unknown")
+
+    # Extract informationSource reference type
+    info_source = resource.get("informationSource")
+    source_type = None
+    if isinstance(info_source, dict):
+        ref = info_source.get("reference", "")
+        source_type = ref.split("/")[0] if "/" in ref else None
+
+    # Count derivedFrom references (supporting evidence)
+    derived = resource.get("derivedFrom")
+    derived_count = len(derived) if derived is not None else None
+
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    # Try extension recovery
+    status_ext = resource.get("_status")
+    recovered = _try_recover_opinion(status_ext)
+
+    if recovered is not None:
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": recovered,
+            "source": "extension",
+        })
+    else:
+        prob = _MEDSTMT_STATUS_PROBABILITY.get(status, 0.50)
+        default_u = _MEDSTMT_STATUS_UNCERTAINTY.get(status, 0.30)
+
+        # Information source signal
+        # Practitioner/PractitionerRole → more reliable
+        # Patient/RelatedPerson → less reliable (recall bias)
+        if source_type in ("Practitioner", "PractitionerRole"):
+            default_u *= 0.7
+        elif source_type in ("Patient", "RelatedPerson"):
+            default_u *= 1.3
+
+        op = scalar_to_opinion(
+            prob,
+            basis_count=derived_count,
+            default_uncertainty=default_u,
+        )
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+    nodes_converted += 1
+
+    # Extract medication text
+    med_text = None
+    med_cc = resource.get("medicationCodeableConcept")
+    if isinstance(med_cc, dict):
+        med_text = med_cc.get("text")
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:MedicationStatement",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+    if med_text is not None:
+        doc["medication"] = med_text
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return doc, report
+
+
+# ── ClinicalImpression handler (from_fhir) ───────────────────────
+
+
+def _from_clinical_impression_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 ClinicalImpression → jsonld-ex document.
+
+    ClinicalImpression represents a practitioner's overall clinical
+    assessment.  The opinion is derived from:
+
+    - **status** — ``completed`` vs ``in-progress`` vs
+      ``entered-in-error`` (modulates uncertainty).
+    - **finding[]** — each finding (coded or reference) counts as
+      supporting evidence, reducing uncertainty.
+    - **summary** — preserved for downstream use and can carry
+      an extension for opinion recovery.
+    """
+    status = resource.get("status", "in-progress")
+    summary = resource.get("summary")
+    findings = resource.get("finding", [])
+    finding_count = len(findings) if findings else 0
+
+    # Extract finding references for downstream
+    finding_refs: list[str] = []
+    for f in findings:
+        item_ref = f.get("itemReference")
+        if isinstance(item_ref, dict):
+            ref = item_ref.get("reference")
+            if ref:
+                finding_refs.append(ref)
+
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    # Determine the opinion field — prefer summary if present
+    opinion_field = "summary" if summary is not None else "status"
+
+    # Try extension recovery on summary
+    if summary is not None:
+        summary_ext = resource.get("_summary")
+        recovered = _try_recover_opinion(summary_ext)
+
+        if recovered is not None:
+            opinions.append({
+                "field": "summary",
+                "value": summary,
+                "opinion": recovered,
+                "source": "extension",
+            })
+            nodes_converted += 1
+
+    # If no extension recovered, reconstruct from status + findings
+    if not opinions:
+        # Base uncertainty for a clinical assessment
+        base_u = 0.20
+
+        # Status multiplier
+        multiplier = _CLINICAL_IMPRESSION_STATUS_MULTIPLIER.get(status, 1.0)
+        adjusted_u = base_u * multiplier
+
+        # Finding count reduces uncertainty (evidence signal)
+        if finding_count == 0:
+            adjusted_u *= 1.3
+        elif finding_count >= 3:
+            adjusted_u *= 0.7
+        else:
+            adjusted_u *= 0.9
+
+        # Clamp
+        adjusted_u = max(0.0, min(adjusted_u, 0.99))
+
+        # A completed clinical impression with findings suggests
+        # moderate-to-high belief in the assessment
+        prob = 0.75
+        op = scalar_to_opinion(prob, default_uncertainty=adjusted_u)
+        opinions.append({
+            "field": opinion_field,
+            "value": summary if summary is not None else status,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+        nodes_converted += 1
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:ClinicalImpression",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+    if summary is not None:
+        doc["summary"] = summary
+    if finding_refs:
+        doc["finding_references"] = finding_refs
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return doc, report
+
+
 # ── from_fhir handler dispatch table ──────────────────────────────
 
 _RESOURCE_HANDLERS = {
+    # Phase 1
     "RiskAssessment": _from_risk_assessment_r4,
     "Observation": _from_observation_r4,
     "DiagnosticReport": _from_diagnostic_report_r4,
     "Condition": _from_condition_r4,
+    # Phase 2
+    "AllergyIntolerance": _from_allergy_intolerance_r4,
+    "MedicationStatement": _from_medication_statement_r4,
+    "ClinicalImpression": _from_clinical_impression_r4,
 }
 
 
@@ -777,10 +1140,10 @@ def to_fhir(
     else:
         resource_type = doc_type
 
-    if resource_type not in _SUPPORTED_RESOURCE_TYPES:
+    if resource_type not in _TO_FHIR_HANDLERS:
         raise ValueError(
             f"Unsupported resource type '{resource_type}'. "
-            f"Supported types: {', '.join(sorted(_SUPPORTED_RESOURCE_TYPES))}"
+            f"Supported types: {', '.join(sorted(_TO_FHIR_HANDLERS))}"
         )
 
     handler = _TO_FHIR_HANDLERS[resource_type]
@@ -957,13 +1320,151 @@ def _to_condition_r4(
     return resource, report
 
 
+# ── AllergyIntolerance handler (to_fhir) ─────────────────────
+
+
+def _to_allergy_intolerance_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex document → FHIR R4 AllergyIntolerance."""
+    resource: dict[str, Any] = {
+        "resourceType": "AllergyIntolerance",
+    }
+    if doc.get("id"):
+        resource["id"] = doc["id"]
+
+    # Restore clinicalStatus
+    cs = doc.get("clinicalStatus")
+    if cs:
+        resource["clinicalStatus"] = {"coding": [{"code": cs}]}
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field_name = entry.get("field", "")
+        code = entry.get("value")
+
+        if field_name == "verificationStatus" and code is not None:
+            resource["verificationStatus"] = {
+                "coding": [{"code": code}],
+            }
+            ext = opinion_to_fhir_extension(op)
+            resource["_verificationStatus"] = {"extension": [ext]}
+            nodes_converted += 1
+
+        elif field_name == "criticality" and code is not None:
+            resource["criticality"] = code
+            ext = opinion_to_fhir_extension(op)
+            resource["_criticality"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return resource, report
+
+
+# ── MedicationStatement handler (to_fhir) ────────────────────
+
+
+def _to_medication_statement_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex document → FHIR R4 MedicationStatement."""
+    resource: dict[str, Any] = {
+        "resourceType": "MedicationStatement",
+    }
+    if doc.get("id"):
+        resource["id"] = doc["id"]
+    if doc.get("status"):
+        resource["status"] = doc["status"]
+
+    # Restore medication text
+    med_text = doc.get("medication")
+    if med_text is not None:
+        resource["medicationCodeableConcept"] = {"text": med_text}
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field_name = entry.get("field", "")
+
+        if field_name == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return resource, report
+
+
+# ── ClinicalImpression handler (to_fhir) ─────────────────────
+
+
+def _to_clinical_impression_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex document → FHIR R4 ClinicalImpression."""
+    resource: dict[str, Any] = {
+        "resourceType": "ClinicalImpression",
+    }
+    if doc.get("id"):
+        resource["id"] = doc["id"]
+    if doc.get("status"):
+        resource["status"] = doc["status"]
+    if doc.get("summary"):
+        resource["summary"] = doc["summary"]
+
+    # Restore finding references
+    finding_refs = doc.get("finding_references", [])
+    if finding_refs:
+        resource["finding"] = [
+            {"itemReference": {"reference": ref}} for ref in finding_refs
+        ]
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field_name = entry.get("field", "")
+
+        if field_name == "summary":
+            ext = opinion_to_fhir_extension(op)
+            resource["_summary"] = {"extension": [ext]}
+            nodes_converted += 1
+        elif field_name == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return resource, report
+
+
 # ── to_fhir handler dispatch table ───────────────────────────────
 
 _TO_FHIR_HANDLERS = {
+    # Phase 1
     "RiskAssessment": _to_risk_assessment_r4,
     "Observation": _to_observation_r4,
     "DiagnosticReport": _to_diagnostic_report_r4,
     "Condition": _to_condition_r4,
+    # Phase 2
+    "AllergyIntolerance": _to_allergy_intolerance_r4,
+    "MedicationStatement": _to_medication_statement_r4,
+    "ClinicalImpression": _to_clinical_impression_r4,
 }
 
 
