@@ -185,7 +185,6 @@ from jsonld_ex.compliance_algebra import (
     erasure_scope_opinion,
     residual_contamination,
 )
-
 # Optional modules — import only if dependencies are available
 try:
     from jsonld_ex.cbor_ld import to_cbor, from_cbor, payload_stats, PayloadStats
@@ -196,6 +195,21 @@ try:
     from jsonld_ex.mqtt import (
         to_mqtt_payload, from_mqtt_payload,
         derive_mqtt_topic, derive_mqtt_qos, derive_mqtt_qos_detailed,
+    )
+except ImportError:
+    pass
+
+try:
+    from jsonld_ex.fhir_interop import (
+        scalar_to_opinion,
+        opinion_to_fhir_extension,
+        fhir_extension_to_opinion,
+        from_fhir,
+        to_fhir,
+        fhir_clinical_fuse,
+        FusionReport,
+        FHIR_EXTENSION_URL,
+        SUPPORTED_FHIR_VERSIONS,
     )
 except ImportError:
     pass
@@ -376,4 +390,14 @@ __all__ = [
     "regulatory_change_trigger",
     "erasure_scope_opinion",
     "residual_contamination",
+    # FHIR R4 interoperability
+    "scalar_to_opinion",
+    "opinion_to_fhir_extension",
+    "fhir_extension_to_opinion",
+    "from_fhir",
+    "to_fhir",
+    "fhir_clinical_fuse",
+    "FusionReport",
+    "FHIR_EXTENSION_URL",
+    "SUPPORTED_FHIR_VERSIONS",
 ]

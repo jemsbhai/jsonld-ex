@@ -44,6 +44,10 @@ mqtt = [
 mcp = [
     "mcp>=1.7,<2; python_version>='3.10'",
 ]
+fhir = [
+    # Phase 1: zero external deps (pure JSON manipulation)
+    # Phase 5+: "fhir.resources>=7.0" for FHIR validation
+]
 bench = [
     "rdflib>=7.0",
     "pyshacl>=0.26",
