@@ -102,6 +102,10 @@ from jsonld_ex.fhir_interop._reconciliation import (
     ReconciliationReport,
     fhir_allergy_reconcile,
 )
+from jsonld_ex.fhir_interop._alert_filter import (
+    AlertFilterReport,
+    fhir_filter_alerts,
+)
 
 __all__ = [
     "scalar_to_opinion",
@@ -137,4 +141,7 @@ __all__ = [
     # Allergy reconciliation
     "ReconciliationReport",
     "fhir_allergy_reconcile",
+    # Alert filtering
+    "AlertFilterReport",
+    "fhir_filter_alerts",
 ]

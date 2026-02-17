@@ -219,6 +219,9 @@ try:
         # Allergy reconciliation
         fhir_allergy_reconcile,
         ReconciliationReport,
+        # Alert filtering
+        fhir_filter_alerts,
+        AlertFilterReport,
         # Constants
         FHIR_EXTENSION_URL,
         SUPPORTED_FHIR_VERSIONS,
@@ -436,6 +439,9 @@ __all__ = [
     # FHIR R4 — allergy reconciliation
     "fhir_allergy_reconcile",
     "ReconciliationReport",
+    # FHIR R4 — alert filtering
+    "fhir_filter_alerts",
+    "AlertFilterReport",
     # FHIR R4 — constants
     "FHIR_EXTENSION_URL",
     "SUPPORTED_FHIR_VERSIONS",
