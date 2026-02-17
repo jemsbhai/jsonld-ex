@@ -6,27 +6,41 @@ Subjective Logic opinion model.  Provides mathematically grounded
 uncertainty that composes, fuses, and propagates correctly — capabilities
 that FHIR's scalar probability and categorical code model lack.
 
-Supported FHIR R4 resources:
-  Phase 1:
+Supported FHIR R4 resources (26 types, 4 epistemic tiers):
+
+  Tier 1 — Clinical assertions (rich signal, domain-specific mappings):
   - RiskAssessment      — prediction.probabilityDecimal → Opinion
-  - Observation          — interpretation / valueQuantity → Opinion
-  - DiagnosticReport     — aggregates Observations via fusion
+  - Observation          — interpretation or status fallback → Opinion
+  - DiagnosticReport     — conclusion or status fallback → Opinion
   - Condition            — verificationStatus → continuous Opinion
-  Phase 2:
   - AllergyIntolerance   — verificationStatus + criticality → dual Opinion
   - MedicationStatement  — status → adherence confidence Opinion
   - ClinicalImpression   — status + findings → assessment Opinion
-  Phase 3:
   - DetectedIssue        — severity → alert confidence Opinion
   - Immunization         — status → seroconversion base confidence Opinion
   - FamilyMemberHistory  — status → reported-vs-confirmed evidence Opinion
   - Procedure            — status + outcome/complication/followUp → Opinion
-  Phase 4:
   - Consent              — status → consent lawfulness Opinion
-                           (also available via compliance algebra functions)
-  - Provenance           — recorded + agent/entity signals → chain
-                           reliability Opinion; bridges to W3C PROV-O
-                           via fhir_provenance_to_prov_o()
+  - Provenance           — recorded + agent/entity → chain reliability Opinion
+
+  Tier 2 — Clinical workflow (status-based, "event occurred as documented"):
+  - Encounter            — status → visit validity Opinion
+  - MedicationRequest    — status → prescription validity Opinion
+  - MedicationAdministration — status → administration validity Opinion
+  - CarePlan             — status → plan adherence Opinion
+  - Goal                 — lifecycleStatus + achievementStatus → dual Opinion
+  - CareTeam             — status → assignment validity Opinion
+  - ImagingStudy         — status → study validity Opinion
+
+  Tier 3 — Administrative identity ("this record is accurate and current"):
+  - Patient              — data completeness → record accuracy Opinion
+  - Organization         — boolean active → record validity Opinion
+  - Practitioner         — boolean active → record validity Opinion
+  - Device               — status → device record validity Opinion
+
+  Tier 4 — Financial ("this claim/adjudication is valid"):
+  - Claim                — status → claim validity Opinion
+  - ExplanationOfBenefit — status + outcome → dual Opinion
 
 Architecture notes:
   - All public functions accept a ``fhir_version`` parameter (default "R4")
@@ -34,6 +48,8 @@ Architecture notes:
   - Version-specific logic is isolated in private ``_*_r4()`` functions.
   - The SL opinion is embedded in FHIR resources via the standard extension
     mechanism, ensuring zero breaking changes to existing FHIR infrastructure.
+  - Generic ``_make_status_handler`` factory eliminates boilerplate for
+    simple status-based converters.
 
 Round-trip fidelity scope:
   The ``from_fhir() → to_fhir()`` round-trip preserves:
@@ -56,6 +72,7 @@ References:
 from jsonld_ex.fhir_interop._constants import (
     FHIR_EXTENSION_URL,
     SUPPORTED_FHIR_VERSIONS,
+    SUPPORTED_RESOURCE_TYPES,
     FAMILY_HISTORY_DEFAULT_UNCERTAINTY,
     CONSENT_STATUS_PROBABILITY,
     CONSENT_STATUS_UNCERTAINTY,
@@ -108,21 +125,28 @@ from jsonld_ex.fhir_interop._alert_filter import (
 )
 
 __all__ = [
+    # Core conversion
     "scalar_to_opinion",
     "opinion_to_fhir_extension",
     "fhir_extension_to_opinion",
     "from_fhir",
     "to_fhir",
+    # Constants
+    "FHIR_EXTENSION_URL",
+    "SUPPORTED_FHIR_VERSIONS",
+    "SUPPORTED_RESOURCE_TYPES",
+    "FAMILY_HISTORY_DEFAULT_UNCERTAINTY",
+    "CONSENT_STATUS_PROBABILITY",
+    "CONSENT_STATUS_UNCERTAINTY",
+    # Fusion & trust
     "fhir_clinical_fuse",
     "fhir_trust_chain",
     "FusionReport",
     "TrustChainReport",
-    "FHIR_EXTENSION_URL",
-    "SUPPORTED_FHIR_VERSIONS",
-    "FAMILY_HISTORY_DEFAULT_UNCERTAINTY",
+    # Temporal & escalation
     "fhir_temporal_decay",
     "fhir_escalation_policy",
-    # Phase 4: Compliance algebra bridge
+    # Compliance algebra bridge
     "fhir_consent_to_opinion",
     "opinion_to_fhir_consent",
     "fhir_consent_validity",
@@ -130,13 +154,11 @@ __all__ = [
     "fhir_multi_site_meet",
     "fhir_consent_expiry",
     "fhir_consent_regulatory_change",
-    "CONSENT_STATUS_PROBABILITY",
-    "CONSENT_STATUS_UNCERTAINTY",
-    # Phase 4: Bundle processing
+    # Bundle processing
     "BundleReport",
     "fhir_bundle_annotate",
     "fhir_bundle_fuse",
-    # Phase 4: Provenance bridge
+    # Provenance bridge
     "fhir_provenance_to_prov_o",
     # Allergy reconciliation
     "ReconciliationReport",
