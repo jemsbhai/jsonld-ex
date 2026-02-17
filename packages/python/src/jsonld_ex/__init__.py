@@ -172,19 +172,6 @@ from jsonld_ex.dpv_interop import (
     LEGAL_BASIS_TO_DPV,
     CATEGORY_TO_DPV,
 )
-from jsonld_ex.compliance_algebra import (
-    ComplianceOpinion,
-    jurisdictional_meet,
-    compliance_propagation,
-    ProvenanceChain,
-    consent_validity,
-    withdrawal_override,
-    expiry_trigger,
-    review_due_trigger,
-    regulatory_change_trigger,
-    erasure_scope_opinion,
-    residual_contamination,
-)
 # Optional modules — import only if dependencies are available
 try:
     from jsonld_ex.cbor_ld import to_cbor, from_cbor, payload_stats, PayloadStats
@@ -201,17 +188,40 @@ except ImportError:
 
 try:
     from jsonld_ex.fhir_interop import (
+        # Core conversion
         scalar_to_opinion,
         opinion_to_fhir_extension,
         fhir_extension_to_opinion,
         from_fhir,
         to_fhir,
+        # Fusion & trust chains
         fhir_clinical_fuse,
+        fhir_trust_chain,
         FusionReport,
-        FHIR_EXTENSION_URL,
-        SUPPORTED_FHIR_VERSIONS,
+        TrustChainReport,
+        # Temporal & escalation
         fhir_temporal_decay,
         fhir_escalation_policy,
+        # Bundle processing
+        fhir_bundle_annotate,
+        fhir_bundle_fuse,
+        BundleReport,
+        # Compliance algebra bridge
+        fhir_consent_to_opinion,
+        opinion_to_fhir_consent,
+        fhir_consent_validity,
+        fhir_consent_withdrawal,
+        fhir_multi_site_meet,
+        fhir_consent_expiry,
+        fhir_consent_regulatory_change,
+        # Provenance bridge
+        fhir_provenance_to_prov_o,
+        # Constants
+        FHIR_EXTENSION_URL,
+        SUPPORTED_FHIR_VERSIONS,
+        FAMILY_HISTORY_DEFAULT_UNCERTAINTY,
+        CONSENT_STATUS_PROBABILITY,
+        CONSENT_STATUS_UNCERTAINTY,
     )
 except ImportError:
     pass
@@ -392,16 +402,38 @@ __all__ = [
     "regulatory_change_trigger",
     "erasure_scope_opinion",
     "residual_contamination",
-    # FHIR R4 interoperability
+    # FHIR R4 interoperability — core conversion
     "scalar_to_opinion",
     "opinion_to_fhir_extension",
     "fhir_extension_to_opinion",
     "from_fhir",
     "to_fhir",
+    # FHIR R4 — fusion & trust chains
     "fhir_clinical_fuse",
+    "fhir_trust_chain",
     "FusionReport",
-    "FHIR_EXTENSION_URL",
-    "SUPPORTED_FHIR_VERSIONS",
+    "TrustChainReport",
+    # FHIR R4 — temporal & escalation
     "fhir_temporal_decay",
     "fhir_escalation_policy",
+    # FHIR R4 — bundle processing
+    "fhir_bundle_annotate",
+    "fhir_bundle_fuse",
+    "BundleReport",
+    # FHIR R4 — compliance algebra bridge
+    "fhir_consent_to_opinion",
+    "opinion_to_fhir_consent",
+    "fhir_consent_validity",
+    "fhir_consent_withdrawal",
+    "fhir_multi_site_meet",
+    "fhir_consent_expiry",
+    "fhir_consent_regulatory_change",
+    # FHIR R4 — provenance bridge
+    "fhir_provenance_to_prov_o",
+    # FHIR R4 — constants
+    "FHIR_EXTENSION_URL",
+    "SUPPORTED_FHIR_VERSIONS",
+    "FAMILY_HISTORY_DEFAULT_UNCERTAINTY",
+    "CONSENT_STATUS_PROBABILITY",
+    "CONSENT_STATUS_UNCERTAINTY",
 ]

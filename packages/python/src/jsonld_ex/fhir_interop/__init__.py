@@ -71,7 +71,9 @@ from jsonld_ex.fhir_interop._converters import (
 )
 from jsonld_ex.fhir_interop._fusion import (
     FusionReport,
+    TrustChainReport,
     fhir_clinical_fuse,
+    fhir_trust_chain,
 )
 from jsonld_ex.fhir_interop._temporal import (
     fhir_temporal_decay,
@@ -104,7 +106,9 @@ __all__ = [
     "from_fhir",
     "to_fhir",
     "fhir_clinical_fuse",
+    "fhir_trust_chain",
     "FusionReport",
+    "TrustChainReport",
     "FHIR_EXTENSION_URL",
     "SUPPORTED_FHIR_VERSIONS",
     "FAMILY_HISTORY_DEFAULT_UNCERTAINTY",
