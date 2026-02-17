@@ -76,6 +76,11 @@ from jsonld_ex.fhir_interop._temporal import (
 from jsonld_ex.fhir_interop._escalation import (
     fhir_escalation_policy,
 )
+from jsonld_ex.fhir_interop._bundle import (
+    BundleReport,
+    fhir_bundle_annotate,
+    fhir_bundle_fuse,
+)
 from jsonld_ex.fhir_interop._compliance import (
     fhir_consent_to_opinion,
     opinion_to_fhir_consent,
@@ -109,4 +114,8 @@ __all__ = [
     "fhir_consent_regulatory_change",
     "CONSENT_STATUS_PROBABILITY",
     "CONSENT_STATUS_UNCERTAINTY",
+    # Phase 4: Bundle processing
+    "BundleReport",
+    "fhir_bundle_annotate",
+    "fhir_bundle_fuse",
 ]
