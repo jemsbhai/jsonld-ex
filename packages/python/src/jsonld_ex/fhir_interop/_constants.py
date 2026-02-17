@@ -260,4 +260,5 @@ SUPPORTED_RESOURCE_TYPES = frozenset({
     "Procedure",
     # Phase 4
     "Consent",
+    "Provenance",
 })

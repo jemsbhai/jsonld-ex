@@ -24,6 +24,9 @@ Supported FHIR R4 resources:
   Phase 4:
   - Consent              — status → consent lawfulness Opinion
                            (also available via compliance algebra functions)
+  - Provenance           — recorded + agent/entity signals → chain
+                           reliability Opinion; bridges to W3C PROV-O
+                           via fhir_provenance_to_prov_o()
 
 Architecture notes:
   - All public functions accept a ``fhir_version`` parameter (default "R4")
@@ -90,6 +93,9 @@ from jsonld_ex.fhir_interop._compliance import (
     fhir_consent_expiry,
     fhir_consent_regulatory_change,
 )
+from jsonld_ex.fhir_interop._provenance import (
+    fhir_provenance_to_prov_o,
+)
 
 __all__ = [
     "scalar_to_opinion",
@@ -118,4 +124,6 @@ __all__ = [
     "BundleReport",
     "fhir_bundle_annotate",
     "fhir_bundle_fuse",
+    # Phase 4: Provenance bridge
+    "fhir_provenance_to_prov_o",
 ]

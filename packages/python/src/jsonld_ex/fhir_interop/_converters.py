@@ -966,6 +966,219 @@ def _from_consent_r4(
     return doc, report
 
 
+# ── Provenance handler (from_fhir) ─────────────────────────────────
+
+
+def _from_provenance_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 Provenance → jsonld-ex document.
+
+    Proposition under assessment: "this provenance record is reliable
+    and complete."  The SL opinion is reconstructed from metadata
+    signals that indicate the quality and completeness of the
+    provenance chain.
+
+    Uncertainty-lowering signals:
+      - ``recorded`` timestamp present (documented when)
+      - Multiple agents with distinct roles (corroboration)
+      - Agents with ``who`` references (identifiable actors)
+      - Entities with explicit ``role`` values (complete chain)
+
+    Uncertainty-raising signals:
+      - Missing ``recorded`` timestamp
+      - Empty or no agent list
+      - Agents without ``who`` (anonymous actors)
+
+    Base probability: 0.75 (a provenance record exists because
+    something was documented — moderate positive prior).
+
+    Default uncertainty: 0.20 (higher than clinical resources to
+    reflect the inherent incompleteness of provenance metadata).
+
+    All FHIR Provenance fields are preserved in the output doc —
+    no data is excluded.
+    """
+    recorded = resource.get("recorded")
+
+    # ── Extract and flatten agents ────────────────────────────────
+    raw_agents = resource.get("agent", [])
+    agents: list[dict[str, Any]] = []
+    identified_count = 0
+    for ag in raw_agents:
+        flat: dict[str, Any] = {}
+
+        # Extract type code from CodeableConcept
+        type_obj = ag.get("type")
+        if isinstance(type_obj, dict):
+            for coding in type_obj.get("coding", []):
+                code = coding.get("code")
+                if code:
+                    flat["type"] = code
+                    break
+
+        # Extract who reference
+        who_obj = ag.get("who")
+        if isinstance(who_obj, dict):
+            ref = who_obj.get("reference")
+            if ref:
+                flat["who"] = ref
+                identified_count += 1
+
+        # Extract onBehalfOf (delegation)
+        obh_obj = ag.get("onBehalfOf")
+        if isinstance(obh_obj, dict):
+            obh_ref = obh_obj.get("reference")
+            if obh_ref:
+                flat["onBehalfOf"] = obh_ref
+
+        agents.append(flat)
+
+    agent_count = len(agents)
+
+    # ── Extract and flatten entities ──────────────────────────────
+    raw_entities = resource.get("entity", [])
+    entities: list[dict[str, Any]] = []
+    roles_present = 0
+    for ent in raw_entities:
+        flat_ent: dict[str, Any] = {}
+        role = ent.get("role")
+        if role is not None:
+            flat_ent["role"] = role
+            roles_present += 1
+        what_obj = ent.get("what")
+        if isinstance(what_obj, dict):
+            ref = what_obj.get("reference")
+            if ref:
+                flat_ent["what"] = ref
+        entities.append(flat_ent)
+
+    # ── Extract targets ───────────────────────────────────────────
+    raw_targets = resource.get("target", [])
+    targets: list[dict[str, Any]] = []
+    for t in raw_targets:
+        if isinstance(t, dict):
+            targets.append(t)  # preserve as-is (contains "reference")
+
+    # ── Extract activity code ─────────────────────────────────────
+    activity = None
+    activity_obj = resource.get("activity")
+    if isinstance(activity_obj, dict):
+        for coding in activity_obj.get("coding", []):
+            code = coding.get("code")
+            if code:
+                activity = code
+                break
+
+    # ── Extract reason codes ──────────────────────────────────────
+    reason_list: list[str] = []
+    for reason_obj in resource.get("reason", []):
+        if isinstance(reason_obj, dict):
+            for coding in reason_obj.get("coding", []):
+                code = coding.get("code")
+                if code:
+                    reason_list.append(code)
+                    break
+
+    # ── Extract policy, location, period ──────────────────────────
+    policy = resource.get("policy")
+
+    location_ref = None
+    location_obj = resource.get("location")
+    if isinstance(location_obj, dict):
+        location_ref = location_obj.get("reference")
+
+    period = resource.get("period")  # preserve as-is
+
+    # ── Reconstruct SL opinion ────────────────────────────────────
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    # Try extension recovery on _recorded
+    recorded_ext = resource.get("_recorded")
+    recovered = _try_recover_opinion(recorded_ext)
+
+    if recovered is not None:
+        opinion_field = "recorded" if recorded else "provenance"
+        opinions.append({
+            "field": opinion_field,
+            "value": recorded if recorded else None,
+            "opinion": recovered,
+            "source": "extension",
+        })
+    else:
+        # Reconstruct from metadata signals
+        base_prob = 0.75
+        u = 0.20
+
+        # Signal: recorded timestamp
+        if recorded is not None:
+            u *= 0.8
+        else:
+            u *= 1.4
+
+        # Signal: agent count and identification
+        if agent_count == 0:
+            u *= 1.5
+        elif agent_count >= 2:
+            u *= 0.7
+        # else: single agent, baseline
+
+        # Signal: agents with 'who' (identifiable)
+        if agent_count > 0:
+            anon_count = agent_count - identified_count
+            if anon_count > 0:
+                # Proportion of anonymous agents raises uncertainty
+                u *= 1.0 + 0.3 * (anon_count / agent_count)
+
+        # Signal: entities with explicit roles
+        if roles_present > 0:
+            u *= 0.8
+
+        # Clamp to valid range [0, 1)
+        u = max(0.0, min(u, 0.99))
+
+        op = scalar_to_opinion(base_prob, default_uncertainty=u)
+
+        opinion_field = "recorded" if recorded else "provenance"
+        opinions.append({
+            "field": opinion_field,
+            "value": recorded if recorded else None,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+    nodes_converted += 1
+
+    # ── Build jsonld-ex doc ───────────────────────────────────────
+    doc: dict[str, Any] = {
+        "@type": "fhir:Provenance",
+        "id": resource.get("id"),
+        "opinions": opinions,
+        "targets": targets,
+        "agents": agents,
+        "entities": entities,
+    }
+
+    if recorded is not None:
+        doc["recorded"] = recorded
+    if activity is not None:
+        doc["activity"] = activity
+    if policy is not None:
+        doc["policy"] = policy
+    if reason_list:
+        doc["reason"] = reason_list
+    if location_ref is not None:
+        doc["location"] = location_ref
+    if period is not None:
+        doc["period"] = period
+
+    report = ConversionReport(
+        success=True,
+        nodes_converted=nodes_converted,
+    )
+    return doc, report
+
+
 # ── from_fhir handler dispatch table ──────────────────────────────
 
 _RESOURCE_HANDLERS = {
@@ -981,6 +1194,7 @@ _RESOURCE_HANDLERS = {
     "FamilyMemberHistory": _from_family_member_history_r4,
     "Procedure": _from_procedure_r4,
     "Consent": _from_consent_r4,
+    "Provenance": _from_provenance_r4,
 }
 
 
@@ -1465,6 +1679,111 @@ def _to_consent_r4(
     return resource, report
 
 
+# ── Provenance handler (to_fhir) ────────────────────────────────
+
+
+def _to_provenance_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert jsonld-ex document → FHIR R4 Provenance.
+
+    Reverses ``_from_provenance_r4()``.  Reconstructs the full FHIR
+    Provenance structure including CodeableConcept wrappers for agent
+    type, Reference wrappers for who/what/location/onBehalfOf, and
+    embeds the SL opinion as an extension on ``_recorded``.
+    """
+    resource: dict[str, Any] = {"resourceType": "Provenance"}
+    if doc.get("id"):
+        resource["id"] = doc["id"]
+    if doc.get("recorded"):
+        resource["recorded"] = doc["recorded"]
+
+    # ── Targets ──────────────────────────────────────────────────
+    targets = doc.get("targets", [])
+    if targets:
+        resource["target"] = targets  # already in FHIR Reference format
+
+    # ── Agents ───────────────────────────────────────────────────
+    agents = doc.get("agents", [])
+    if agents:
+        fhir_agents: list[dict[str, Any]] = []
+        for ag in agents:
+            fhir_ag: dict[str, Any] = {}
+
+            # type → CodeableConcept
+            agent_type = ag.get("type")
+            if agent_type is not None:
+                fhir_ag["type"] = {"coding": [{"code": agent_type}]}
+
+            # who → Reference
+            who = ag.get("who")
+            if who is not None:
+                fhir_ag["who"] = {"reference": who}
+
+            # onBehalfOf → Reference
+            obh = ag.get("onBehalfOf")
+            if obh is not None:
+                fhir_ag["onBehalfOf"] = {"reference": obh}
+
+            fhir_agents.append(fhir_ag)
+        resource["agent"] = fhir_agents
+
+    # ── Entities ─────────────────────────────────────────────────
+    entities = doc.get("entities", [])
+    if entities:
+        fhir_entities: list[dict[str, Any]] = []
+        for ent in entities:
+            fhir_ent: dict[str, Any] = {}
+            role = ent.get("role")
+            if role is not None:
+                fhir_ent["role"] = role
+            what = ent.get("what")
+            if what is not None:
+                fhir_ent["what"] = {"reference": what}
+            fhir_entities.append(fhir_ent)
+        resource["entity"] = fhir_entities
+
+    # ── Activity → CodeableConcept ───────────────────────────────
+    activity = doc.get("activity")
+    if activity is not None:
+        resource["activity"] = {"coding": [{"code": activity}]}
+
+    # ── Reason → list[CodeableConcept] ────────────────────────────
+    reason = doc.get("reason")
+    if reason:
+        resource["reason"] = [
+            {"coding": [{"code": r}]} for r in reason
+        ]
+
+    # ── Policy (list[uri]) ───────────────────────────────────────
+    policy = doc.get("policy")
+    if policy is not None:
+        resource["policy"] = policy
+
+    # ── Location → Reference ─────────────────────────────────────
+    location = doc.get("location")
+    if location is not None:
+        resource["location"] = {"reference": location}
+
+    # ── Period (preserve as-is) ──────────────────────────────────
+    period = doc.get("period")
+    if period is not None:
+        resource["period"] = period
+
+    # ── Embed SL opinion as extension on _recorded ───────────────
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        ext = opinion_to_fhir_extension(op)
+        resource["_recorded"] = {"extension": [ext]}
+        nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
 # ── to_fhir handler dispatch table ───────────────────────────────
 
 _TO_FHIR_HANDLERS = {
@@ -1480,4 +1799,5 @@ _TO_FHIR_HANDLERS = {
     "FamilyMemberHistory": _to_family_member_history_r4,
     "Procedure": _to_procedure_r4,
     "Consent": _to_consent_r4,
+    "Provenance": _to_provenance_r4,
 }
