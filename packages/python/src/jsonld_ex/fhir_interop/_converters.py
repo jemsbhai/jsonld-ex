@@ -289,6 +289,10 @@ def _from_observation_r4(
         "opinions": opinions,
     }
 
+    effective_dt = resource.get("effectiveDateTime")
+    if effective_dt is not None:
+        doc["effectiveDateTime"] = effective_dt
+
     value_qty = resource.get("valueQuantity")
     if value_qty is not None:
         doc["value"] = value_qty
@@ -390,6 +394,10 @@ def _from_diagnostic_report_r4(
     if conclusion is not None:
         doc["conclusion"] = conclusion
 
+    effective_dt = resource.get("effectiveDateTime")
+    if effective_dt is not None:
+        doc["effectiveDateTime"] = effective_dt
+
     report = ConversionReport(
         success=True,
         nodes_converted=nodes_converted,
@@ -457,6 +465,13 @@ def _from_condition_r4(
         "clinicalStatus": cs_code,
         "opinions": opinions,
     }
+
+    onset_dt = resource.get("onsetDateTime")
+    if onset_dt is not None:
+        doc["onsetDateTime"] = onset_dt
+    recorded_date = resource.get("recordedDate")
+    if recorded_date is not None:
+        doc["recordedDate"] = recorded_date
 
     report = ConversionReport(
         success=True,
@@ -1395,6 +1410,7 @@ def _make_status_handler(
     uncertainty_map: dict[str, float],
     *,
     status_field: str = "status",
+    passthrough_fields: tuple[str, ...] = (),
 ):
     """Factory for simple status-based from_fhir handlers.
 
@@ -1402,7 +1418,8 @@ def _make_status_handler(
     1. Checks for an extension on ``_<status_field>`` (exact recovery).
     2. Falls back to a reconstructed opinion from the status code.
     3. Returns a jsonld-ex document with ``@type``, ``id``, ``status``,
-       and ``opinions``.
+       ``opinions``, and any fields listed in *passthrough_fields*
+       copied verbatim from the FHIR resource (for temporal decay, etc.).
     """
 
     def handler(
@@ -1439,6 +1456,12 @@ def _make_status_handler(
             "opinions": opinions,
         }
 
+        # Copy timestamp / metadata fields for temporal decay
+        for field_name in passthrough_fields:
+            val = resource.get(field_name)
+            if val is not None:
+                doc[field_name] = val
+
         report = ConversionReport(success=True, nodes_converted=1)
         return doc, report
 
@@ -1449,38 +1472,45 @@ def _make_status_handler(
 
 _from_encounter_r4 = _make_status_handler(
     "Encounter", ENCOUNTER_STATUS_PROBABILITY, ENCOUNTER_STATUS_UNCERTAINTY,
+    passthrough_fields=("period",),
 )
 
 _from_medication_request_r4 = _make_status_handler(
     "MedicationRequest",
     MEDICATION_REQUEST_STATUS_PROBABILITY,
     MEDICATION_REQUEST_STATUS_UNCERTAINTY,
+    passthrough_fields=("authoredOn",),
 )
 
 _from_care_plan_r4 = _make_status_handler(
     "CarePlan", CARE_PLAN_STATUS_PROBABILITY, CARE_PLAN_STATUS_UNCERTAINTY,
+    passthrough_fields=("period",),
 )
 
 _from_care_team_r4 = _make_status_handler(
     "CareTeam", CARE_TEAM_STATUS_PROBABILITY, CARE_TEAM_STATUS_UNCERTAINTY,
+    passthrough_fields=("period",),
 )
 
 _from_imaging_study_r4 = _make_status_handler(
     "ImagingStudy",
     IMAGING_STUDY_STATUS_PROBABILITY,
     IMAGING_STUDY_STATUS_UNCERTAINTY,
+    passthrough_fields=("started",),
 )
 
 _from_medication_administration_r4 = _make_status_handler(
     "MedicationAdministration",
     MED_ADMIN_STATUS_PROBABILITY,
     MED_ADMIN_STATUS_UNCERTAINTY,
+    passthrough_fields=("effectiveDateTime",),
 )
 
 # ── Batch 2: Administrative ─────────────────────────────────────
 
 _from_device_r4 = _make_status_handler(
     "Device", DEVICE_STATUS_PROBABILITY, DEVICE_STATUS_UNCERTAINTY,
+    passthrough_fields=("manufactureDate",),
 )
 
 
@@ -1659,6 +1689,7 @@ def _from_goal_r4(
 
 _from_claim_r4 = _make_status_handler(
     "Claim", CLAIM_STATUS_PROBABILITY, CLAIM_STATUS_UNCERTAINTY,
+    passthrough_fields=("created",),
 )
 
 
@@ -1730,6 +1761,9 @@ def _from_eob_r4(
     }
     if outcome is not None:
         doc["outcome"] = outcome
+    created = resource.get("created")
+    if created is not None:
+        doc["created"] = created
 
     report = ConversionReport(success=True, nodes_converted=nodes_converted)
     return doc, report

@@ -17,34 +17,66 @@ from jsonld_ex.owl_interop import ConversionReport
 
 # Timestamp field priority: we search these keys in order to find
 # the most clinically relevant timestamp for a FHIR-derived document.
+#
+# Flat fields are checked first (most specific), then nested paths.
 _TIMESTAMP_FIELDS: tuple[str, ...] = (
-    "effectiveDateTime",   # Observation, DiagnosticReport
+    # Phase 1–4: clinical assertion types
+    "effectiveDateTime",   # Observation, DiagnosticReport, MedicationAdministration
     "occurrenceDateTime",  # Immunization, Procedure
     "onsetDateTime",       # Condition, AllergyIntolerance
     "recordedDate",        # Condition, AllergyIntolerance (fallback)
     "date",                # ClinicalImpression, DetectedIssue
     "assertedDate",        # AllergyIntolerance
+    # Phase 6: workflow, financial, administrative
+    "authoredOn",          # MedicationRequest
+    "created",             # Claim, ExplanationOfBenefit
+    "started",             # ImagingStudy
+    "manufactureDate",     # Device
 )
+
+# Nested timestamp paths: (outer_key, inner_key)
+_NESTED_TIMESTAMP_FIELDS: tuple[tuple[str, str], ...] = (
+    ("period", "start"),   # Encounter, CarePlan, CareTeam
+)
+
+
+def _parse_iso(raw: str) -> datetime | None:
+    """Parse an ISO-8601 string to a timezone-aware datetime, or None."""
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, AttributeError):
+        return None
 
 
 def _extract_timestamp(doc: dict[str, Any]) -> datetime | None:
     """Extract the best available timestamp from a jsonld-ex document.
 
-    Searches ``_TIMESTAMP_FIELDS`` in priority order and returns the
-    first successfully parsed ISO-8601 datetime.  Returns ``None``
-    if no parseable timestamp is found.
+    Searches flat ``_TIMESTAMP_FIELDS`` in priority order, then
+    nested ``_NESTED_TIMESTAMP_FIELDS``.  Returns the first
+    successfully parsed ISO-8601 datetime, or ``None``.
     """
+    # Flat fields first
     for field_name in _TIMESTAMP_FIELDS:
         raw = doc.get(field_name)
         if raw is None:
             continue
-        try:
-            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+        dt = _parse_iso(raw)
+        if dt is not None:
             return dt
-        except (ValueError, AttributeError):
-            continue
+
+    # Nested fields (e.g. period.start)
+    for outer, inner in _NESTED_TIMESTAMP_FIELDS:
+        obj = doc.get(outer)
+        if isinstance(obj, dict):
+            raw = obj.get(inner)
+            if raw is not None:
+                dt = _parse_iso(raw)
+                if dt is not None:
+                    return dt
+
     return None
 
 
