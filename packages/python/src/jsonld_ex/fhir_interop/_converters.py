@@ -35,6 +35,10 @@ from jsonld_ex.fhir_interop._constants import (
     PROCEDURE_STATUS_UNCERTAINTY,
     CONSENT_STATUS_PROBABILITY,
     CONSENT_STATUS_UNCERTAINTY,
+    OBSERVATION_STATUS_PROBABILITY,
+    OBSERVATION_STATUS_UNCERTAINTY,
+    DIAGNOSTIC_REPORT_STATUS_PROBABILITY,
+    DIAGNOSTIC_REPORT_STATUS_UNCERTAINTY,
 )
 from jsonld_ex.fhir_interop._scalar import (
     scalar_to_opinion,
@@ -225,6 +229,30 @@ def _from_observation_r4(
                 })
             nodes_converted += 1
 
+    # ── Status-based fallback when no interpretation is present ────
+    if not opinions:
+        status_ext = resource.get("_status")
+        recovered = _try_recover_opinion(status_ext)
+
+        if recovered is not None:
+            opinions.append({
+                "field": "status",
+                "value": status,
+                "opinion": recovered,
+                "source": "extension",
+            })
+        else:
+            prob = OBSERVATION_STATUS_PROBABILITY.get(status, 0.50)
+            default_u = OBSERVATION_STATUS_UNCERTAINTY.get(status, 0.30)
+            op = scalar_to_opinion(prob, default_uncertainty=default_u)
+            opinions.append({
+                "field": "status",
+                "value": status,
+                "opinion": op,
+                "source": "reconstructed",
+            })
+        nodes_converted += 1
+
     doc: dict[str, Any] = {
         "@type": "fhir:Observation",
         "id": resource.get("id"),
@@ -271,7 +299,57 @@ def _from_diagnostic_report_r4(
                 "opinion": recovered,
                 "source": "extension",
             })
-            nodes_converted += 1
+        else:
+            # Reconstruct opinion from status signal; the conclusion
+            # text itself is categorical, so we use a moderate base
+            # probability and let status modulate uncertainty.
+            prob = DIAGNOSTIC_REPORT_STATUS_PROBABILITY.get(status, 0.50)
+            default_u = DIAGNOSTIC_REPORT_STATUS_UNCERTAINTY.get(status, 0.30)
+            op = scalar_to_opinion(prob, default_uncertainty=default_u)
+            opinions.append({
+                "field": "conclusion",
+                "value": conclusion,
+                "opinion": op,
+                "source": "reconstructed",
+            })
+        nodes_converted += 1
+
+    # ── Status-based fallback when no conclusion is present ────────
+    if not opinions:
+        status_ext = resource.get("_status")
+        recovered = _try_recover_opinion(status_ext)
+
+        if recovered is not None:
+            opinions.append({
+                "field": "status",
+                "value": status,
+                "opinion": recovered,
+                "source": "extension",
+            })
+        else:
+            prob = DIAGNOSTIC_REPORT_STATUS_PROBABILITY.get(status, 0.50)
+            default_u = DIAGNOSTIC_REPORT_STATUS_UNCERTAINTY.get(status, 0.30)
+
+            # Result count modulates uncertainty: more linked
+            # observations = more supporting evidence.
+            result_count = len(result_refs)
+            if result_count == 0:
+                default_u *= 1.3
+            elif result_count >= 3:
+                default_u *= 0.7
+            else:
+                default_u *= 0.9
+
+            default_u = max(0.0, min(default_u, 0.99))
+
+            op = scalar_to_opinion(prob, default_uncertainty=default_u)
+            opinions.append({
+                "field": "status",
+                "value": status,
+                "opinion": op,
+                "source": "reconstructed",
+            })
+        nodes_converted += 1
 
     doc: dict[str, Any] = {
         "@type": "fhir:DiagnosticReport",
@@ -1402,14 +1480,19 @@ def _to_observation_r4(
 
     for entry in opinions:
         op: Opinion = entry["opinion"]
+        field_name = entry.get("field", "")
         code = entry.get("value")
 
-        if code is not None:
+        if field_name == "interpretation" and code is not None:
             resource.setdefault("interpretation", []).append({
                 "coding": [{"code": code}],
             })
             ext = opinion_to_fhir_extension(op)
             resource["_interpretation"] = {"extension": [ext]}
+            nodes_converted += 1
+        elif field_name == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
             nodes_converted += 1
 
     report = ConversionReport(success=True, nodes_converted=nodes_converted)
@@ -1445,6 +1528,10 @@ def _to_diagnostic_report_r4(
         if field == "conclusion":
             ext = opinion_to_fhir_extension(op)
             resource["_conclusion"] = {"extension": [ext]}
+            nodes_converted += 1
+        elif field == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
             nodes_converted += 1
 
     report = ConversionReport(success=True, nodes_converted=nodes_converted)

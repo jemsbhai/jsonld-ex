@@ -718,12 +718,14 @@ class TestFromFhirObservation:
         assert entry["source"] == "extension"
         assert abs(entry["opinion"].belief - 0.80) < 1e-9
 
-    def test_no_interpretation_no_opinion(self):
-        """Observation without interpretation → empty opinions list."""
+    def test_no_interpretation_falls_back_to_status(self):
+        """Observation without interpretation → status-based fallback opinion."""
         resource = _observation()  # no interpretation
         doc, report = from_fhir(resource)
         assert report.success is True
-        assert doc["opinions"] == []
+        # Status-based fallback should produce an opinion
+        assert len(doc["opinions"]) >= 1
+        assert doc["opinions"][0]["field"] == "status"
 
 
 # ── DiagnosticReport tests ────────────────────────────────────────
@@ -776,12 +778,14 @@ class TestFromFhirDiagnosticReport:
         assert entry["source"] == "extension"
         assert abs(entry["opinion"].belief - 0.75) < 1e-9
 
-    def test_no_conclusion_no_opinion(self):
-        """DiagnosticReport without conclusion → no opinions, still succeeds."""
+    def test_no_conclusion_falls_back_to_status(self):
+        """DiagnosticReport without conclusion → status-based fallback opinion."""
         resource = _diagnostic_report()
         doc, report = from_fhir(resource)
         assert report.success is True
-        assert doc["opinions"] == []
+        # Status-based fallback should produce an opinion
+        assert len(doc["opinions"]) >= 1
+        assert doc["opinions"][0]["field"] == "status"
 
 
 # ── Condition tests ───────────────────────────────────────────────

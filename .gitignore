@@ -36,6 +36,9 @@ experiments/**/output/
 *.ipynb_checkpoints/
 .ipynb_checkpoints/
 
+# Downloaded data (Synthea, benchmarks, etc.) — use tools/ scripts to fetch
+data/
+
 # Debug files
 packages/js/debug-*.ts
 packages/js/*_output.txt

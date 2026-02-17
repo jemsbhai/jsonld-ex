@@ -241,6 +241,67 @@ CONSENT_STATUS_UNCERTAINTY: dict[str, float] = {
 }
 
 
+# ── Phase 5: Observation status → validity confidence ─────────────
+#
+# When Observation lacks an interpretation code (very common in
+# real-world data like Synthea), we fall back to a status-based
+# opinion.  Proposition: "this observation is valid and reliable."
+
+OBSERVATION_STATUS_PROBABILITY: dict[str, float] = {
+    "final": 0.85,
+    "amended": 0.85,
+    "corrected": 0.85,
+    "preliminary": 0.60,
+    "registered": 0.50,
+    "cancelled": 0.15,
+    "entered-in-error": 0.50,
+    "unknown": 0.50,
+}
+
+OBSERVATION_STATUS_UNCERTAINTY: dict[str, float] = {
+    "final": 0.15,
+    "amended": 0.15,
+    "corrected": 0.15,
+    "preliminary": 0.35,
+    "registered": 0.40,
+    "cancelled": 0.20,
+    "entered-in-error": 0.70,
+    "unknown": 0.45,
+}
+
+# ── Phase 5: DiagnosticReport status → validity confidence ────────
+#
+# When DiagnosticReport lacks a conclusion text, we fall back to a
+# status-based opinion.  Result count modulates uncertainty.
+# Proposition: "this report is valid and reliable."
+
+DIAGNOSTIC_REPORT_STATUS_PROBABILITY: dict[str, float] = {
+    "final": 0.90,
+    "amended": 0.88,
+    "corrected": 0.88,
+    "appended": 0.85,
+    "preliminary": 0.60,
+    "registered": 0.50,
+    "cancelled": 0.15,
+    "entered-in-error": 0.50,
+    "unknown": 0.50,
+    "partial": 0.55,
+}
+
+DIAGNOSTIC_REPORT_STATUS_UNCERTAINTY: dict[str, float] = {
+    "final": 0.12,
+    "amended": 0.15,
+    "corrected": 0.15,
+    "appended": 0.18,
+    "preliminary": 0.35,
+    "registered": 0.40,
+    "cancelled": 0.20,
+    "entered-in-error": 0.70,
+    "unknown": 0.45,
+    "partial": 0.35,
+}
+
+
 # ── Supported resource types ──────────────────────────────────────
 
 SUPPORTED_RESOURCE_TYPES = frozenset({
