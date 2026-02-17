@@ -364,7 +364,18 @@ def _from_condition_r4(
 def _from_allergy_intolerance_r4(
     resource: dict[str, Any],
 ) -> tuple[dict[str, Any], ConversionReport]:
-    """Convert FHIR R4 AllergyIntolerance → jsonld-ex document."""
+    """Convert FHIR R4 AllergyIntolerance → jsonld-ex document.
+
+    Preserves ALL clinically relevant fields from the FHIR resource:
+      - code (substance identity: text + coding)
+      - patient reference
+      - category (food/medication/environment/biologic)
+      - type (allergy vs intolerance)
+      - recordedDate, onsetDateTime, lastOccurrence
+      - asserter reference
+      - reaction array (substance, manifestation, severity)
+      - note array
+    """
     vs_obj = resource.get("verificationStatus", {})
     vs_code = None
     for coding in vs_obj.get("coding", []):
@@ -419,12 +430,99 @@ def _from_allergy_intolerance_r4(
         })
         nodes_converted += 1
 
+    # --- Code (substance identity) -----------------------------------
+    code_obj = resource.get("code")
+    code_out: Optional[dict[str, Any]] = None
+    if code_obj is not None:
+        code_out = {}
+        if "text" in code_obj:
+            code_out["text"] = code_obj["text"]
+        if "coding" in code_obj:
+            code_out["coding"] = code_obj["coding"]
+        if not code_out:
+            code_out = None  # empty CodeableConcept → treat as absent
+
+    # --- Patient reference -------------------------------------------
+    patient_ref = resource.get("patient", {})
+    patient = patient_ref.get("reference") if isinstance(patient_ref, dict) else None
+
+    # --- Category ----------------------------------------------------
+    category = resource.get("category")  # already a list in FHIR
+
+    # --- Type (allergy vs intolerance) -------------------------------
+    allergy_type = resource.get("type")
+
+    # --- Temporal fields ---------------------------------------------
+    recorded_date = resource.get("recordedDate")
+    onset_dt = resource.get("onsetDateTime")
+    last_occurrence = resource.get("lastOccurrence")
+
+    # --- Asserter reference ------------------------------------------
+    asserter_obj = resource.get("asserter", {})
+    asserter = asserter_obj.get("reference") if isinstance(asserter_obj, dict) else None
+
+    # --- Reaction array ----------------------------------------------
+    raw_reactions = resource.get("reaction")
+    reactions: Optional[list[dict[str, Any]]] = None
+    if raw_reactions is not None:
+        reactions = []
+        for rxn in raw_reactions:
+            entry: dict[str, Any] = {}
+            # substance (CodeableConcept — preserve fully)
+            rxn_substance = rxn.get("substance")
+            if rxn_substance is not None:
+                sub_out: dict[str, Any] = {}
+                if "text" in rxn_substance:
+                    sub_out["text"] = rxn_substance["text"]
+                if "coding" in rxn_substance:
+                    sub_out["coding"] = rxn_substance["coding"]
+                entry["substance"] = sub_out if sub_out else None
+            else:
+                entry["substance"] = None
+            # manifestation (list of CodeableConcepts)
+            raw_manif = rxn.get("manifestation", [])
+            entry["manifestation"] = [
+                {k: v for k, v in m.items()} for m in raw_manif
+            ]
+            # severity
+            entry["severity"] = rxn.get("severity")
+            reactions.append(entry)
+
+    # --- Note array --------------------------------------------------
+    raw_notes = resource.get("note")
+    notes: Optional[list[str]] = None
+    if raw_notes is not None:
+        notes = [n.get("text", "") for n in raw_notes]
+
+    # --- Assemble document -------------------------------------------
     doc: dict[str, Any] = {
         "@type": "fhir:AllergyIntolerance",
         "id": resource.get("id"),
         "clinicalStatus": cs_code,
         "opinions": opinions,
     }
+
+    # Attach non-None metadata fields
+    if code_out is not None:
+        doc["code"] = code_out
+    if patient is not None:
+        doc["patient"] = patient
+    if category is not None:
+        doc["category"] = category
+    if allergy_type is not None:
+        doc["type"] = allergy_type
+    if recorded_date is not None:
+        doc["recordedDate"] = recorded_date
+    if onset_dt is not None:
+        doc["onsetDateTime"] = onset_dt
+    if last_occurrence is not None:
+        doc["lastOccurrence"] = last_occurrence
+    if asserter is not None:
+        doc["asserter"] = asserter
+    if reactions is not None:
+        doc["reaction"] = reactions
+    if notes is not None:
+        doc["note"] = notes
 
     report = ConversionReport(
         success=True,
@@ -1392,7 +1490,12 @@ def _to_condition_r4(
 def _to_allergy_intolerance_r4(
     doc: dict[str, Any],
 ) -> tuple[dict[str, Any], ConversionReport]:
-    """Convert jsonld-ex document → FHIR R4 AllergyIntolerance."""
+    """Convert jsonld-ex document → FHIR R4 AllergyIntolerance.
+
+    Round-trips ALL fields preserved by _from_allergy_intolerance_r4:
+    code, patient, category, type, temporal fields, asserter,
+    reaction array, and note array.
+    """
     resource: dict[str, Any] = {"resourceType": "AllergyIntolerance"}
     if doc.get("id"):
         resource["id"] = doc["id"]
@@ -1401,6 +1504,86 @@ def _to_allergy_intolerance_r4(
     if cs:
         resource["clinicalStatus"] = {"coding": [{"code": cs}]}
 
+    # --- Code (substance identity) -----------------------------------
+    code_obj = doc.get("code")
+    if code_obj is not None:
+        fhir_code: dict[str, Any] = {}
+        if "text" in code_obj:
+            fhir_code["text"] = code_obj["text"]
+        if "coding" in code_obj:
+            fhir_code["coding"] = code_obj["coding"]
+        if fhir_code:
+            resource["code"] = fhir_code
+
+    # --- Patient reference -------------------------------------------
+    patient = doc.get("patient")
+    if patient is not None:
+        resource["patient"] = {"reference": patient}
+
+    # --- Category ----------------------------------------------------
+    category = doc.get("category")
+    if category is not None:
+        resource["category"] = category
+
+    # --- Type --------------------------------------------------------
+    allergy_type = doc.get("type")
+    if allergy_type is not None:
+        resource["type"] = allergy_type
+
+    # --- Temporal fields ---------------------------------------------
+    recorded_date = doc.get("recordedDate")
+    if recorded_date is not None:
+        resource["recordedDate"] = recorded_date
+
+    onset_dt = doc.get("onsetDateTime")
+    if onset_dt is not None:
+        resource["onsetDateTime"] = onset_dt
+
+    last_occurrence = doc.get("lastOccurrence")
+    if last_occurrence is not None:
+        resource["lastOccurrence"] = last_occurrence
+
+    # --- Asserter reference ------------------------------------------
+    asserter = doc.get("asserter")
+    if asserter is not None:
+        resource["asserter"] = {"reference": asserter}
+
+    # --- Reaction array ----------------------------------------------
+    reactions = doc.get("reaction")
+    if reactions is not None:
+        fhir_reactions: list[dict[str, Any]] = []
+        for rxn in reactions:
+            fhir_rxn: dict[str, Any] = {}
+            # substance
+            sub = rxn.get("substance")
+            if sub is not None:
+                fhir_sub: dict[str, Any] = {}
+                if "text" in sub:
+                    fhir_sub["text"] = sub["text"]
+                if "coding" in sub:
+                    fhir_sub["coding"] = sub["coding"]
+                if fhir_sub:
+                    fhir_rxn["substance"] = fhir_sub
+            # manifestation
+            manif = rxn.get("manifestation", [])
+            if manif:
+                fhir_rxn["manifestation"] = [
+                    {k: v for k, v in m.items()} for m in manif
+                ]
+            # severity
+            sev = rxn.get("severity")
+            if sev is not None:
+                fhir_rxn["severity"] = sev
+            fhir_reactions.append(fhir_rxn)
+        if fhir_reactions:
+            resource["reaction"] = fhir_reactions
+
+    # --- Note array --------------------------------------------------
+    notes = doc.get("note")
+    if notes is not None:
+        resource["note"] = [{"text": t} for t in notes]
+
+    # --- Opinions → FHIR extensions ----------------------------------
     opinions = doc.get("opinions", [])
     nodes_converted = 0
 
