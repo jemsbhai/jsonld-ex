@@ -98,6 +98,10 @@ from jsonld_ex.fhir_interop._compliance import (
 from jsonld_ex.fhir_interop._provenance import (
     fhir_provenance_to_prov_o,
 )
+from jsonld_ex.fhir_interop._reconciliation import (
+    ReconciliationReport,
+    fhir_allergy_reconcile,
+)
 
 __all__ = [
     "scalar_to_opinion",
@@ -130,4 +134,7 @@ __all__ = [
     "fhir_bundle_fuse",
     # Phase 4: Provenance bridge
     "fhir_provenance_to_prov_o",
+    # Allergy reconciliation
+    "ReconciliationReport",
+    "fhir_allergy_reconcile",
 ]

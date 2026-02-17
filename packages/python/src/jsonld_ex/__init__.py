@@ -216,6 +216,9 @@ try:
         fhir_consent_regulatory_change,
         # Provenance bridge
         fhir_provenance_to_prov_o,
+        # Allergy reconciliation
+        fhir_allergy_reconcile,
+        ReconciliationReport,
         # Constants
         FHIR_EXTENSION_URL,
         SUPPORTED_FHIR_VERSIONS,
@@ -430,6 +433,9 @@ __all__ = [
     "fhir_consent_regulatory_change",
     # FHIR R4 — provenance bridge
     "fhir_provenance_to_prov_o",
+    # FHIR R4 — allergy reconciliation
+    "fhir_allergy_reconcile",
+    "ReconciliationReport",
     # FHIR R4 — constants
     "FHIR_EXTENSION_URL",
     "SUPPORTED_FHIR_VERSIONS",
