@@ -302,6 +302,287 @@ DIAGNOSTIC_REPORT_STATUS_UNCERTAINTY: dict[str, float] = {
 }
 
 
+# ═══════════════════════════════════════════════════════════════════
+# Phase 6: Universal FHIR coverage — clinical workflow resources
+# ═══════════════════════════════════════════════════════════════════
+
+# ── Encounter status → visit validity confidence ──────────────────
+
+ENCOUNTER_STATUS_PROBABILITY: dict[str, float] = {
+    "finished": 0.90,
+    "arrived": 0.70,
+    "triaged": 0.75,
+    "in-progress": 0.70,
+    "onleave": 0.60,
+    "planned": 0.50,
+    "cancelled": 0.10,
+    "entered-in-error": 0.50,
+    "unknown": 0.50,
+}
+
+ENCOUNTER_STATUS_UNCERTAINTY: dict[str, float] = {
+    "finished": 0.10,
+    "arrived": 0.25,
+    "triaged": 0.25,
+    "in-progress": 0.30,
+    "onleave": 0.30,
+    "planned": 0.35,
+    "cancelled": 0.15,
+    "entered-in-error": 0.70,
+    "unknown": 0.45,
+}
+
+# ── MedicationRequest status → prescription validity ──────────────
+
+MEDICATION_REQUEST_STATUS_PROBABILITY: dict[str, float] = {
+    "active": 0.85,
+    "on-hold": 0.50,
+    "cancelled": 0.10,
+    "completed": 0.90,
+    "entered-in-error": 0.50,
+    "stopped": 0.15,
+    "draft": 0.50,
+    "unknown": 0.50,
+}
+
+MEDICATION_REQUEST_STATUS_UNCERTAINTY: dict[str, float] = {
+    "active": 0.15,
+    "on-hold": 0.30,
+    "cancelled": 0.15,
+    "completed": 0.10,
+    "entered-in-error": 0.70,
+    "stopped": 0.15,
+    "draft": 0.40,
+    "unknown": 0.45,
+}
+
+# ── CarePlan status → plan validity/adherence ─────────────────────
+
+CARE_PLAN_STATUS_PROBABILITY: dict[str, float] = {
+    "active": 0.85,
+    "on-hold": 0.50,
+    "revoked": 0.10,
+    "completed": 0.90,
+    "entered-in-error": 0.50,
+    "draft": 0.50,
+    "unknown": 0.50,
+}
+
+CARE_PLAN_STATUS_UNCERTAINTY: dict[str, float] = {
+    "active": 0.15,
+    "on-hold": 0.30,
+    "revoked": 0.15,
+    "completed": 0.10,
+    "entered-in-error": 0.70,
+    "draft": 0.40,
+    "unknown": 0.45,
+}
+
+# ── Goal lifecycleStatus → goal achievement confidence ────────────
+#
+# Goal uses lifecycleStatus (not status) and optionally
+# achievementStatus for a second opinion dimension.
+
+GOAL_LIFECYCLE_PROBABILITY: dict[str, float] = {
+    "active": 0.75,
+    "accepted": 0.70,
+    "planned": 0.55,
+    "proposed": 0.50,
+    "on-hold": 0.40,
+    "completed": 0.90,
+    "cancelled": 0.10,
+    "entered-in-error": 0.50,
+    "rejected": 0.10,
+}
+
+GOAL_LIFECYCLE_UNCERTAINTY: dict[str, float] = {
+    "active": 0.25,
+    "accepted": 0.25,
+    "planned": 0.35,
+    "proposed": 0.40,
+    "on-hold": 0.30,
+    "completed": 0.10,
+    "cancelled": 0.15,
+    "entered-in-error": 0.70,
+    "rejected": 0.15,
+}
+
+GOAL_ACHIEVEMENT_PROBABILITY: dict[str, float] = {
+    "achieved": 0.95,
+    "sustaining": 0.85,
+    "in-progress": 0.60,
+    "improving": 0.70,
+    "worsening": 0.25,
+    "no-change": 0.45,
+    "not-achieved": 0.10,
+    "no-progress": 0.20,
+    "not-attainable": 0.05,
+}
+
+GOAL_ACHIEVEMENT_UNCERTAINTY: dict[str, float] = {
+    "achieved": 0.10,
+    "sustaining": 0.15,
+    "in-progress": 0.30,
+    "improving": 0.25,
+    "worsening": 0.25,
+    "no-change": 0.30,
+    "not-achieved": 0.15,
+    "no-progress": 0.25,
+    "not-attainable": 0.15,
+}
+
+# ── CareTeam status → assignment validity ─────────────────────────
+
+CARE_TEAM_STATUS_PROBABILITY: dict[str, float] = {
+    "active": 0.85,
+    "proposed": 0.55,
+    "suspended": 0.40,
+    "inactive": 0.20,
+    "entered-in-error": 0.50,
+}
+
+CARE_TEAM_STATUS_UNCERTAINTY: dict[str, float] = {
+    "active": 0.15,
+    "proposed": 0.35,
+    "suspended": 0.25,
+    "inactive": 0.15,
+    "entered-in-error": 0.70,
+}
+
+# ── ImagingStudy status → study validity ──────────────────────────
+
+IMAGING_STUDY_STATUS_PROBABILITY: dict[str, float] = {
+    "available": 0.90,
+    "registered": 0.60,
+    "cancelled": 0.10,
+    "entered-in-error": 0.50,
+    "unknown": 0.50,
+}
+
+IMAGING_STUDY_STATUS_UNCERTAINTY: dict[str, float] = {
+    "available": 0.10,
+    "registered": 0.35,
+    "cancelled": 0.15,
+    "entered-in-error": 0.70,
+    "unknown": 0.45,
+}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 6: Universal FHIR coverage — administrative resources
+# ═══════════════════════════════════════════════════════════════════
+
+# ── Patient data quality — no status field ────────────────────────
+#
+# Patient has no status; opinion based on data completeness.
+# Base probability represents "this patient record is accurate."
+
+PATIENT_BASE_PROBABILITY: float = 0.75
+PATIENT_BASE_UNCERTAINTY: float = 0.25
+
+# ── Organization / Practitioner — boolean active field ────────────
+
+ACTIVE_BOOLEAN_PROBABILITY: dict[str, float] = {
+    "true": 0.90,
+    "false": 0.20,
+}
+
+ACTIVE_BOOLEAN_UNCERTAINTY: dict[str, float] = {
+    "true": 0.10,
+    "false": 0.15,
+}
+
+# ── Device status → device record validity ────────────────────────
+
+DEVICE_STATUS_PROBABILITY: dict[str, float] = {
+    "active": 0.90,
+    "inactive": 0.25,
+    "entered-in-error": 0.50,
+    "unknown": 0.50,
+}
+
+DEVICE_STATUS_UNCERTAINTY: dict[str, float] = {
+    "active": 0.10,
+    "inactive": 0.15,
+    "entered-in-error": 0.70,
+    "unknown": 0.45,
+}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 6: Universal FHIR coverage — financial resources
+# ═══════════════════════════════════════════════════════════════════
+
+# ── Claim status → claim validity ─────────────────────────────────
+
+CLAIM_STATUS_PROBABILITY: dict[str, float] = {
+    "active": 0.85,
+    "cancelled": 0.10,
+    "draft": 0.50,
+    "entered-in-error": 0.50,
+}
+
+CLAIM_STATUS_UNCERTAINTY: dict[str, float] = {
+    "active": 0.15,
+    "cancelled": 0.15,
+    "draft": 0.40,
+    "entered-in-error": 0.70,
+}
+
+# ── ExplanationOfBenefit status → adjudication accuracy ───────────
+
+EOB_STATUS_PROBABILITY: dict[str, float] = {
+    "active": 0.85,
+    "cancelled": 0.10,
+    "draft": 0.50,
+    "entered-in-error": 0.50,
+}
+
+EOB_STATUS_UNCERTAINTY: dict[str, float] = {
+    "active": 0.15,
+    "cancelled": 0.15,
+    "draft": 0.40,
+    "entered-in-error": 0.70,
+}
+
+EOB_OUTCOME_PROBABILITY: dict[str, float] = {
+    "complete": 0.90,
+    "queued": 0.50,
+    "error": 0.15,
+    "partial": 0.60,
+}
+
+EOB_OUTCOME_UNCERTAINTY: dict[str, float] = {
+    "complete": 0.10,
+    "queued": 0.40,
+    "error": 0.20,
+    "partial": 0.30,
+}
+
+
+# ── MedicationAdministration status → administration validity ─────
+
+MED_ADMIN_STATUS_PROBABILITY: dict[str, float] = {
+    "completed": 0.90,
+    "in-progress": 0.70,
+    "not-done": 0.05,
+    "on-hold": 0.40,
+    "stopped": 0.15,
+    "entered-in-error": 0.50,
+    "unknown": 0.50,
+}
+
+MED_ADMIN_STATUS_UNCERTAINTY: dict[str, float] = {
+    "completed": 0.10,
+    "in-progress": 0.30,
+    "not-done": 0.10,
+    "on-hold": 0.25,
+    "stopped": 0.15,
+    "entered-in-error": 0.70,
+    "unknown": 0.45,
+}
+
+
 # ── Supported resource types ──────────────────────────────────────
 
 SUPPORTED_RESOURCE_TYPES = frozenset({
@@ -322,4 +603,18 @@ SUPPORTED_RESOURCE_TYPES = frozenset({
     # Phase 4
     "Consent",
     "Provenance",
+    # Phase 6 — universal coverage
+    "Encounter",
+    "MedicationRequest",
+    "CarePlan",
+    "Goal",
+    "CareTeam",
+    "ImagingStudy",
+    "Patient",
+    "Organization",
+    "Practitioner",
+    "Device",
+    "Claim",
+    "ExplanationOfBenefit",
+    "MedicationAdministration",
 })

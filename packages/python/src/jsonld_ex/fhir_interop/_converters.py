@@ -39,6 +39,35 @@ from jsonld_ex.fhir_interop._constants import (
     OBSERVATION_STATUS_UNCERTAINTY,
     DIAGNOSTIC_REPORT_STATUS_PROBABILITY,
     DIAGNOSTIC_REPORT_STATUS_UNCERTAINTY,
+    # Phase 6 — universal coverage
+    ENCOUNTER_STATUS_PROBABILITY,
+    ENCOUNTER_STATUS_UNCERTAINTY,
+    MEDICATION_REQUEST_STATUS_PROBABILITY,
+    MEDICATION_REQUEST_STATUS_UNCERTAINTY,
+    CARE_PLAN_STATUS_PROBABILITY,
+    CARE_PLAN_STATUS_UNCERTAINTY,
+    GOAL_LIFECYCLE_PROBABILITY,
+    GOAL_LIFECYCLE_UNCERTAINTY,
+    GOAL_ACHIEVEMENT_PROBABILITY,
+    GOAL_ACHIEVEMENT_UNCERTAINTY,
+    CARE_TEAM_STATUS_PROBABILITY,
+    CARE_TEAM_STATUS_UNCERTAINTY,
+    IMAGING_STUDY_STATUS_PROBABILITY,
+    IMAGING_STUDY_STATUS_UNCERTAINTY,
+    PATIENT_BASE_PROBABILITY,
+    PATIENT_BASE_UNCERTAINTY,
+    ACTIVE_BOOLEAN_PROBABILITY,
+    ACTIVE_BOOLEAN_UNCERTAINTY,
+    DEVICE_STATUS_PROBABILITY,
+    DEVICE_STATUS_UNCERTAINTY,
+    CLAIM_STATUS_PROBABILITY,
+    CLAIM_STATUS_UNCERTAINTY,
+    EOB_STATUS_PROBABILITY,
+    EOB_STATUS_UNCERTAINTY,
+    EOB_OUTCOME_PROBABILITY,
+    EOB_OUTCOME_UNCERTAINTY,
+    MED_ADMIN_STATUS_PROBABILITY,
+    MED_ADMIN_STATUS_UNCERTAINTY,
 )
 from jsonld_ex.fhir_interop._scalar import (
     scalar_to_opinion,
@@ -1355,6 +1384,357 @@ def _from_provenance_r4(
     return doc, report
 
 
+# ═══════════════════════════════════════════════════════════════════
+# Phase 6: Universal FHIR coverage — from_fhir handlers
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _make_status_handler(
+    resource_type: str,
+    prob_map: dict[str, float],
+    uncertainty_map: dict[str, float],
+    *,
+    status_field: str = "status",
+):
+    """Factory for simple status-based from_fhir handlers.
+
+    Creates a handler that:
+    1. Checks for an extension on ``_<status_field>`` (exact recovery).
+    2. Falls back to a reconstructed opinion from the status code.
+    3. Returns a jsonld-ex document with ``@type``, ``id``, ``status``,
+       and ``opinions``.
+    """
+
+    def handler(
+        resource: dict[str, Any],
+    ) -> tuple[dict[str, Any], ConversionReport]:
+        status = resource.get(status_field)
+        opinions: list[dict[str, Any]] = []
+
+        status_ext = resource.get(f"_{status_field}")
+        recovered = _try_recover_opinion(status_ext)
+
+        if recovered is not None:
+            opinions.append({
+                "field": status_field,
+                "value": status,
+                "opinion": recovered,
+                "source": "extension",
+            })
+        else:
+            prob = prob_map.get(status, 0.50)
+            default_u = uncertainty_map.get(status, 0.30)
+            op = scalar_to_opinion(prob, default_uncertainty=default_u)
+            opinions.append({
+                "field": status_field,
+                "value": status,
+                "opinion": op,
+                "source": "reconstructed",
+            })
+
+        doc: dict[str, Any] = {
+            "@type": f"fhir:{resource_type}",
+            "id": resource.get("id"),
+            status_field: status,
+            "opinions": opinions,
+        }
+
+        report = ConversionReport(success=True, nodes_converted=1)
+        return doc, report
+
+    return handler
+
+
+# ── Batch 1: Clinical workflow (simple status-based) ─────────────
+
+_from_encounter_r4 = _make_status_handler(
+    "Encounter", ENCOUNTER_STATUS_PROBABILITY, ENCOUNTER_STATUS_UNCERTAINTY,
+)
+
+_from_medication_request_r4 = _make_status_handler(
+    "MedicationRequest",
+    MEDICATION_REQUEST_STATUS_PROBABILITY,
+    MEDICATION_REQUEST_STATUS_UNCERTAINTY,
+)
+
+_from_care_plan_r4 = _make_status_handler(
+    "CarePlan", CARE_PLAN_STATUS_PROBABILITY, CARE_PLAN_STATUS_UNCERTAINTY,
+)
+
+_from_care_team_r4 = _make_status_handler(
+    "CareTeam", CARE_TEAM_STATUS_PROBABILITY, CARE_TEAM_STATUS_UNCERTAINTY,
+)
+
+_from_imaging_study_r4 = _make_status_handler(
+    "ImagingStudy",
+    IMAGING_STUDY_STATUS_PROBABILITY,
+    IMAGING_STUDY_STATUS_UNCERTAINTY,
+)
+
+_from_medication_administration_r4 = _make_status_handler(
+    "MedicationAdministration",
+    MED_ADMIN_STATUS_PROBABILITY,
+    MED_ADMIN_STATUS_UNCERTAINTY,
+)
+
+# ── Batch 2: Administrative ─────────────────────────────────────
+
+_from_device_r4 = _make_status_handler(
+    "Device", DEVICE_STATUS_PROBABILITY, DEVICE_STATUS_UNCERTAINTY,
+)
+
+
+def _from_patient_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 Patient → jsonld-ex document.
+
+    Patient has no status field.  Opinion is based on data
+    completeness: more populated demographic fields → lower
+    uncertainty (more confident the record is accurate).
+    """
+    # Count populated data-quality fields.
+    quality_fields = (
+        "name", "gender", "birthDate", "telecom", "address",
+        "identifier", "maritalStatus", "communication",
+    )
+    populated = sum(1 for f in quality_fields if resource.get(f))
+    # Scale uncertainty: 0 fields → base, 8 fields → base * 0.4
+    completeness_ratio = populated / len(quality_fields)
+    adjusted_u = PATIENT_BASE_UNCERTAINTY * (1.0 - 0.6 * completeness_ratio)
+
+    op = scalar_to_opinion(
+        PATIENT_BASE_PROBABILITY, default_uncertainty=adjusted_u,
+    )
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:Patient",
+        "id": resource.get("id"),
+        "opinions": [{
+            "field": "data_quality",
+            "value": f"{populated}/{len(quality_fields)}",
+            "opinion": op,
+            "source": "reconstructed",
+        }],
+    }
+
+    report = ConversionReport(success=True, nodes_converted=1)
+    return doc, report
+
+
+def _from_active_boolean_r4(
+    resource_type: str,
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 resource with boolean ``active`` field."""
+    active = resource.get("active")
+    key = str(active).lower() if active is not None else "true"
+
+    status_ext = resource.get("_active")
+    recovered = _try_recover_opinion(status_ext)
+
+    if recovered is not None:
+        opinion_entry = {
+            "field": "active",
+            "value": active,
+            "opinion": recovered,
+            "source": "extension",
+        }
+    else:
+        prob = ACTIVE_BOOLEAN_PROBABILITY.get(key, 0.50)
+        default_u = ACTIVE_BOOLEAN_UNCERTAINTY.get(key, 0.25)
+        op = scalar_to_opinion(prob, default_uncertainty=default_u)
+        opinion_entry = {
+            "field": "active",
+            "value": active,
+            "opinion": op,
+            "source": "reconstructed",
+        }
+
+    doc: dict[str, Any] = {
+        "@type": f"fhir:{resource_type}",
+        "id": resource.get("id"),
+        "active": active,
+        "opinions": [opinion_entry],
+    }
+
+    report = ConversionReport(success=True, nodes_converted=1)
+    return doc, report
+
+
+def _from_organization_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    return _from_active_boolean_r4("Organization", resource)
+
+
+def _from_practitioner_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    return _from_active_boolean_r4("Practitioner", resource)
+
+
+# ── Goal handler (from_fhir) ─ special: lifecycleStatus + achievementStatus
+
+
+def _from_goal_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 Goal → jsonld-ex document.
+
+    Goal uses ``lifecycleStatus`` (not ``status``).  If
+    ``achievementStatus`` is present, a second opinion is created.
+    """
+    lifecycle = resource.get("lifecycleStatus")
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    # Primary: lifecycleStatus
+    lifecycle_ext = resource.get("_lifecycleStatus")
+    recovered = _try_recover_opinion(lifecycle_ext)
+
+    if recovered is not None:
+        opinions.append({
+            "field": "lifecycleStatus",
+            "value": lifecycle,
+            "opinion": recovered,
+            "source": "extension",
+        })
+    else:
+        prob = GOAL_LIFECYCLE_PROBABILITY.get(lifecycle, 0.50)
+        default_u = GOAL_LIFECYCLE_UNCERTAINTY.get(lifecycle, 0.35)
+        op = scalar_to_opinion(prob, default_uncertainty=default_u)
+        opinions.append({
+            "field": "lifecycleStatus",
+            "value": lifecycle,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+    nodes_converted += 1
+
+    # Secondary: achievementStatus (optional)
+    achievement_obj = resource.get("achievementStatus")
+    if achievement_obj is not None:
+        codings = achievement_obj.get("coding", [])
+        for coding in codings:
+            code = coding.get("code")
+            if code is None:
+                continue
+
+            ach_ext = resource.get("_achievementStatus")
+            recovered_ach = _try_recover_opinion(ach_ext)
+
+            if recovered_ach is not None:
+                opinions.append({
+                    "field": "achievementStatus",
+                    "value": code,
+                    "opinion": recovered_ach,
+                    "source": "extension",
+                })
+            else:
+                prob = GOAL_ACHIEVEMENT_PROBABILITY.get(code, 0.50)
+                default_u = GOAL_ACHIEVEMENT_UNCERTAINTY.get(code, 0.30)
+                op = scalar_to_opinion(prob, default_uncertainty=default_u)
+                opinions.append({
+                    "field": "achievementStatus",
+                    "value": code,
+                    "opinion": op,
+                    "source": "reconstructed",
+                })
+            nodes_converted += 1
+            break  # Only first coding
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:Goal",
+        "id": resource.get("id"),
+        "lifecycleStatus": lifecycle,
+        "opinions": opinions,
+    }
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return doc, report
+
+
+# ── Batch 3: Financial ───────────────────────────────────────────
+
+_from_claim_r4 = _make_status_handler(
+    "Claim", CLAIM_STATUS_PROBABILITY, CLAIM_STATUS_UNCERTAINTY,
+)
+
+
+def _from_eob_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 ExplanationOfBenefit → jsonld-ex document.
+
+    Status-based primary opinion.  If ``outcome`` is present, a
+    second opinion is created for adjudication accuracy.
+    """
+    status = resource.get("status")
+    outcome = resource.get("outcome")
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    # Primary: status
+    status_ext = resource.get("_status")
+    recovered = _try_recover_opinion(status_ext)
+
+    if recovered is not None:
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": recovered,
+            "source": "extension",
+        })
+    else:
+        prob = EOB_STATUS_PROBABILITY.get(status, 0.50)
+        default_u = EOB_STATUS_UNCERTAINTY.get(status, 0.30)
+        op = scalar_to_opinion(prob, default_uncertainty=default_u)
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+    nodes_converted += 1
+
+    # Secondary: outcome (optional)
+    if outcome is not None:
+        outcome_ext = resource.get("_outcome")
+        recovered_out = _try_recover_opinion(outcome_ext)
+
+        if recovered_out is not None:
+            opinions.append({
+                "field": "outcome",
+                "value": outcome,
+                "opinion": recovered_out,
+                "source": "extension",
+            })
+        else:
+            prob = EOB_OUTCOME_PROBABILITY.get(outcome, 0.50)
+            default_u = EOB_OUTCOME_UNCERTAINTY.get(outcome, 0.30)
+            op = scalar_to_opinion(prob, default_uncertainty=default_u)
+            opinions.append({
+                "field": "outcome",
+                "value": outcome,
+                "opinion": op,
+                "source": "reconstructed",
+            })
+        nodes_converted += 1
+
+    doc: dict[str, Any] = {
+        "@type": "fhir:ExplanationOfBenefit",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+    if outcome is not None:
+        doc["outcome"] = outcome
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return doc, report
+
+
 # ── from_fhir handler dispatch table ──────────────────────────────
 
 _RESOURCE_HANDLERS = {
@@ -1371,6 +1751,20 @@ _RESOURCE_HANDLERS = {
     "Procedure": _from_procedure_r4,
     "Consent": _from_consent_r4,
     "Provenance": _from_provenance_r4,
+    # Phase 6 — universal coverage
+    "Encounter": _from_encounter_r4,
+    "MedicationRequest": _from_medication_request_r4,
+    "CarePlan": _from_care_plan_r4,
+    "Goal": _from_goal_r4,
+    "CareTeam": _from_care_team_r4,
+    "ImagingStudy": _from_imaging_study_r4,
+    "Patient": _from_patient_r4,
+    "Organization": _from_organization_r4,
+    "Practitioner": _from_practitioner_r4,
+    "Device": _from_device_r4,
+    "Claim": _from_claim_r4,
+    "ExplanationOfBenefit": _from_eob_r4,
+    "MedicationAdministration": _from_medication_administration_r4,
 }
 
 
@@ -2054,6 +2448,204 @@ def _to_provenance_r4(
     return resource, report
 
 
+# ═══════════════════════════════════════════════════════════════════
+# Phase 6: Universal FHIR coverage — to_fhir handlers
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _make_to_status_handler(
+    resource_type: str,
+    *,
+    status_field: str = "status",
+):
+    """Factory for simple status-based to_fhir handlers.
+
+    Reconstructs a minimal FHIR resource with the status field
+    and embeds SL opinion as a FHIR extension on ``_<status_field>``.
+    """
+
+    def handler(
+        doc: dict[str, Any],
+    ) -> tuple[dict[str, Any], ConversionReport]:
+        resource: dict[str, Any] = {
+            "resourceType": resource_type,
+            "id": doc.get("id"),
+        }
+        status = doc.get(status_field)
+        if status is not None:
+            resource[status_field] = status
+
+        opinions = doc.get("opinions", [])
+        nodes_converted = 0
+
+        for entry in opinions:
+            op: Opinion = entry["opinion"]
+            field = entry.get("field", "")
+
+            if field == status_field:
+                ext = opinion_to_fhir_extension(op)
+                resource[f"_{status_field}"] = {"extension": [ext]}
+                nodes_converted += 1
+
+        report = ConversionReport(success=True, nodes_converted=nodes_converted)
+        return resource, report
+
+    return handler
+
+
+# ── Batch 1: Clinical workflow (simple status-based) ─────────────
+
+_to_encounter_r4 = _make_to_status_handler("Encounter")
+_to_medication_request_r4 = _make_to_status_handler("MedicationRequest")
+_to_care_plan_r4 = _make_to_status_handler("CarePlan")
+_to_care_team_r4 = _make_to_status_handler("CareTeam")
+_to_imaging_study_r4 = _make_to_status_handler("ImagingStudy")
+
+# ── Batch 2: Administrative ─────────────────────────────────────
+
+_to_device_r4 = _make_to_status_handler("Device")
+
+
+def _to_patient_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Export jsonld-ex Patient → FHIR R4."""
+    resource: dict[str, Any] = {
+        "resourceType": "Patient",
+        "id": doc.get("id"),
+    }
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field = entry.get("field", "")
+        if field == "data_quality":
+            ext = opinion_to_fhir_extension(op)
+            resource["_data_quality"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
+def _to_active_boolean_r4(
+    resource_type: str,
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Export jsonld-ex resource with boolean ``active`` → FHIR R4."""
+    resource: dict[str, Any] = {
+        "resourceType": resource_type,
+        "id": doc.get("id"),
+    }
+    active = doc.get("active")
+    if active is not None:
+        resource["active"] = active
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field = entry.get("field", "")
+        if field == "active":
+            ext = opinion_to_fhir_extension(op)
+            resource["_active"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
+def _to_organization_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    return _to_active_boolean_r4("Organization", doc)
+
+
+def _to_practitioner_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    return _to_active_boolean_r4("Practitioner", doc)
+
+
+# ── Goal (to_fhir) ─ special: lifecycleStatus + achievementStatus ──
+
+
+def _to_goal_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Export jsonld-ex Goal → FHIR R4."""
+    resource: dict[str, Any] = {
+        "resourceType": "Goal",
+        "id": doc.get("id"),
+    }
+    lifecycle = doc.get("lifecycleStatus")
+    if lifecycle is not None:
+        resource["lifecycleStatus"] = lifecycle
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field = entry.get("field", "")
+
+        if field == "lifecycleStatus":
+            ext = opinion_to_fhir_extension(op)
+            resource["_lifecycleStatus"] = {"extension": [ext]}
+            nodes_converted += 1
+        elif field == "achievementStatus":
+            ext = opinion_to_fhir_extension(op)
+            resource["_achievementStatus"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
+# ── Batch 3: Financial ───────────────────────────────────────────
+
+_to_claim_r4 = _make_to_status_handler("Claim")
+_to_medication_administration_r4 = _make_to_status_handler("MedicationAdministration")
+
+
+def _to_eob_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Export jsonld-ex ExplanationOfBenefit → FHIR R4."""
+    resource: dict[str, Any] = {
+        "resourceType": "ExplanationOfBenefit",
+        "id": doc.get("id"),
+    }
+    status = doc.get("status")
+    if status is not None:
+        resource["status"] = status
+    outcome = doc.get("outcome")
+    if outcome is not None:
+        resource["outcome"] = outcome
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field = entry.get("field", "")
+
+        if field == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
+            nodes_converted += 1
+        elif field == "outcome":
+            ext = opinion_to_fhir_extension(op)
+            resource["_outcome"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
 # ── to_fhir handler dispatch table ───────────────────────────────
 
 _TO_FHIR_HANDLERS = {
@@ -2070,4 +2662,18 @@ _TO_FHIR_HANDLERS = {
     "Procedure": _to_procedure_r4,
     "Consent": _to_consent_r4,
     "Provenance": _to_provenance_r4,
+    # Phase 6 — universal coverage
+    "Encounter": _to_encounter_r4,
+    "MedicationRequest": _to_medication_request_r4,
+    "CarePlan": _to_care_plan_r4,
+    "Goal": _to_goal_r4,
+    "CareTeam": _to_care_team_r4,
+    "ImagingStudy": _to_imaging_study_r4,
+    "Patient": _to_patient_r4,
+    "Organization": _to_organization_r4,
+    "Practitioner": _to_practitioner_r4,
+    "Device": _to_device_r4,
+    "Claim": _to_claim_r4,
+    "ExplanationOfBenefit": _to_eob_r4,
+    "MedicationAdministration": _to_medication_administration_r4,
 }

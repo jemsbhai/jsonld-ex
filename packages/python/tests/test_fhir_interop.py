@@ -888,11 +888,11 @@ class TestFromFhirGeneral:
 
     def test_unsupported_resource_type_warning(self):
         """Unsupported FHIR resource type → success with warning."""
-        resource = {"resourceType": "Patient", "id": "p-1"}
+        resource = {"resourceType": "SupplyRequest", "id": "sr-1"}
         doc, report = from_fhir(resource)
         assert report.success is True
         assert len(report.warnings) > 0
-        assert any("Patient" in w for w in report.warnings)
+        assert any("SupplyRequest" in w for w in report.warnings)
         assert doc["opinions"] == []
 
     def test_missing_resource_type_raises(self):
@@ -1277,8 +1277,8 @@ class TestToFhirGeneral:
 
     def test_unrecognized_type_raises(self):
         """Document with unsupported @type → ValueError."""
-        with pytest.raises(ValueError, match="Patient"):
-            to_fhir({"@type": "fhir:Patient", "opinions": []})
+        with pytest.raises(ValueError, match="SupplyRequest"):
+            to_fhir({"@type": "fhir:SupplyRequest", "opinions": []})
 
     def test_report_is_conversion_report(self):
         """Return type is (dict, ConversionReport)."""
