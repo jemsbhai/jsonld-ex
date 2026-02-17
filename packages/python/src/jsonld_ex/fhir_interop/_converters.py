@@ -1903,6 +1903,10 @@ def _to_observation_r4(
     if doc.get("value"):
         resource["valueQuantity"] = doc["value"]
 
+    effective_dt = doc.get("effectiveDateTime")
+    if effective_dt is not None:
+        resource["effectiveDateTime"] = effective_dt
+
     opinions = doc.get("opinions", [])
     nodes_converted = 0
 
@@ -1942,6 +1946,10 @@ def _to_diagnostic_report_r4(
     if doc.get("conclusion"):
         resource["conclusion"] = doc["conclusion"]
 
+    effective_dt = doc.get("effectiveDateTime")
+    if effective_dt is not None:
+        resource["effectiveDateTime"] = effective_dt
+
     result_refs = doc.get("result_references", [])
     if result_refs:
         resource["result"] = [{"reference": ref} for ref in result_refs]
@@ -1980,6 +1988,14 @@ def _to_condition_r4(
     cs = doc.get("clinicalStatus")
     if cs:
         resource["clinicalStatus"] = {"coding": [{"code": cs}]}
+
+    onset_dt = doc.get("onsetDateTime")
+    if onset_dt is not None:
+        resource["onsetDateTime"] = onset_dt
+
+    recorded_date = doc.get("recordedDate")
+    if recorded_date is not None:
+        resource["recordedDate"] = recorded_date
 
     opinions = doc.get("opinions", [])
     nodes_converted = 0
@@ -2663,7 +2679,9 @@ def _to_goal_r4(
 
 # ── Batch 3: Financial ───────────────────────────────────────────
 
-_to_claim_r4 = _make_to_status_handler("Claim")
+_to_claim_r4 = _make_to_status_handler(
+    "Claim", passthrough_fields=("created",),
+)
 _to_medication_administration_r4 = _make_to_status_handler(
     "MedicationAdministration", passthrough_fields=("effectiveDateTime",),
 )
@@ -2683,6 +2701,9 @@ def _to_eob_r4(
     outcome = doc.get("outcome")
     if outcome is not None:
         resource["outcome"] = outcome
+    created = doc.get("created")
+    if created is not None:
+        resource["created"] = created
 
     opinions = doc.get("opinions", [])
     nodes_converted = 0
