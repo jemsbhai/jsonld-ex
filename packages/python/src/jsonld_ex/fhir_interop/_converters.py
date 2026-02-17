@@ -2491,11 +2491,15 @@ def _make_to_status_handler(
     resource_type: str,
     *,
     status_field: str = "status",
+    passthrough_fields: tuple[str, ...] = (),
 ):
     """Factory for simple status-based to_fhir handlers.
 
     Reconstructs a minimal FHIR resource with the status field
     and embeds SL opinion as a FHIR extension on ``_<status_field>``.
+    Fields listed in *passthrough_fields* are copied from the
+    jsonld-ex document back into the FHIR resource (mirrors the
+    symmetric parameter on ``_make_status_handler``).
     """
 
     def handler(
@@ -2508,6 +2512,12 @@ def _make_to_status_handler(
         status = doc.get(status_field)
         if status is not None:
             resource[status_field] = status
+
+        # Restore timestamp / metadata fields for round-trip fidelity
+        for field_name in passthrough_fields:
+            val = doc.get(field_name)
+            if val is not None:
+                resource[field_name] = val
 
         opinions = doc.get("opinions", [])
         nodes_converted = 0
@@ -2529,15 +2539,27 @@ def _make_to_status_handler(
 
 # ── Batch 1: Clinical workflow (simple status-based) ─────────────
 
-_to_encounter_r4 = _make_to_status_handler("Encounter")
-_to_medication_request_r4 = _make_to_status_handler("MedicationRequest")
-_to_care_plan_r4 = _make_to_status_handler("CarePlan")
-_to_care_team_r4 = _make_to_status_handler("CareTeam")
-_to_imaging_study_r4 = _make_to_status_handler("ImagingStudy")
+_to_encounter_r4 = _make_to_status_handler(
+    "Encounter", passthrough_fields=("period",),
+)
+_to_medication_request_r4 = _make_to_status_handler(
+    "MedicationRequest", passthrough_fields=("authoredOn",),
+)
+_to_care_plan_r4 = _make_to_status_handler(
+    "CarePlan", passthrough_fields=("period",),
+)
+_to_care_team_r4 = _make_to_status_handler(
+    "CareTeam", passthrough_fields=("period",),
+)
+_to_imaging_study_r4 = _make_to_status_handler(
+    "ImagingStudy", passthrough_fields=("started",),
+)
 
 # ── Batch 2: Administrative ─────────────────────────────────────
 
-_to_device_r4 = _make_to_status_handler("Device")
+_to_device_r4 = _make_to_status_handler(
+    "Device", passthrough_fields=("manufactureDate",),
+)
 
 
 def _to_patient_r4(
@@ -2642,7 +2664,9 @@ def _to_goal_r4(
 # ── Batch 3: Financial ───────────────────────────────────────────
 
 _to_claim_r4 = _make_to_status_handler("Claim")
-_to_medication_administration_r4 = _make_to_status_handler("MedicationAdministration")
+_to_medication_administration_r4 = _make_to_status_handler(
+    "MedicationAdministration", passthrough_fields=("effectiveDateTime",),
+)
 
 
 def _to_eob_r4(

@@ -85,11 +85,15 @@ def _consent(consent_id, *, status="active"):
 
 
 def _unsupported_resource(res_id):
-    """Build a resource type not supported by from_fhir."""
+    """Build a resource type not supported by from_fhir.
+
+    Uses a fictitious resourceType so this test never breaks as
+    real FHIR types are added to SUPPORTED_RESOURCE_TYPES.
+    """
     return {
-        "resourceType": "Patient",
+        "resourceType": "UnsupportedTestResource",
         "id": res_id,
-        "name": [{"family": "Smith", "given": ["Jane"]}],
+        "description": "Fictitious resource for testing skip logic",
     }
 
 
