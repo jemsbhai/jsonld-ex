@@ -68,6 +68,11 @@ from jsonld_ex.fhir_interop._constants import (
     EOB_OUTCOME_UNCERTAINTY,
     MED_ADMIN_STATUS_PROBABILITY,
     MED_ADMIN_STATUS_UNCERTAINTY,
+    # Phase 7A
+    SERVICE_REQUEST_STATUS_PROBABILITY,
+    SERVICE_REQUEST_STATUS_UNCERTAINTY,
+    SERVICE_REQUEST_INTENT_MULTIPLIER,
+    SERVICE_REQUEST_PRIORITY_MULTIPLIER,
 )
 from jsonld_ex.fhir_interop._scalar import (
     scalar_to_opinion,
@@ -1771,6 +1776,120 @@ def _from_eob_r4(
 
 # ── from_fhir handler dispatch table ──────────────────────────────
 
+def _from_service_request_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 ServiceRequest -> jsonld-ex document.
+
+    ServiceRequest completes the diagnostic chain:
+        ServiceRequest -> DiagnosticReport -> Observation
+
+    Proposition: "this service request is valid and should be acted upon."
+
+    Uncertainty is modulated by four multiplicative signals:
+        1. status -- base probability and uncertainty from order lifecycle
+        2. intent -- epistemic weight (order vs proposal vs option)
+        3. priority -- clinical attention level (stat vs routine)
+        4. reasonReference count -- evidence basis for ordering
+
+    This is a custom handler (not ``_make_status_handler``) because
+    the multiplicative interaction of intent x priority x evidence
+    produces genuinely different epistemic semantics from simple
+    status-only resources.
+    """
+    status = resource.get("status")
+    intent = resource.get("intent")
+    priority = resource.get("priority")
+
+    # Extract reasonReference count for evidence basis
+    reason_refs_raw = resource.get("reasonReference")
+    reason_refs: list[str] = []
+    if reason_refs_raw is not None:
+        for ref_obj in reason_refs_raw:
+            if isinstance(ref_obj, dict):
+                ref = ref_obj.get("reference", "")
+                if ref:
+                    reason_refs.append(ref)
+    reason_count = len(reason_refs) if reason_refs_raw is not None else None
+
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    # Try extension recovery on _status
+    status_ext = resource.get("_status")
+    recovered = _try_recover_opinion(status_ext)
+
+    if recovered is not None:
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": recovered,
+            "source": "extension",
+        })
+    else:
+        prob = SERVICE_REQUEST_STATUS_PROBABILITY.get(status, 0.50)
+        default_u = SERVICE_REQUEST_STATUS_UNCERTAINTY.get(status, 0.30)
+
+        # Signal 1: intent modulates uncertainty
+        intent_mult = SERVICE_REQUEST_INTENT_MULTIPLIER.get(intent, 1.0)
+        default_u *= intent_mult
+
+        # Signal 2: priority modulates uncertainty
+        priority_mult = SERVICE_REQUEST_PRIORITY_MULTIPLIER.get(priority, 1.0)
+        default_u *= priority_mult
+
+        # Signal 3: reasonReference count (evidence basis)
+        if reason_count is not None:
+            if reason_count == 0:
+                default_u *= 1.3
+            elif reason_count >= 3:
+                default_u *= 0.7
+            else:
+                default_u *= 0.9
+
+        # Clamp to valid range (0, 1)
+        default_u = max(0.01, min(default_u, 0.99))
+
+        op = scalar_to_opinion(prob, default_uncertainty=default_u)
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+    nodes_converted += 1
+
+    # Extract requester reference
+    requester_ref = None
+    requester_obj = resource.get("requester")
+    if isinstance(requester_obj, dict):
+        requester_ref = requester_obj.get("reference")
+
+    # Build jsonld-ex document
+    doc: dict[str, Any] = {
+        "@type": "fhir:ServiceRequest",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+
+    if intent is not None:
+        doc["intent"] = intent
+    if priority is not None:
+        doc["priority"] = priority
+    if reason_refs:
+        doc["reason_references"] = reason_refs
+    if requester_ref is not None:
+        doc["requester"] = requester_ref
+
+    authored_on = resource.get("authoredOn")
+    if authored_on is not None:
+        doc["authoredOn"] = authored_on
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return doc, report
+
+
 _RESOURCE_HANDLERS = {
     "RiskAssessment": _from_risk_assessment_r4,
     "Observation": _from_observation_r4,
@@ -1799,6 +1918,8 @@ _RESOURCE_HANDLERS = {
     "Claim": _from_claim_r4,
     "ExplanationOfBenefit": _from_eob_r4,
     "MedicationAdministration": _from_medication_administration_r4,
+    # Phase 7A — high-value clinical expansion
+    "ServiceRequest": _from_service_request_r4,
 }
 
 
@@ -2727,6 +2848,62 @@ def _to_eob_r4(
 
 # ── to_fhir handler dispatch table ───────────────────────────────
 
+def _to_service_request_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Export jsonld-ex ServiceRequest -> FHIR R4.
+
+    Reconstructs the FHIR R4 ServiceRequest structure including
+    intent, priority, requester Reference, and reasonReference
+    array.  Embeds SL opinion as extension on ``_status``.
+    """
+    resource: dict[str, Any] = {
+        "resourceType": "ServiceRequest",
+        "id": doc.get("id"),
+    }
+
+    status = doc.get("status")
+    if status is not None:
+        resource["status"] = status
+
+    intent = doc.get("intent")
+    if intent is not None:
+        resource["intent"] = intent
+
+    priority = doc.get("priority")
+    if priority is not None:
+        resource["priority"] = priority
+
+    authored_on = doc.get("authoredOn")
+    if authored_on is not None:
+        resource["authoredOn"] = authored_on
+
+    requester = doc.get("requester")
+    if requester is not None:
+        resource["requester"] = {"reference": requester}
+
+    reason_refs = doc.get("reason_references", [])
+    if reason_refs:
+        resource["reasonReference"] = [
+            {"reference": ref} for ref in reason_refs
+        ]
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field = entry.get("field", "")
+
+        if field == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
 _TO_FHIR_HANDLERS = {
     "RiskAssessment": _to_risk_assessment_r4,
     "Observation": _to_observation_r4,
@@ -2755,4 +2932,6 @@ _TO_FHIR_HANDLERS = {
     "Claim": _to_claim_r4,
     "ExplanationOfBenefit": _to_eob_r4,
     "MedicationAdministration": _to_medication_administration_r4,
+    # Phase 7A — high-value clinical expansion
+    "ServiceRequest": _to_service_request_r4,
 }

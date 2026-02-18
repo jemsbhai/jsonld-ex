@@ -583,6 +583,83 @@ MED_ADMIN_STATUS_UNCERTAINTY: dict[str, float] = {
 }
 
 
+# ═══════════════════════════════════════════════════════════════════
+# Phase 7A: High-value clinical expansion
+# ═══════════════════════════════════════════════════════════════════
+
+# ── ServiceRequest status → order validity confidence ─────────────
+#
+# Proposition: "this service request is valid and should be acted upon."
+#
+# ServiceRequest completes the diagnostic chain:
+#   ServiceRequest → DiagnosticReport → Observation
+#
+# Status encodes order lifecycle validity.
+
+SERVICE_REQUEST_STATUS_PROBABILITY: dict[str, float] = {
+    "active": 0.85,
+    "completed": 0.90,
+    "draft": 0.50,
+    "on-hold": 0.50,
+    "revoked": 0.10,
+    "entered-in-error": 0.50,
+    "unknown": 0.50,
+}
+
+SERVICE_REQUEST_STATUS_UNCERTAINTY: dict[str, float] = {
+    "active": 0.15,
+    "completed": 0.10,
+    "draft": 0.40,
+    "on-hold": 0.30,
+    "revoked": 0.15,
+    "entered-in-error": 0.70,
+    "unknown": 0.45,
+}
+
+# ── ServiceRequest intent → epistemic weight multiplier ───────────
+#
+# Intent encodes how deliberate the clinical decision is.
+# Multipliers < 1.0 reduce uncertainty (stronger commitment);
+# multipliers > 1.0 increase it (weaker commitment).
+#
+# Rationale:
+#   order/original-order/instance-order (0.7) — formal clinical
+#       decision, strongest evidence weight.
+#   directive/filler-order (0.8) — protocol-driven or fulfillment,
+#       slightly less deliberate than direct orders.
+#   reflex-order (0.9) — automated response to another result,
+#       less clinical deliberation involved.
+#   plan (1.2) — planned but not yet ordered, moderate uncertainty.
+#   proposal (1.4) — suggestion only, weakest commitment.
+#   option (1.5) — informational, no commitment to act.
+
+SERVICE_REQUEST_INTENT_MULTIPLIER: dict[str, float] = {
+    "order": 0.7,
+    "original-order": 0.7,
+    "instance-order": 0.7,
+    "directive": 0.8,
+    "filler-order": 0.8,
+    "reflex-order": 0.9,
+    "plan": 1.2,
+    "proposal": 1.4,
+    "option": 1.5,
+}
+
+# ── ServiceRequest priority → clinical attention multiplier ───────
+#
+# Higher priority orders receive more clinical attention, which
+# reduces uncertainty about their validity and appropriateness.
+#
+# Multipliers < 1.0 reduce uncertainty; 1.0 is the baseline.
+
+SERVICE_REQUEST_PRIORITY_MULTIPLIER: dict[str, float] = {
+    "routine": 1.0,
+    "urgent": 0.85,
+    "asap": 0.75,
+    "stat": 0.65,
+}
+
+
 # ── Supported resource types ──────────────────────────────────────
 
 SUPPORTED_RESOURCE_TYPES = frozenset({
@@ -617,4 +694,6 @@ SUPPORTED_RESOURCE_TYPES = frozenset({
     "Claim",
     "ExplanationOfBenefit",
     "MedicationAdministration",
+    # Phase 7A — high-value clinical expansion
+    "ServiceRequest",
 })

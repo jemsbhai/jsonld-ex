@@ -6,7 +6,7 @@ Subjective Logic opinion model.  Provides mathematically grounded
 uncertainty that composes, fuses, and propagates correctly — capabilities
 that FHIR's scalar probability and categorical code model lack.
 
-Supported FHIR R4 resources (26 types, 4 epistemic tiers):
+Supported FHIR R4 resources (27 types, 4 epistemic tiers):
 
   Tier 1 — Clinical assertions (rich signal, domain-specific mappings):
   - RiskAssessment      — prediction.probabilityDecimal → Opinion
@@ -24,6 +24,7 @@ Supported FHIR R4 resources (26 types, 4 epistemic tiers):
   - Provenance           — recorded + agent/entity → chain reliability Opinion
 
   Tier 2 — Clinical workflow (status-based, "event occurred as documented"):
+  - ServiceRequest       — status × intent × priority × evidence → order validity Opinion
   - Encounter            — status → visit validity Opinion
   - MedicationRequest    — status → prescription validity Opinion
   - MedicationAdministration — status → administration validity Opinion
@@ -76,6 +77,11 @@ from jsonld_ex.fhir_interop._constants import (
     FAMILY_HISTORY_DEFAULT_UNCERTAINTY,
     CONSENT_STATUS_PROBABILITY,
     CONSENT_STATUS_UNCERTAINTY,
+    # Phase 7A
+    SERVICE_REQUEST_STATUS_PROBABILITY,
+    SERVICE_REQUEST_STATUS_UNCERTAINTY,
+    SERVICE_REQUEST_INTENT_MULTIPLIER,
+    SERVICE_REQUEST_PRIORITY_MULTIPLIER,
 )
 from jsonld_ex.fhir_interop._scalar import (
     scalar_to_opinion,
@@ -138,6 +144,10 @@ __all__ = [
     "FAMILY_HISTORY_DEFAULT_UNCERTAINTY",
     "CONSENT_STATUS_PROBABILITY",
     "CONSENT_STATUS_UNCERTAINTY",
+    "SERVICE_REQUEST_STATUS_PROBABILITY",
+    "SERVICE_REQUEST_STATUS_UNCERTAINTY",
+    "SERVICE_REQUEST_INTENT_MULTIPLIER",
+    "SERVICE_REQUEST_PRIORITY_MULTIPLIER",
     # Fusion & trust
     "fhir_clinical_fuse",
     "fhir_trust_chain",
