@@ -82,6 +82,10 @@ from jsonld_ex.fhir_interop._constants import (
     SPECIMEN_STATUS_PROBABILITY,
     SPECIMEN_STATUS_UNCERTAINTY,
     SPECIMEN_CONDITION_MULTIPLIER,
+    # Phase 7B — DocumentReference
+    DOC_REF_STATUS_PROBABILITY,
+    DOC_REF_STATUS_UNCERTAINTY,
+    DOC_REF_DOC_STATUS_MULTIPLIER,
 )
 from jsonld_ex.fhir_interop._scalar import (
     scalar_to_opinion,
@@ -2290,6 +2294,217 @@ def _from_specimen_r4(
     return doc, report
 
 
+# -- DocumentReference handler (from_fhir) -------------------------
+
+
+def _from_document_reference_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 DocumentReference -> jsonld-ex document.
+
+    Proposition: "this document reference is valid and the underlying
+    document is reliable."
+
+    DocumentReference is unique in FHIR R4: it has **two independent
+    status dimensions** (status + docStatus) producing genuinely
+    different epistemic semantics.
+
+    Uncertainty is modulated by five multiplicative signals:
+        1. status -- base probability and uncertainty from reference
+           lifecycle (current / superseded / entered-in-error)
+        2. docStatus -- document content maturity multiplier
+           (final / amended / preliminary / entered-in-error)
+        3. authenticator presence -- verification signal (x0.8)
+        4. author[] count -- accountability (0=x1.2, 1=x1.0, 2+=x0.9)
+        5. content[] count -- document availability (0=x1.3, 1=x1.0, 2+=x0.9)
+
+    This is a custom handler (not ``_make_status_handler``) because
+    the dual-status model and multiplicative signal interactions
+    produce genuinely different epistemic semantics.
+    """
+    status = resource.get("status")
+    doc_status = resource.get("docStatus")
+
+    # Extract authenticator reference
+    authenticator_ref = None
+    auth_obj = resource.get("authenticator")
+    if isinstance(auth_obj, dict):
+        authenticator_ref = auth_obj.get("reference")
+
+    # Extract author references
+    author_refs: list[str] = []
+    author_raw = resource.get("author")
+    has_author_field = author_raw is not None
+    if author_raw is not None:
+        for ref_obj in author_raw:
+            if isinstance(ref_obj, dict):
+                ref = ref_obj.get("reference", "")
+                if ref:
+                    author_refs.append(ref)
+
+    # Count content elements
+    content_raw = resource.get("content")
+    content_count = len(content_raw) if content_raw is not None else 0
+
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    # Try extension recovery on _status
+    status_ext = resource.get("_status")
+    recovered = _try_recover_opinion(status_ext)
+
+    if recovered is not None:
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": recovered,
+            "source": "extension",
+        })
+    else:
+        prob = DOC_REF_STATUS_PROBABILITY.get(status, 0.50)
+        default_u = DOC_REF_STATUS_UNCERTAINTY.get(status, 0.30)
+
+        # Signal 2: docStatus modulates uncertainty
+        if doc_status is not None:
+            doc_status_mult = DOC_REF_DOC_STATUS_MULTIPLIER.get(
+                doc_status, 1.0
+            )
+            default_u *= doc_status_mult
+
+        # Signal 3: authenticator presence reduces uncertainty
+        if authenticator_ref is not None:
+            default_u *= 0.8
+
+        # Signal 4: author count (accountability)
+        if has_author_field:
+            author_count = len(author_refs)
+            if author_count == 0:
+                default_u *= 1.2
+            elif author_count >= 2:
+                default_u *= 0.9
+            # author_count == 1 -> x1.0 (baseline)
+
+        # Signal 5: content count (document availability)
+        if content_count == 0:
+            default_u *= 1.3
+        elif content_count >= 2:
+            default_u *= 0.9
+        # content_count == 1 -> x1.0 (baseline)
+
+        # Clamp to valid range (0, 1)
+        default_u = max(0.01, min(default_u, 0.99))
+
+        op = scalar_to_opinion(prob, default_uncertainty=default_u)
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+    nodes_converted += 1
+
+    # Extract metadata for passthrough
+    # Type text
+    type_text = None
+    type_obj = resource.get("type")
+    if isinstance(type_obj, dict):
+        type_text = type_obj.get("text")
+
+    # Subject reference
+    subject_ref = None
+    subject_obj = resource.get("subject")
+    if isinstance(subject_obj, dict):
+        subject_ref = subject_obj.get("reference")
+
+    # Custodian reference
+    custodian_ref = None
+    custodian_obj = resource.get("custodian")
+    if isinstance(custodian_obj, dict):
+        custodian_ref = custodian_obj.get("reference")
+
+    # SecurityLabel codes
+    security_label_codes: list[str] = []
+    for sl in resource.get("securityLabel", []):
+        if isinstance(sl, dict):
+            codings = sl.get("coding", [])
+            for c in codings:
+                if isinstance(c, dict) and c.get("code"):
+                    security_label_codes.append(c["code"])
+
+    # RelatesTo
+    relates_to: list[dict[str, str]] = []
+    for rt in resource.get("relatesTo", []):
+        if isinstance(rt, dict):
+            code = rt.get("code", "")
+            target_ref = ""
+            target_obj = rt.get("target")
+            if isinstance(target_obj, dict):
+                target_ref = target_obj.get("reference", "")
+            if code or target_ref:
+                relates_to.append({"code": code, "target": target_ref})
+
+    # Context
+    context_encounter_refs: list[str] = []
+    context_period = None
+    context_obj = resource.get("context")
+    if isinstance(context_obj, dict):
+        for enc in context_obj.get("encounter", []):
+            if isinstance(enc, dict):
+                ref = enc.get("reference", "")
+                if ref:
+                    context_encounter_refs.append(ref)
+        period_obj = context_obj.get("period")
+        if isinstance(period_obj, dict):
+            context_period = period_obj
+
+    # Category
+    category_raw = resource.get("category")
+
+    # Build jsonld-ex document
+    doc: dict[str, Any] = {
+        "@type": "fhir:DocumentReference",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+
+    if doc_status is not None:
+        doc["docStatus"] = doc_status
+    if type_text is not None:
+        doc["type"] = type_text
+    if subject_ref is not None:
+        doc["subject"] = subject_ref
+    if authenticator_ref is not None:
+        doc["authenticator"] = authenticator_ref
+    if custodian_ref is not None:
+        doc["custodian"] = custodian_ref
+    if author_refs:
+        doc["author_references"] = author_refs
+    if content_count > 0:
+        doc["content_count"] = content_count
+    if security_label_codes:
+        doc["securityLabel_codes"] = security_label_codes
+    if relates_to:
+        doc["relatesTo"] = relates_to
+    if context_encounter_refs:
+        doc["context_encounter_references"] = context_encounter_refs
+    if context_period is not None:
+        doc["context_period"] = context_period
+    if category_raw is not None:
+        doc["category"] = category_raw
+
+    date = resource.get("date")
+    if date is not None:
+        doc["date"] = date
+
+    description = resource.get("description")
+    if description is not None:
+        doc["description"] = description
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return doc, report
+
+
 # ── Configurable handler registry ───────────────────────────────
 #
 # Resource types whose handlers accept a ``handler_config`` kwarg.
@@ -2334,6 +2549,8 @@ _RESOURCE_HANDLERS = {
     "ServiceRequest": _from_service_request_r4,
     "QuestionnaireResponse": _from_questionnaire_response_r4,
     "Specimen": _from_specimen_r4,
+    # Phase 7B — US Core completeness
+    "DocumentReference": _from_document_reference_r4,
 }
 
 
@@ -3465,6 +3682,112 @@ def _to_specimen_r4(
     return resource, report
 
 
+def _to_document_reference_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Export jsonld-ex DocumentReference -> FHIR R4.
+
+    Reconstructs the FHIR R4 DocumentReference structure including
+    dual status (status + docStatus), type CodeableConcept, subject/
+    authenticator/custodian References, author References, relatesTo
+    array, securityLabel CodeableConcept array, context backbone
+    (encounter, period), date, and description.
+    Embeds SL opinion as extension on ``_status``.
+    """
+    resource: dict[str, Any] = {
+        "resourceType": "DocumentReference",
+        "id": doc.get("id"),
+    }
+
+    status = doc.get("status")
+    if status is not None:
+        resource["status"] = status
+
+    doc_status = doc.get("docStatus")
+    if doc_status is not None:
+        resource["docStatus"] = doc_status
+
+    # Type as CodeableConcept
+    type_text = doc.get("type")
+    if type_text is not None:
+        resource["type"] = {"text": type_text}
+
+    # Subject reference
+    subject_ref = doc.get("subject")
+    if subject_ref is not None:
+        resource["subject"] = {"reference": subject_ref}
+
+    # Authenticator reference
+    authenticator_ref = doc.get("authenticator")
+    if authenticator_ref is not None:
+        resource["authenticator"] = {"reference": authenticator_ref}
+
+    # Custodian reference
+    custodian_ref = doc.get("custodian")
+    if custodian_ref is not None:
+        resource["custodian"] = {"reference": custodian_ref}
+
+    # Author references
+    author_refs = doc.get("author_references", [])
+    if author_refs:
+        resource["author"] = [{"reference": r} for r in author_refs]
+
+    # Date
+    date = doc.get("date")
+    if date is not None:
+        resource["date"] = date
+
+    # Description
+    description = doc.get("description")
+    if description is not None:
+        resource["description"] = description
+
+    # SecurityLabel codes
+    security_label_codes = doc.get("securityLabel_codes", [])
+    if security_label_codes:
+        resource["securityLabel"] = [
+            {"coding": [{"code": c}]} for c in security_label_codes
+        ]
+
+    # RelatesTo
+    relates_to = doc.get("relatesTo", [])
+    if relates_to:
+        resource["relatesTo"] = [
+            {
+                "code": rt.get("code", ""),
+                "target": {"reference": rt.get("target", "")},
+            }
+            for rt in relates_to
+        ]
+
+    # Context backbone
+    context: dict[str, Any] = {}
+    context_enc_refs = doc.get("context_encounter_references", [])
+    if context_enc_refs:
+        context["encounter"] = [{"reference": r} for r in context_enc_refs]
+    context_period = doc.get("context_period")
+    if context_period is not None:
+        context["period"] = context_period
+    if context:
+        resource["context"] = context
+
+    # Embed SL opinion as extension on _status
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field = entry.get("field", "")
+
+        if field == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
 _TO_FHIR_HANDLERS = {
     "RiskAssessment": _to_risk_assessment_r4,
     "Observation": _to_observation_r4,
@@ -3497,4 +3820,6 @@ _TO_FHIR_HANDLERS = {
     "ServiceRequest": _to_service_request_r4,
     "QuestionnaireResponse": _to_questionnaire_response_r4,
     "Specimen": _to_specimen_r4,
+    # Phase 7B — US Core completeness
+    "DocumentReference": _to_document_reference_r4,
 }

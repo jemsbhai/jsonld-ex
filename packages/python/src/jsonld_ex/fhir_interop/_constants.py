@@ -778,6 +778,62 @@ SPECIMEN_CONDITION_MULTIPLIER: dict[str, float] = {
 }
 
 
+# ═══════════════════════════════════════════════════════════════════
+# Phase 7B: US Core Completeness
+# ═══════════════════════════════════════════════════════════════════
+
+# ── DocumentReference status → reference validity confidence ──────
+#
+# Proposition: "This document reference is valid and the underlying
+# document is reliable."
+#
+# DocumentReference is unique in FHIR R4: it has TWO independent
+# status dimensions (status + docStatus) producing genuinely
+# different epistemic semantics.
+#
+# Signal 1 — ``status`` (DocumentReferenceStatus, Required binding):
+#     The status of the *reference record* itself.
+#     current=0.85 — active, valid reference (analogous to "active")
+#     superseded=0.25 — replaced by newer version; this specific
+#         reference should not be relied upon, but the document
+#         it points to may still be valid (hence not as low as 0.10)
+#     entered-in-error=0.50 — data integrity compromised
+
+DOC_REF_STATUS_PROBABILITY: dict[str, float] = {
+    "current": 0.85,
+    "superseded": 0.25,
+    "entered-in-error": 0.50,
+}
+
+DOC_REF_STATUS_UNCERTAINTY: dict[str, float] = {
+    "current": 0.15,
+    "superseded": 0.20,
+    "entered-in-error": 0.70,
+}
+
+# ── DocumentReference docStatus → uncertainty multiplier ──────────
+#
+# Signal 2 — ``docStatus`` (CompositionStatus, Required binding):
+#     The status of the *underlying document content*.
+#     Multipliers modulate the base uncertainty from Signal 1.
+#
+#     final=×0.7 — reviewed and signed off; strongest maturity
+#     amended=×0.8 — revised but less settled than final
+#     preliminary=×1.4 — draft; may contain errors or be incomplete
+#     entered-in-error=×2.0 — content itself is invalid
+#
+# The separation from status allows expressing states like
+# "current reference to a preliminary document" — genuinely
+# different from "current reference to a final document."
+
+DOC_REF_DOC_STATUS_MULTIPLIER: dict[str, float] = {
+    "final": 0.7,
+    "amended": 0.8,
+    "preliminary": 1.4,
+    "entered-in-error": 2.0,
+}
+
+
 # ── Supported resource types ──────────────────────────────────────
 
 SUPPORTED_RESOURCE_TYPES = frozenset({
@@ -816,4 +872,6 @@ SUPPORTED_RESOURCE_TYPES = frozenset({
     "ServiceRequest",
     "QuestionnaireResponse",
     "Specimen",
+    # Phase 7B — US Core completeness
+    "DocumentReference",
 })

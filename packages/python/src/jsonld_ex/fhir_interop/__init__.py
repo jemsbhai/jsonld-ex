@@ -6,7 +6,7 @@ Subjective Logic opinion model.  Provides mathematically grounded
 uncertainty that composes, fuses, and propagates correctly — capabilities
 that FHIR's scalar probability and categorical code model lack.
 
-Supported FHIR R4 resources (29 types, 4 epistemic tiers):
+Supported FHIR R4 resources (30 types, 4 epistemic tiers):
 
   Tier 1 — Clinical assertions (rich signal, domain-specific mappings):
   - RiskAssessment      — prediction.probabilityDecimal → Opinion
@@ -34,6 +34,7 @@ Supported FHIR R4 resources (29 types, 4 epistemic tiers):
   - Goal                 — lifecycleStatus + achievementStatus → dual Opinion
   - CareTeam             — status → assignment validity Opinion
   - ImagingStudy         — status → study validity Opinion
+  - DocumentReference    — status × docStatus × authenticator × author × content → document reliability Opinion
 
   Tier 3 — Administrative identity ("this record is accurate and current"):
   - Patient              — data completeness → record accuracy Opinion
@@ -93,6 +94,10 @@ from jsonld_ex.fhir_interop._constants import (
     SPECIMEN_STATUS_PROBABILITY,
     SPECIMEN_STATUS_UNCERTAINTY,
     SPECIMEN_CONDITION_MULTIPLIER,
+    # Phase 7B — DocumentReference
+    DOC_REF_STATUS_PROBABILITY,
+    DOC_REF_STATUS_UNCERTAINTY,
+    DOC_REF_DOC_STATUS_MULTIPLIER,
 )
 from jsonld_ex.fhir_interop._scalar import (
     scalar_to_opinion,
@@ -166,6 +171,9 @@ __all__ = [
     "SPECIMEN_STATUS_PROBABILITY",
     "SPECIMEN_STATUS_UNCERTAINTY",
     "SPECIMEN_CONDITION_MULTIPLIER",
+    "DOC_REF_STATUS_PROBABILITY",
+    "DOC_REF_STATUS_UNCERTAINTY",
+    "DOC_REF_DOC_STATUS_MULTIPLIER",
     # Fusion & trust
     "fhir_clinical_fuse",
     "fhir_trust_chain",
