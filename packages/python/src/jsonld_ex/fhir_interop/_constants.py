@@ -717,6 +717,67 @@ QR_COMPLETENESS_THRESHOLDS: dict[str, float] = {
 }
 
 
+# ── Specimen status → probability ──────────────────────────────────
+#
+# Proposition: "This specimen is suitable for reliable diagnostic analysis."
+#
+# available:        specimen ready for testing — high suitability
+# unavailable:      logistic issue, may become available — moderate-low
+# unsatisfactory:   quality-failed — lowest suitability
+# entered-in-error: data integrity compromised — uncertain
+
+SPECIMEN_STATUS_PROBABILITY: dict[str, float] = {
+    "available": 0.85,
+    "unavailable": 0.30,
+    "unsatisfactory": 0.15,
+    "entered-in-error": 0.50,
+}
+
+SPECIMEN_STATUS_UNCERTAINTY: dict[str, float] = {
+    "available": 0.15,
+    "unavailable": 0.40,
+    "unsatisfactory": 0.25,
+    "entered-in-error": 0.50,
+}
+
+# ── Specimen condition → uncertainty multiplier (v2 Table 0493) ───
+#
+# Each condition code applies an independent multiplicative adjustment
+# to the base uncertainty.  Multiple conditions compound (e.g., a
+# hemolyzed AND clotted specimen has u *= HEM_mult * CLOT_mult).
+#
+# Degradation codes (> 1.0) raise uncertainty:
+#   HEM  — hemoglobin interference; most common pre-analytical error
+#   CLOT — unusable for many coagulation tests
+#   CON  — compromised specimen integrity
+#   AUT  — tissue breakdown (autolysis), severe degradation
+#   SNR  — sample not received, no specimen to analyze
+#
+# Neutral / positive codes (<= 1.0):
+#   LIVE — live specimen, slight positive signal
+#   COOL — proper cold-chain handling
+#   FROZ — frozen state (test-dependent, neutral)
+#   ROOM — room temperature; may be improper for some tests
+#   CFU  — centrifuged, processed state
+#
+# Source: HL7 v2 Table 0493; clinical impact from Plebani (2006),
+# Clin Chem Lab Med — pre-analytical errors account for ~70% of
+# all lab testing errors.
+
+SPECIMEN_CONDITION_MULTIPLIER: dict[str, float] = {
+    "HEM": 1.4,
+    "CLOT": 1.5,
+    "CON": 1.5,
+    "AUT": 1.6,
+    "SNR": 2.0,
+    "LIVE": 0.9,
+    "COOL": 1.0,
+    "FROZ": 1.0,
+    "ROOM": 1.1,
+    "CFU": 0.9,
+}
+
+
 # ── Supported resource types ──────────────────────────────────────
 
 SUPPORTED_RESOURCE_TYPES = frozenset({
@@ -754,4 +815,5 @@ SUPPORTED_RESOURCE_TYPES = frozenset({
     # Phase 7A — high-value clinical expansion
     "ServiceRequest",
     "QuestionnaireResponse",
+    "Specimen",
 })

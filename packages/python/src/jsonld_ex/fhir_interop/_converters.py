@@ -78,6 +78,10 @@ from jsonld_ex.fhir_interop._constants import (
     QR_STATUS_UNCERTAINTY,
     QR_SOURCE_RELIABILITY_MULTIPLIER,
     QR_COMPLETENESS_THRESHOLDS,
+    # Phase 7A — Specimen
+    SPECIMEN_STATUS_PROBABILITY,
+    SPECIMEN_STATUS_UNCERTAINTY,
+    SPECIMEN_CONDITION_MULTIPLIER,
 )
 from jsonld_ex.fhir_interop._scalar import (
     scalar_to_opinion,
@@ -2098,6 +2102,194 @@ def _from_questionnaire_response_r4(
     return doc, report
 
 
+# ── Specimen handler (from_fhir) ─────────────────────────────────
+
+
+def _from_specimen_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 Specimen → jsonld-ex document.
+
+    Specimen links pre-analytical quality to the diagnostic chain:
+        ServiceRequest → **Specimen** → DiagnosticReport → Observation
+
+    Proposition: "this specimen is suitable for reliable diagnostic analysis."
+
+    Uncertainty is modulated by five multiplicative signals:
+        1. status — base probability and uncertainty from availability
+        2. condition[] — v2 Table 0493 degradation codes compound
+           independently (each HEM/CLOT/CON/AUT raises u)
+        3. processing[] count — chain of custody documentation
+        4. collection.collector presence — accountability signal
+        5. collection.quantity presence — sample adequacy documentation
+
+    This is a custom handler because pre-analytical quality involves
+    multiple independent degradation signals that interact
+    multiplicatively.  Pre-analytical errors cause ~70% of lab
+    testing errors (Plebani 2006), making condition codes the most
+    impactful signal.
+    """
+    status = resource.get("status")
+
+    # ── Extract condition codes (0..*) ────────────────────────────
+    raw_conditions = resource.get("condition")
+    condition_codes: list[str] = []
+    if raw_conditions is not None:
+        for cond in raw_conditions:
+            codings = cond.get("coding", [])
+            for coding in codings:
+                code = coding.get("code")
+                if code:
+                    condition_codes.append(code)
+                    break  # first code per CodeableConcept
+
+    # ── Extract processing count ───────────────────────────────
+    raw_processing = resource.get("processing")
+    processing_count = len(raw_processing) if raw_processing is not None else 0
+
+    # ── Extract collection backbone signals ─────────────────────
+    collection = resource.get("collection", {})
+    if not isinstance(collection, dict):
+        collection = {}
+
+    collector_obj = collection.get("collector")
+    collector_ref: str | None = None
+    if isinstance(collector_obj, dict):
+        collector_ref = collector_obj.get("reference")
+
+    quantity_obj = collection.get("quantity")
+    has_quantity = quantity_obj is not None and isinstance(quantity_obj, dict)
+
+    collected_dt = collection.get("collectedDateTime")
+    method_obj = collection.get("method")
+    method_text = method_obj.get("text") if isinstance(method_obj, dict) else None
+    body_site_obj = collection.get("bodySite")
+    body_site_text = body_site_obj.get("text") if isinstance(body_site_obj, dict) else None
+
+    # ── Extract other metadata ─────────────────────────────────
+    type_obj = resource.get("type")
+    type_text = type_obj.get("text") if isinstance(type_obj, dict) else None
+
+    subject_obj = resource.get("subject")
+    subject_ref = subject_obj.get("reference") if isinstance(subject_obj, dict) else None
+
+    received_time = resource.get("receivedTime")
+
+    raw_requests = resource.get("request")
+    request_refs: list[str] = []
+    if raw_requests is not None:
+        for req in raw_requests:
+            if isinstance(req, dict):
+                ref = req.get("reference")
+                if ref:
+                    request_refs.append(ref)
+
+    raw_parents = resource.get("parent")
+    parent_refs: list[str] = []
+    if raw_parents is not None:
+        for par in raw_parents:
+            if isinstance(par, dict):
+                ref = par.get("reference")
+                if ref:
+                    parent_refs.append(ref)
+
+    raw_notes = resource.get("note")
+    notes: list[str] | None = None
+    if raw_notes is not None:
+        notes = [n.get("text", "") for n in raw_notes]
+
+    # ── Reconstruct SL opinion ─────────────────────────────────
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    status_ext = resource.get("_status")
+    recovered = _try_recover_opinion(status_ext)
+
+    if recovered is not None:
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": recovered,
+            "source": "extension",
+        })
+    else:
+        prob = SPECIMEN_STATUS_PROBABILITY.get(status, 0.50)
+        default_u = SPECIMEN_STATUS_UNCERTAINTY.get(status, 0.30)
+
+        # Signal 1: condition codes (multiplicative compounding)
+        for code in condition_codes:
+            mult = SPECIMEN_CONDITION_MULTIPLIER.get(code, 1.0)
+            default_u *= mult
+
+        # Signal 2: processing chain count
+        if processing_count == 0:
+            default_u *= 1.3
+        elif processing_count >= 3:
+            default_u *= 0.8
+        # else 1–2 steps: baseline (1.0)
+
+        # Signal 3: collector identification
+        if collector_ref is not None:
+            default_u *= 0.9
+        else:
+            default_u *= 1.1
+
+        # Signal 4: collection quantity documentation
+        if has_quantity:
+            default_u *= 0.9
+        # else: baseline (1.0) — absence is not penalised
+
+        # Clamp to valid range (0, 1)
+        default_u = max(0.01, min(default_u, 0.99))
+
+        op = scalar_to_opinion(prob, default_uncertainty=default_u)
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+    nodes_converted += 1
+
+    # ── Build jsonld-ex document ───────────────────────────────
+    doc: dict[str, Any] = {
+        "@type": "fhir:Specimen",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+
+    # Metadata passthrough — no data excluded
+    if type_text is not None:
+        doc["type"] = type_text
+    if subject_ref is not None:
+        doc["subject"] = subject_ref
+    if received_time is not None:
+        doc["receivedTime"] = received_time
+    if request_refs:
+        doc["request_references"] = request_refs
+    if collector_ref is not None:
+        doc["collector"] = collector_ref
+    if collected_dt is not None:
+        doc["collectedDateTime"] = collected_dt
+    if has_quantity:
+        doc["collection_quantity"] = quantity_obj
+    if method_text is not None:
+        doc["collection_method"] = method_text
+    if body_site_text is not None:
+        doc["collection_bodySite"] = body_site_text
+    if condition_codes:
+        doc["condition_codes"] = condition_codes
+    doc["processing_count"] = processing_count
+    if notes is not None:
+        doc["note"] = notes
+    if parent_refs:
+        doc["parent_references"] = parent_refs
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return doc, report
+
+
 # ── Configurable handler registry ───────────────────────────────
 #
 # Resource types whose handlers accept a ``handler_config`` kwarg.
@@ -2141,6 +2333,7 @@ _RESOURCE_HANDLERS = {
     # Phase 7A — high-value clinical expansion
     "ServiceRequest": _from_service_request_r4,
     "QuestionnaireResponse": _from_questionnaire_response_r4,
+    "Specimen": _from_specimen_r4,
 }
 
 
@@ -3171,6 +3364,107 @@ def _to_questionnaire_response_r4(
     return resource, report
 
 
+def _to_specimen_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Export jsonld-ex Specimen → FHIR R4.
+
+    Reconstructs the FHIR R4 Specimen structure including collection
+    backbone (collector, quantity, collectedDateTime, method, bodySite),
+    condition CodeableConcept array, type, subject, receivedTime,
+    request/parent References, processing count, and note annotations.
+    Embeds SL opinion as extension on ``_status``.
+    """
+    resource: dict[str, Any] = {
+        "resourceType": "Specimen",
+        "id": doc.get("id"),
+    }
+
+    status = doc.get("status")
+    if status is not None:
+        resource["status"] = status
+
+    # Type
+    type_text = doc.get("type")
+    if type_text is not None:
+        resource["type"] = {"text": type_text}
+
+    # Subject
+    subject_ref = doc.get("subject")
+    if subject_ref is not None:
+        resource["subject"] = {"reference": subject_ref}
+
+    # ReceivedTime
+    received_time = doc.get("receivedTime")
+    if received_time is not None:
+        resource["receivedTime"] = received_time
+
+    # Request references
+    request_refs = doc.get("request_references", [])
+    if request_refs:
+        resource["request"] = [{"reference": r} for r in request_refs]
+
+    # Parent references
+    parent_refs = doc.get("parent_references", [])
+    if parent_refs:
+        resource["parent"] = [{"reference": r} for r in parent_refs]
+
+    # Collection backbone
+    collection: dict[str, Any] = {}
+    collector = doc.get("collector")
+    if collector is not None:
+        collection["collector"] = {"reference": collector}
+    collected_dt = doc.get("collectedDateTime")
+    if collected_dt is not None:
+        collection["collectedDateTime"] = collected_dt
+    qty = doc.get("collection_quantity")
+    if qty is not None:
+        collection["quantity"] = qty
+    method_text = doc.get("collection_method")
+    if method_text is not None:
+        collection["method"] = {"text": method_text}
+    body_site_text = doc.get("collection_bodySite")
+    if body_site_text is not None:
+        collection["bodySite"] = {"text": body_site_text}
+    if collection:
+        resource["collection"] = collection
+
+    # Condition codes
+    condition_codes = doc.get("condition_codes", [])
+    if condition_codes:
+        resource["condition"] = [
+            {"coding": [{"code": c}]} for c in condition_codes
+        ]
+
+    # Processing (reconstruct from count)
+    processing_count = doc.get("processing_count", 0)
+    if processing_count > 0:
+        resource["processing"] = [
+            {"description": f"Step {i + 1}"} for i in range(processing_count)
+        ]
+
+    # Notes
+    notes = doc.get("note")
+    if notes is not None:
+        resource["note"] = [{"text": t} for t in notes]
+
+    # Embed SL opinion as extension on _status
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field = entry.get("field", "")
+
+        if field == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
 _TO_FHIR_HANDLERS = {
     "RiskAssessment": _to_risk_assessment_r4,
     "Observation": _to_observation_r4,
@@ -3202,4 +3496,5 @@ _TO_FHIR_HANDLERS = {
     # Phase 7A — high-value clinical expansion
     "ServiceRequest": _to_service_request_r4,
     "QuestionnaireResponse": _to_questionnaire_response_r4,
+    "Specimen": _to_specimen_r4,
 }
