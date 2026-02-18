@@ -89,6 +89,10 @@ from jsonld_ex.fhir_interop._constants import (
     # Phase 7B — Coverage
     COVERAGE_STATUS_PROBABILITY,
     COVERAGE_STATUS_UNCERTAINTY,
+    # Phase 7B — Location
+    LOCATION_STATUS_PROBABILITY,
+    LOCATION_STATUS_UNCERTAINTY,
+    LOCATION_OPERATIONAL_STATUS_MULTIPLIER,
 )
 from jsonld_ex.fhir_interop._scalar import (
     scalar_to_opinion,
@@ -2652,6 +2656,196 @@ def _from_coverage_r4(
     return doc, report
 
 
+# ── Location handler (from_fhir) ───────────────────────────────────
+
+
+def _from_location_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 Location → jsonld-ex document.
+
+    Proposition: "This location record is valid and the facility is
+    operationally suitable for its intended purpose."
+
+    Location is referenced by Encounter (where care happened),
+    Provenance (where recorded), Device (where housed), and
+    PractitionerRole (where practitioner works).  US Core USCDI
+    mandated.
+
+    Location has two independent status dimensions:
+        1. ``status`` (LocationStatus, Required binding):
+           active | suspended | inactive
+        2. ``operationalStatus`` (Coding, Preferred binding —
+           v2 Table 0116): C | H | O | U | K | I
+
+    These produce genuinely different epistemic semantics: a location
+    can be ``active`` in status but ``K`` (contaminated) operationally,
+    which should raise uncertainty about its usability.
+
+    This is a custom handler (not ``_make_status_handler``) because:
+        - The dual-status model with multiplicative signal interaction
+          requires custom logic
+        - Comprehensive metadata passthrough (position, address,
+          telecom, hoursOfOperation, etc.) requires field-by-field
+          extraction
+        - Reference fields (managingOrganization, partOf, endpoint)
+          require proper extraction for round-trip fidelity
+    """
+    status = resource.get("status")
+
+    # ── Signal 2: operationalStatus (v2 Table 0116) ────────────
+    op_status_obj = resource.get("operationalStatus")
+    op_status_code: str | None = None
+    if isinstance(op_status_obj, dict):
+        op_status_code = op_status_obj.get("code")
+
+    # ── Extract metadata fields ──────────────────────────────
+    name = resource.get("name")
+    description = resource.get("description")
+    mode = resource.get("mode")
+
+    # type (CodeableConcept[]) — pass through as-is
+    type_list = resource.get("type")
+
+    # telecom (ContactPoint[]) — pass through as-is
+    telecom = resource.get("telecom")
+
+    # address (Address) — pass through as-is
+    address = resource.get("address")
+
+    # physicalType (CodeableConcept) — extract text or first code
+    physical_type_text: str | None = None
+    pt_obj = resource.get("physicalType")
+    if isinstance(pt_obj, dict):
+        physical_type_text = pt_obj.get("text")
+        if physical_type_text is None:
+            for coding in pt_obj.get("coding", []):
+                if isinstance(coding, dict) and coding.get("code"):
+                    physical_type_text = coding["code"]
+                    break
+
+    # position (backbone: longitude, latitude, altitude)
+    position = resource.get("position")
+
+    # managingOrganization (Reference)
+    managing_org_ref: str | None = None
+    managing_org_obj = resource.get("managingOrganization")
+    if isinstance(managing_org_obj, dict):
+        managing_org_ref = managing_org_obj.get("reference")
+
+    # partOf (Reference)
+    part_of_ref: str | None = None
+    part_of_obj = resource.get("partOf")
+    if isinstance(part_of_obj, dict):
+        part_of_ref = part_of_obj.get("reference")
+
+    # hoursOfOperation (BackboneElement[]) — pass through as-is
+    hours_of_operation = resource.get("hoursOfOperation")
+
+    # availabilityExceptions (string)
+    availability_exceptions = resource.get("availabilityExceptions")
+
+    # endpoint (Reference[]) — extract reference strings
+    endpoint_refs: list[str] = []
+    endpoint_raw = resource.get("endpoint")
+    if endpoint_raw is not None:
+        for ref_obj in endpoint_raw:
+            if isinstance(ref_obj, dict):
+                ref = ref_obj.get("reference", "")
+                if ref:
+                    endpoint_refs.append(ref)
+
+    # identifier (Identifier[]) — pass through as-is
+    identifier = resource.get("identifier")
+
+    # alias (string[]) — pass through as-is
+    alias = resource.get("alias")
+
+    # ── Reconstruct SL opinion ─────────────────────────────
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    status_ext = resource.get("_status")
+    recovered = _try_recover_opinion(status_ext)
+
+    if recovered is not None:
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": recovered,
+            "source": "extension",
+        })
+    else:
+        prob = LOCATION_STATUS_PROBABILITY.get(status, 0.50)
+        default_u = LOCATION_STATUS_UNCERTAINTY.get(status, 0.30)
+
+        # Signal 2: operationalStatus modulates uncertainty
+        if op_status_code is not None:
+            op_mult = LOCATION_OPERATIONAL_STATUS_MULTIPLIER.get(
+                op_status_code, 1.0,
+            )
+            default_u *= op_mult
+
+        # Clamp to valid range (0, 1)
+        default_u = max(0.01, min(default_u, 0.99))
+
+        op = scalar_to_opinion(prob, default_uncertainty=default_u)
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+    nodes_converted += 1
+
+    # ── Build jsonld-ex document ────────────────────────────
+    doc: dict[str, Any] = {
+        "@type": "fhir:Location",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+
+    # Metadata passthrough — no data excluded
+    if name is not None:
+        doc["name"] = name
+    if description is not None:
+        doc["description"] = description
+    if mode is not None:
+        doc["mode"] = mode
+    if type_list:
+        doc["type"] = type_list
+    if telecom:
+        doc["telecom"] = telecom
+    if address is not None:
+        doc["address"] = address
+    if physical_type_text is not None:
+        doc["physicalType"] = physical_type_text
+    if position is not None:
+        doc["position"] = position
+    if managing_org_ref is not None:
+        doc["managingOrganization"] = managing_org_ref
+    if part_of_ref is not None:
+        doc["partOf"] = part_of_ref
+    if hours_of_operation:
+        doc["hoursOfOperation"] = hours_of_operation
+    if availability_exceptions is not None:
+        doc["availabilityExceptions"] = availability_exceptions
+    if endpoint_refs:
+        doc["endpoint_references"] = endpoint_refs
+    if identifier:
+        doc["identifier"] = identifier
+    if alias:
+        doc["alias"] = alias
+
+    # Preserve full operationalStatus Coding for round-trip
+    if isinstance(op_status_obj, dict) and op_status_code is not None:
+        doc["operationalStatus"] = op_status_obj
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return doc, report
+
+
 _CONFIGURABLE_HANDLERS: frozenset[str] = frozenset({
     "QuestionnaireResponse",
 })
@@ -2694,6 +2888,7 @@ _RESOURCE_HANDLERS = {
     # Phase 7B — US Core completeness
     "DocumentReference": _from_document_reference_r4,
     "Coverage": _from_coverage_r4,
+    "Location": _from_location_r4,
 }
 
 
@@ -4012,6 +4207,124 @@ def _to_coverage_r4(
     return resource, report
 
 
+def _to_location_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Export jsonld-ex Location → FHIR R4.
+
+    Reconstructs the FHIR R4 Location structure including
+    operationalStatus Coding, physicalType CodeableConcept,
+    managingOrganization/partOf/endpoint References, position
+    backbone, address, telecom, hoursOfOperation, identifier,
+    alias, and all scalar fields.
+    Embeds SL opinion as extension on ``_status``.
+    """
+    resource: dict[str, Any] = {
+        "resourceType": "Location",
+        "id": doc.get("id"),
+    }
+
+    status = doc.get("status")
+    if status is not None:
+        resource["status"] = status
+
+    # operationalStatus (Coding — pass-through)
+    op_status = doc.get("operationalStatus")
+    if op_status is not None:
+        resource["operationalStatus"] = op_status
+
+    # Name
+    name = doc.get("name")
+    if name is not None:
+        resource["name"] = name
+
+    # Description
+    description = doc.get("description")
+    if description is not None:
+        resource["description"] = description
+
+    # Mode
+    mode = doc.get("mode")
+    if mode is not None:
+        resource["mode"] = mode
+
+    # Type (CodeableConcept[] — pass-through)
+    type_list = doc.get("type")
+    if type_list is not None:
+        resource["type"] = type_list
+
+    # Telecom (ContactPoint[] — pass-through)
+    telecom = doc.get("telecom")
+    if telecom is not None:
+        resource["telecom"] = telecom
+
+    # Address (Address — pass-through)
+    address = doc.get("address")
+    if address is not None:
+        resource["address"] = address
+
+    # PhysicalType (reconstruct CodeableConcept from text)
+    physical_type = doc.get("physicalType")
+    if physical_type is not None:
+        resource["physicalType"] = {"text": physical_type}
+
+    # Position (backbone — pass-through)
+    position = doc.get("position")
+    if position is not None:
+        resource["position"] = position
+
+    # ManagingOrganization (Reference)
+    managing_org = doc.get("managingOrganization")
+    if managing_org is not None:
+        resource["managingOrganization"] = {"reference": managing_org}
+
+    # PartOf (Reference)
+    part_of = doc.get("partOf")
+    if part_of is not None:
+        resource["partOf"] = {"reference": part_of}
+
+    # HoursOfOperation (BackboneElement[] — pass-through)
+    hours = doc.get("hoursOfOperation")
+    if hours is not None:
+        resource["hoursOfOperation"] = hours
+
+    # AvailabilityExceptions
+    avail_exc = doc.get("availabilityExceptions")
+    if avail_exc is not None:
+        resource["availabilityExceptions"] = avail_exc
+
+    # Endpoint (Reference[])
+    endpoint_refs = doc.get("endpoint_references", [])
+    if endpoint_refs:
+        resource["endpoint"] = [{"reference": r} for r in endpoint_refs]
+
+    # Identifier (Identifier[] — pass-through)
+    identifier = doc.get("identifier")
+    if identifier is not None:
+        resource["identifier"] = identifier
+
+    # Alias (string[] — pass-through)
+    alias = doc.get("alias")
+    if alias is not None:
+        resource["alias"] = alias
+
+    # Embed SL opinion as extension on _status
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field = entry.get("field", "")
+
+        if field == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
 _TO_FHIR_HANDLERS = {
     "RiskAssessment": _to_risk_assessment_r4,
     "Observation": _to_observation_r4,
@@ -4047,4 +4360,5 @@ _TO_FHIR_HANDLERS = {
     # Phase 7B — US Core completeness
     "DocumentReference": _to_document_reference_r4,
     "Coverage": _to_coverage_r4,
+    "Location": _to_location_r4,
 }

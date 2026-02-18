@@ -866,6 +866,56 @@ DOC_REF_DOC_STATUS_MULTIPLIER: dict[str, float] = {
 }
 
 
+# ── Location status → probability / uncertainty ──────────────────
+#
+# LocationStatus (Required binding):
+#     active    — facility confirmed operational
+#     suspended — temporarily unavailable (may reactivate)
+#     inactive  — no longer operational
+
+LOCATION_STATUS_PROBABILITY: dict[str, float] = {
+    "active": 0.90,
+    "suspended": 0.40,
+    "inactive": 0.10,
+}
+
+LOCATION_STATUS_UNCERTAINTY: dict[str, float] = {
+    "active": 0.10,
+    "suspended": 0.40,
+    "inactive": 0.15,
+}
+
+# ── Location operationalStatus → uncertainty multiplier ──────────
+#
+# Signal 2 — ``operationalStatus`` (Coding, Preferred binding):
+#     v2 Table 0116 (Bed Status).  Despite the table name, FHIR R4
+#     uses this for any location type (rooms, units, chairs, etc.).
+#     Multipliers modulate the base uncertainty from Signal 1.
+#
+#     O (Occupied)     = ×0.8  — actively in use, confirms operational
+#     U (Unoccupied)   = ×1.0  — baseline, available but empty
+#     H (Housekeeping)  = ×1.1  — temporarily unavailable, maintenance
+#     I (Isolated)      = ×1.3  — restricted access, infection control
+#     C (Closed)        = ×1.5  — not accepting patients/resources
+#     K (Contaminated)  = ×1.8  — safety concern, highest uncertainty
+#
+# Epistemic rationale:
+#     A location can be ``active`` in status but ``K`` (contaminated)
+#     operationally.  The multiplicative interaction captures that the
+#     record is valid (active) but the facility is not suitable for
+#     its intended purpose (contaminated), producing genuinely
+#     different epistemic semantics from a simple status-only model.
+
+LOCATION_OPERATIONAL_STATUS_MULTIPLIER: dict[str, float] = {
+    "O": 0.8,   # Occupied — actively in use
+    "U": 1.0,   # Unoccupied — available, baseline
+    "H": 1.1,   # Housekeeping — temporary maintenance
+    "I": 1.3,   # Isolated — restricted access
+    "C": 1.5,   # Closed — not accepting
+    "K": 1.8,   # Contaminated — safety concern
+}
+
+
 # ── Supported resource types ──────────────────────────────────────
 
 SUPPORTED_RESOURCE_TYPES = frozenset({
@@ -907,4 +957,5 @@ SUPPORTED_RESOURCE_TYPES = frozenset({
     # Phase 7B — US Core completeness
     "DocumentReference",
     "Coverage",
+    "Location",
 })

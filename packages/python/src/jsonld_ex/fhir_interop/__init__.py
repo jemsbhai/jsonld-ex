@@ -6,7 +6,7 @@ Subjective Logic opinion model.  Provides mathematically grounded
 uncertainty that composes, fuses, and propagates correctly — capabilities
 that FHIR's scalar probability and categorical code model lack.
 
-Supported FHIR R4 resources (30 types, 4 epistemic tiers):
+Supported FHIR R4 resources (32 types, 4 epistemic tiers):
 
   Tier 1 — Clinical assertions (rich signal, domain-specific mappings):
   - RiskAssessment      — prediction.probabilityDecimal → Opinion
@@ -41,10 +41,12 @@ Supported FHIR R4 resources (30 types, 4 epistemic tiers):
   - Organization         — boolean active → record validity Opinion
   - Practitioner         — boolean active → record validity Opinion
   - Device               — status → device record validity Opinion
+  - Location             — status × operationalStatus → facility suitability Opinion
 
   Tier 4 — Financial ("this claim/adjudication is valid"):
   - Claim                — status → claim validity Opinion
   - ExplanationOfBenefit — status + outcome → dual Opinion
+  - Coverage             — status → coverage validity Opinion
 
 Architecture notes:
   - All public functions accept a ``fhir_version`` parameter (default "R4")
@@ -101,6 +103,10 @@ from jsonld_ex.fhir_interop._constants import (
     # Phase 7B — Coverage
     COVERAGE_STATUS_PROBABILITY,
     COVERAGE_STATUS_UNCERTAINTY,
+    # Phase 7B — Location
+    LOCATION_STATUS_PROBABILITY,
+    LOCATION_STATUS_UNCERTAINTY,
+    LOCATION_OPERATIONAL_STATUS_MULTIPLIER,
 )
 from jsonld_ex.fhir_interop._scalar import (
     scalar_to_opinion,
@@ -179,6 +185,9 @@ __all__ = [
     "DOC_REF_DOC_STATUS_MULTIPLIER",
     "COVERAGE_STATUS_PROBABILITY",
     "COVERAGE_STATUS_UNCERTAINTY",
+    "LOCATION_STATUS_PROBABILITY",
+    "LOCATION_STATUS_UNCERTAINTY",
+    "LOCATION_OPERATIONAL_STATUS_MULTIPLIER",
     # Fusion & trust
     "fhir_clinical_fuse",
     "fhir_trust_chain",
