@@ -54,12 +54,26 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Domain extras — install what you need
+fhir = [
+    # Pure Python today; will add fhir.resources>=7.0 for validation
+]
+gdpr = [
+    # Pure Python today; reserves the extra for future deps
+]
+w3c = [
+    # Pure Python today (PROV-O, SHACL, OWL, RDF-star, SSN/SOSA)
+]
+ml = [
+    # Pure Python today (Croissant dataset interop)
+]
 iot = [
     "cbor2>=5.6.0",
+    "paho-mqtt>=2.0",
 ]
 mqtt = [
-    "cbor2>=5.6.0",
-    "paho-mqtt>=2.0",
+    # Alias for iot — kept for backward compatibility
+    "jsonld-ex[iot]",
 ]
 mcp = [
     "mcp>=1.7,<2; python_version>='3.10'",
@@ -68,17 +82,18 @@ bench = [
     "rdflib>=7.0",
     "pyshacl>=0.26",
 ]
+# Convenience bundles
+all = [
+    "jsonld-ex[fhir,gdpr,w3c,ml,iot,mcp]",
+]
 dev = [
+    "jsonld-ex[all,bench]",
     "pytest>=7.0",
     "pytest-asyncio>=0.23",
     "pytest-benchmark>=4.0",
     "hypothesis>=6.0",
     "mypy>=1.8",
     "ruff>=0.2",
-    "cbor2>=5.6.0",
-    "rdflib>=7.0",
-    "pyshacl>=0.26",
-    "mcp>=1.7,<2; python_version>='3.10'",
 ]
 
 [project.urls]
