@@ -660,6 +660,63 @@ SERVICE_REQUEST_PRIORITY_MULTIPLIER: dict[str, float] = {
 }
 
 
+# ── QuestionnaireResponse status → response reliability ───────────
+#
+# Proposition: "this questionnaire response is complete and reliable."
+#
+# QuestionnaireResponse is fundamentally an epistemic resource:
+# patient self-report introduces recall bias, social desirability
+# bias, health literacy effects, and cognitive load.  Status encodes
+# how complete and reviewed the response is.
+
+QR_STATUS_PROBABILITY: dict[str, float] = {
+    "completed": 0.85,
+    "amended": 0.80,
+    "in-progress": 0.55,
+    "stopped": 0.30,
+    "entered-in-error": 0.50,
+}
+
+QR_STATUS_UNCERTAINTY: dict[str, float] = {
+    "completed": 0.15,
+    "amended": 0.20,
+    "in-progress": 0.35,
+    "stopped": 0.25,
+    "entered-in-error": 0.70,
+}
+
+# ── QuestionnaireResponse source → reporter reliability multiplier ─
+#
+# Who filled out the questionnaire directly affects epistemic quality.
+# Practitioners have clinical training; patients introduce self-report
+# biases; related persons are proxy reporters with indirect knowledge.
+#
+# Multipliers < 1.0 reduce uncertainty; > 1.0 increase it.
+
+QR_SOURCE_RELIABILITY_MULTIPLIER: dict[str, float] = {
+    "Practitioner": 0.7,
+    "PractitionerRole": 0.7,
+    "RelatedPerson": 1.2,
+    "Patient": 1.3,
+}
+
+# ── QuestionnaireResponse item completeness thresholds ────────────
+#
+# The ratio of answered items to total items is a data quality signal.
+# Thresholds define three bands: low, mid, high completeness.
+# Each band applies a multiplicative uncertainty adjustment.
+#
+# All values are configurable via handler_config on from_fhir().
+
+QR_COMPLETENESS_THRESHOLDS: dict[str, float] = {
+    "low_threshold": 0.5,     # ratio < this → low completeness
+    "high_threshold": 0.8,    # ratio > this → high completeness
+    "low_multiplier": 1.3,    # low completeness raises uncertainty
+    "mid_multiplier": 1.0,    # mid completeness is baseline
+    "high_multiplier": 0.8,   # high completeness reduces uncertainty
+}
+
+
 # ── Supported resource types ──────────────────────────────────────
 
 SUPPORTED_RESOURCE_TYPES = frozenset({
@@ -696,4 +753,5 @@ SUPPORTED_RESOURCE_TYPES = frozenset({
     "MedicationAdministration",
     # Phase 7A — high-value clinical expansion
     "ServiceRequest",
+    "QuestionnaireResponse",
 })

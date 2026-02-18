@@ -73,6 +73,11 @@ from jsonld_ex.fhir_interop._constants import (
     SERVICE_REQUEST_STATUS_UNCERTAINTY,
     SERVICE_REQUEST_INTENT_MULTIPLIER,
     SERVICE_REQUEST_PRIORITY_MULTIPLIER,
+    # Phase 7A — QuestionnaireResponse
+    QR_STATUS_PROBABILITY,
+    QR_STATUS_UNCERTAINTY,
+    QR_SOURCE_RELIABILITY_MULTIPLIER,
+    QR_COMPLETENESS_THRESHOLDS,
 )
 from jsonld_ex.fhir_interop._scalar import (
     scalar_to_opinion,
@@ -90,6 +95,7 @@ def from_fhir(
     resource: dict[str, Any],
     *,
     fhir_version: str = "R4",
+    handler_config: Optional[dict[str, Any]] = None,
 ) -> tuple[dict[str, Any], ConversionReport]:
     """Import a FHIR R4 resource into a jsonld-ex document with SL opinions.
 
@@ -101,6 +107,23 @@ def from_fhir(
         resource: A FHIR R4 resource as a Python dict (JSON-parsed).
         fhir_version: FHIR version string.  Currently only ``"R4"``
             is supported.
+        handler_config: Optional dict of resource-specific parameter
+            overrides.  Currently supported by QuestionnaireResponse
+            handler.  Keys:
+
+            - ``status_probability``: dict mapping status codes to
+              probability values (merged with defaults).
+            - ``status_uncertainty``: dict mapping status codes to
+              uncertainty values (merged with defaults).
+            - ``source_reliability_multiplier``: dict mapping source
+              types to uncertainty multipliers (merged with defaults).
+            - ``completeness_thresholds``: dict with keys
+              ``low_threshold``, ``high_threshold``,
+              ``low_multiplier``, ``mid_multiplier``,
+              ``high_multiplier`` (replaces defaults).
+
+            Handlers that do not support configurability silently
+            ignore this parameter.  ``None`` or ``{}`` use defaults.
 
     Returns:
         A tuple of ``(jsonld_ex_doc, ConversionReport)``.
@@ -134,6 +157,10 @@ def from_fhir(
         return {"@type": f"fhir:{resource_type}", "opinions": []}, report
 
     handler = _RESOURCE_HANDLERS[resource_type]
+
+    # Configurable handlers accept handler_config; others ignore it.
+    if resource_type in _CONFIGURABLE_HANDLERS:
+        return handler(resource, handler_config=handler_config)
     return handler(resource)
 
 
@@ -1890,6 +1917,199 @@ def _from_service_request_r4(
     return doc, report
 
 
+# ── QuestionnaireResponse handler (from_fhir) ─────────────────────
+
+
+def _count_leaf_items(
+    items: list[dict[str, Any]],
+) -> tuple[int, int]:
+    """Count total and answered leaf items, recursing into sub-items.
+
+    Group items (those with nested ``item`` arrays but no ``answer``)
+    are not counted themselves; only their leaf descendants are counted.
+    An item with both ``answer`` and nested ``item`` is counted as a
+    leaf (the answer is on this item) and its children are also counted.
+
+    Returns:
+        ``(total_leaf_items, answered_leaf_items)``
+    """
+    total = 0
+    answered = 0
+    for item in items:
+        sub_items = item.get("item")
+        has_answer = bool(item.get("answer"))
+
+        if sub_items:
+            # Recurse into nested items
+            sub_total, sub_answered = _count_leaf_items(sub_items)
+            total += sub_total
+            answered += sub_answered
+            # If this group item itself has an answer, count it too
+            if has_answer:
+                total += 1
+                answered += 1
+        else:
+            # Leaf item
+            total += 1
+            if has_answer:
+                answered += 1
+
+    return total, answered
+
+
+def _from_questionnaire_response_r4(
+    resource: dict[str, Any],
+    *,
+    handler_config: Optional[dict[str, Any]] = None,
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 QuestionnaireResponse → jsonld-ex document.
+
+    Proposition: "this questionnaire response is complete and reliable."
+
+    QuestionnaireResponse is the strongest SL use case among remaining
+    FHIR types.  Patient self-report introduces recall bias, social
+    desirability bias, health literacy effects, and cognitive load.
+
+    Uncertainty is modulated by three multiplicative signals:
+        1. status — response completeness (completed/amended/in-progress/
+           stopped/entered-in-error)
+        2. source — reporter type (Practitioner < RelatedPerson < Patient)
+        3. item completeness — ratio of answered items to total items
+
+    All epistemic parameters are configurable via ``handler_config``
+    to support tuning for specific instruments (PHQ-9, GAD-7, etc.)
+    and populations.
+
+    Args:
+        resource: FHIR R4 QuestionnaireResponse dict.
+        handler_config: Optional parameter overrides.  Supported keys:
+            ``status_probability``, ``status_uncertainty``,
+            ``source_reliability_multiplier``, ``completeness_thresholds``.
+            Dicts are merged with defaults (overrides win); ``None``/``{}``
+            use defaults.
+    """
+    cfg = handler_config or {}
+
+    # Merge configurable parameters with defaults
+    status_prob = {**QR_STATUS_PROBABILITY, **cfg.get("status_probability", {})}
+    status_unc = {**QR_STATUS_UNCERTAINTY, **cfg.get("status_uncertainty", {})}
+    source_mult = {
+        **QR_SOURCE_RELIABILITY_MULTIPLIER,
+        **cfg.get("source_reliability_multiplier", {}),
+    }
+    completeness_cfg = {
+        **QR_COMPLETENESS_THRESHOLDS,
+        **cfg.get("completeness_thresholds", {}),
+    }
+
+    status = resource.get("status")
+
+    # ── Extract source reference and type ──────────────────────────
+    source_obj = resource.get("source")
+    source_ref: Optional[str] = None
+    source_type: Optional[str] = None
+    if isinstance(source_obj, dict):
+        source_ref = source_obj.get("reference")
+        if source_ref and "/" in source_ref:
+            source_type = source_ref.split("/")[0]
+
+    # ── Count leaf items for completeness signal ─────────────────
+    raw_items = resource.get("item")
+    item_total = 0
+    item_answered = 0
+    if raw_items:
+        item_total, item_answered = _count_leaf_items(raw_items)
+
+    # ── Reconstruct SL opinion ──────────────────────────────────
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    status_ext = resource.get("_status")
+    recovered = _try_recover_opinion(status_ext)
+
+    if recovered is not None:
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": recovered,
+            "source": "extension",
+        })
+    else:
+        prob = status_prob.get(status, 0.50)
+        default_u = status_unc.get(status, 0.30)
+
+        # Signal 1: source type modulates uncertainty
+        if source_type is not None:
+            src_mult = source_mult.get(source_type, 1.0)
+            default_u *= src_mult
+
+        # Signal 2: item completeness modulates uncertainty
+        if item_total > 0:
+            ratio = item_answered / item_total
+            low_t = completeness_cfg["low_threshold"]
+            high_t = completeness_cfg["high_threshold"]
+            if ratio < low_t:
+                default_u *= completeness_cfg["low_multiplier"]
+            elif ratio > high_t:
+                default_u *= completeness_cfg["high_multiplier"]
+            else:
+                default_u *= completeness_cfg["mid_multiplier"]
+
+        # Clamp to valid range (0, 1)
+        default_u = max(0.01, min(default_u, 0.99))
+
+        op = scalar_to_opinion(prob, default_uncertainty=default_u)
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+    nodes_converted += 1
+
+    # ── Build jsonld-ex document ─────────────────────────────────
+    doc: dict[str, Any] = {
+        "@type": "fhir:QuestionnaireResponse",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+
+    # Metadata passthrough
+    authored = resource.get("authored")
+    if authored is not None:
+        doc["authored"] = authored
+
+    questionnaire = resource.get("questionnaire")
+    if questionnaire is not None:
+        doc["questionnaire"] = questionnaire
+
+    if source_ref is not None:
+        doc["source"] = source_ref
+
+    # Item count metadata for downstream analysis
+    if raw_items and item_total > 0:
+        doc["item_count"] = {
+            "total": item_total,
+            "answered": item_answered,
+        }
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return doc, report
+
+
+# ── Configurable handler registry ───────────────────────────────
+#
+# Resource types whose handlers accept a ``handler_config`` kwarg.
+# Used by from_fhir() to decide whether to pass configuration through.
+
+_CONFIGURABLE_HANDLERS: frozenset[str] = frozenset({
+    "QuestionnaireResponse",
+})
+
+
+# ── from_fhir handler dispatch table ────────────────────────────
+
 _RESOURCE_HANDLERS = {
     "RiskAssessment": _from_risk_assessment_r4,
     "Observation": _from_observation_r4,
@@ -1920,6 +2140,7 @@ _RESOURCE_HANDLERS = {
     "MedicationAdministration": _from_medication_administration_r4,
     # Phase 7A — high-value clinical expansion
     "ServiceRequest": _from_service_request_r4,
+    "QuestionnaireResponse": _from_questionnaire_response_r4,
 }
 
 
@@ -2904,6 +3125,52 @@ def _to_service_request_r4(
     return resource, report
 
 
+def _to_questionnaire_response_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Export jsonld-ex QuestionnaireResponse → FHIR R4.
+
+    Reconstructs the FHIR R4 QuestionnaireResponse structure including
+    source Reference, questionnaire canonical URL, and authored timestamp.
+    Embeds SL opinion as extension on ``_status``.
+    """
+    resource: dict[str, Any] = {
+        "resourceType": "QuestionnaireResponse",
+        "id": doc.get("id"),
+    }
+
+    status = doc.get("status")
+    if status is not None:
+        resource["status"] = status
+
+    authored = doc.get("authored")
+    if authored is not None:
+        resource["authored"] = authored
+
+    questionnaire = doc.get("questionnaire")
+    if questionnaire is not None:
+        resource["questionnaire"] = questionnaire
+
+    source = doc.get("source")
+    if source is not None:
+        resource["source"] = {"reference": source}
+
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field = entry.get("field", "")
+
+        if field == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
 _TO_FHIR_HANDLERS = {
     "RiskAssessment": _to_risk_assessment_r4,
     "Observation": _to_observation_r4,
@@ -2934,4 +3201,5 @@ _TO_FHIR_HANDLERS = {
     "MedicationAdministration": _to_medication_administration_r4,
     # Phase 7A — high-value clinical expansion
     "ServiceRequest": _to_service_request_r4,
+    "QuestionnaireResponse": _to_questionnaire_response_r4,
 }
