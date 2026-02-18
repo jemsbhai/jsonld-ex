@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "jsonld-ex"
 version = "0.6.7"
-description = "JSON-LD 1.2 extensions for AI/ML data exchange, security hardening, and validation"
+description = "JSON-LD 1.2 extensions for AI/ML: confidence algebra (Subjective Logic), FHIR R4 interoperability (31 resource types), provenance, and security hardening"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
@@ -15,9 +15,11 @@ authors = [
 keywords = [
     "json-ld", "linked-data", "semantic-web", "ai", "ml",
     "confidence", "provenance", "embeddings", "security", "validation",
+    "subjective-logic", "uncertainty", "fhir", "hl7", "healthcare",
+    "interoperability", "knowledge-graph", "w3c",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
@@ -27,6 +29,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
