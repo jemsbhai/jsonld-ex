@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 
 from jsonld_ex.data_protection import (
     _parse_iso,
-    is_personal_data,
 )
 
 
@@ -213,7 +212,7 @@ def request_restriction(
         prop_val["@restrictProcessing"] = True
         prop_val["@restrictionReason"] = reason
         if processing_restrictions is not None:
-            prop_val["@processingRestrictions"] = processing_restrictions
+            prop_val["@processingRestrictions"] = list(processing_restrictions)
         result.restricted_property_count += 1
 
     return result
@@ -225,7 +224,14 @@ def export_portable(
     data_subject: str,
     format: str = "json",
 ) -> PortableExport:
-    """Export all personal data for a data subject in a portable format (GDPR Art. 20).
+    """Export all data tagged to a data subject in a portable format (GDPR Art. 20).
+
+    Exports every property whose ``@dataSubject`` matches the given subject
+    IRI, regardless of ``@personalDataCategory``.  This follows GDPR Art. 20
+    which grants the right to receive all personal data "concerning" the
+    subject — and the presence of ``@dataSubject`` already establishes that
+    relationship.  Over-inclusion is preferable to under-reporting for
+    compliance purposes.
 
     Args:
         graph: A list of JSON-LD node dicts.
@@ -236,18 +242,21 @@ def export_portable(
         A :class:`PortableExport` containing the extracted records.
     """
     export = PortableExport(data_subject=data_subject, format=format)
-    # Group by node
-    node_props: dict[str, dict[str, Any]] = {}
+    # Group by node identity.  Nodes with @id group by that IRI;
+    # nodes without @id are kept separate (keyed by object identity)
+    # to avoid merging distinct graph entries.
+    node_props: dict[int | str, dict[str, Any]] = {}
 
     for node, prop_name, prop_val in _iter_subject_properties(graph, data_subject):
-        node_id = node.get("@id", "")
-        if node_id not in node_props:
-            node_props[node_id] = {
-                "node_id": node_id,
+        node_id = node.get("@id")
+        key: int | str = node_id if node_id is not None else id(node)
+        if key not in node_props:
+            node_props[key] = {
+                "node_id": node_id or "",
                 "type": node.get("@type"),
                 "properties": {},
             }
-        node_props[node_id]["properties"][prop_name] = prop_val.get("@value")
+        node_props[key]["properties"][prop_name] = prop_val.get("@value")
 
     export.records = list(node_props.values())
     return export
@@ -296,17 +305,21 @@ def right_of_access_report(
         An :class:`AccessReport` summarising all data held.
     """
     report = AccessReport(data_subject=data_subject)
-    node_data: dict[str, dict[str, Any]] = {}
+    # Group by node identity.  Nodes with @id group by that IRI;
+    # nodes without @id are kept separate (keyed by object identity)
+    # to avoid merging distinct graph entries.
+    node_data: dict[int | str, dict[str, Any]] = {}
 
     for node, prop_name, prop_val in _iter_subject_properties(graph, data_subject):
-        node_id = node.get("@id", "")
-        if node_id not in node_data:
-            node_data[node_id] = {
-                "node_id": node_id,
+        node_id = node.get("@id")
+        key: int | str = node_id if node_id is not None else id(node)
+        if key not in node_data:
+            node_data[key] = {
+                "node_id": node_id or "",
                 "type": node.get("@type"),
                 "properties": {},
             }
-        node_data[node_id]["properties"][prop_name] = prop_val.get("@value")
+        node_data[key]["properties"][prop_name] = prop_val.get("@value")
         report.total_property_count += 1
 
         # Collect metadata for summary
