@@ -256,7 +256,16 @@ def export_portable(
                 "type": node.get("@type"),
                 "properties": {},
             }
-        node_props[key]["properties"][prop_name] = prop_val.get("@value")
+        props = node_props[key]["properties"]
+        val = prop_val.get("@value")
+        if prop_name in props:
+            existing = props[prop_name]
+            if isinstance(existing, list):
+                existing.append(val)
+            else:
+                props[prop_name] = [existing, val]
+        else:
+            props[prop_name] = val
 
     export.records = list(node_props.values())
     return export
@@ -319,7 +328,16 @@ def right_of_access_report(
                 "type": node.get("@type"),
                 "properties": {},
             }
-        node_data[key]["properties"][prop_name] = prop_val.get("@value")
+        props = node_data[key]["properties"]
+        val = prop_val.get("@value")
+        if prop_name in props:
+            existing = props[prop_name]
+            if isinstance(existing, list):
+                existing.append(val)
+            else:
+                props[prop_name] = [existing, val]
+        else:
+            props[prop_name] = val
         report.total_property_count += 1
 
         # Collect metadata for summary
