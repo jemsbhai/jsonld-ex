@@ -98,6 +98,9 @@ from jsonld_ex.fhir_interop._constants import (
     DOC_REF_STATUS_PROBABILITY,
     DOC_REF_STATUS_UNCERTAINTY,
     DOC_REF_DOC_STATUS_MULTIPLIER,
+    # Phase 7B — Coverage
+    COVERAGE_STATUS_PROBABILITY,
+    COVERAGE_STATUS_UNCERTAINTY,
 )
 from jsonld_ex.fhir_interop._scalar import (
     scalar_to_opinion,
@@ -174,6 +177,8 @@ __all__ = [
     "DOC_REF_STATUS_PROBABILITY",
     "DOC_REF_STATUS_UNCERTAINTY",
     "DOC_REF_DOC_STATUS_MULTIPLIER",
+    "COVERAGE_STATUS_PROBABILITY",
+    "COVERAGE_STATUS_UNCERTAINTY",
     # Fusion & trust
     "fhir_clinical_fuse",
     "fhir_trust_chain",

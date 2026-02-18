@@ -779,7 +779,39 @@ SPECIMEN_CONDITION_MULTIPLIER: dict[str, float] = {
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Phase 7B: US Core Completeness
+# Phase 7B: US Core Completeness — Coverage
+# ═══════════════════════════════════════════════════════════════════
+
+# ── Coverage status → coverage validity confidence ────────────────
+#
+# Proposition: "This insurance coverage record is valid and currently
+# in force."
+#
+# Completes the financial chain: Coverage → Claim → ExplanationOfBenefit
+#
+# FHIR R4 Coverage.status uses FinancialResourceStatusCodes (Required):
+#   active           — coverage is in force; strongest validity signal
+#   cancelled        — explicitly terminated; strong invalidity signal
+#   draft            — pre-decisional; genuinely uncertain, not invalid
+#   entered-in-error — data integrity compromised; high uncertainty
+
+COVERAGE_STATUS_PROBABILITY: dict[str, float] = {
+    "active": 0.85,
+    "cancelled": 0.10,
+    "draft": 0.50,
+    "entered-in-error": 0.50,
+}
+
+COVERAGE_STATUS_UNCERTAINTY: dict[str, float] = {
+    "active": 0.15,
+    "cancelled": 0.15,
+    "draft": 0.40,
+    "entered-in-error": 0.70,
+}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 7B: US Core Completeness — DocumentReference
 # ═══════════════════════════════════════════════════════════════════
 
 # ── DocumentReference status → reference validity confidence ──────
@@ -874,4 +906,5 @@ SUPPORTED_RESOURCE_TYPES = frozenset({
     "Specimen",
     # Phase 7B — US Core completeness
     "DocumentReference",
+    "Coverage",
 })

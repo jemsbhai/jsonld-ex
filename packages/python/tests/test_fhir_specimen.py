@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Tests for Phase 7A: Specimen FHIR R4 resource support.
 
 RED PHASE: Tests written before implementation.

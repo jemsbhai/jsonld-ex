@@ -86,6 +86,9 @@ from jsonld_ex.fhir_interop._constants import (
     DOC_REF_STATUS_PROBABILITY,
     DOC_REF_STATUS_UNCERTAINTY,
     DOC_REF_DOC_STATUS_MULTIPLIER,
+    # Phase 7B — Coverage
+    COVERAGE_STATUS_PROBABILITY,
+    COVERAGE_STATUS_UNCERTAINTY,
 )
 from jsonld_ex.fhir_interop._scalar import (
     scalar_to_opinion,
@@ -2510,6 +2513,145 @@ def _from_document_reference_r4(
 # Resource types whose handlers accept a ``handler_config`` kwarg.
 # Used by from_fhir() to decide whether to pass configuration through.
 
+# ── Coverage handler (from_fhir) ───────────────────────────────────────
+
+
+def _from_coverage_r4(
+    resource: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Convert FHIR R4 Coverage → jsonld-ex document.
+
+    Proposition: "This insurance coverage record is valid and currently
+    in force."
+
+    Completes the financial chain:
+        **Coverage** → Claim → ExplanationOfBenefit
+
+    Coverage is a status-based resource with rich metadata that links
+    the insured patient to their insurer and benefit plan.  The status
+    field uses FinancialResourceStatusCodes (active / cancelled / draft /
+    entered-in-error).  Period start/end is passed through for temporal
+    decay support.
+
+    This is a custom handler (not ``_make_status_handler``) because
+    FHIR Reference fields (beneficiary, subscriber, payor) and
+    CodeableConcept fields (type, relationship) require proper
+    extraction for round-trip fidelity — consistent with how
+    ServiceRequest, Specimen, and DocumentReference handle references.
+    """
+    status = resource.get("status")
+
+    # ── Extract period for temporal decay ───────────────────────
+    period = resource.get("period")
+
+    # ── Extract type text (CodeableConcept → text or first code) ────
+    type_text = None
+    type_obj = resource.get("type")
+    if isinstance(type_obj, dict):
+        type_text = type_obj.get("text")
+        if type_text is None:
+            # Fallback to first coding code
+            for coding in type_obj.get("coding", []):
+                if isinstance(coding, dict) and coding.get("code"):
+                    type_text = coding["code"]
+                    break
+
+    # ── Extract beneficiary reference ───────────────────────────
+    beneficiary_ref = None
+    beneficiary_obj = resource.get("beneficiary")
+    if isinstance(beneficiary_obj, dict):
+        beneficiary_ref = beneficiary_obj.get("reference")
+
+    # ── Extract subscriber reference ────────────────────────────
+    subscriber_ref = None
+    subscriber_obj = resource.get("subscriber")
+    if isinstance(subscriber_obj, dict):
+        subscriber_ref = subscriber_obj.get("reference")
+
+    # ── Extract payor references (0..*) ─────────────────────────
+    payor_refs: list[str] = []
+    payor_raw = resource.get("payor")
+    if payor_raw is not None:
+        for ref_obj in payor_raw:
+            if isinstance(ref_obj, dict):
+                ref = ref_obj.get("reference", "")
+                if ref:
+                    payor_refs.append(ref)
+
+    # ── Extract relationship code (CodeableConcept) ──────────────
+    relationship_code = None
+    rel_obj = resource.get("relationship")
+    if isinstance(rel_obj, dict):
+        for coding in rel_obj.get("coding", []):
+            if isinstance(coding, dict):
+                code = coding.get("code")
+                if code:
+                    relationship_code = code
+                    break
+
+    # ── Extract simple fields ──────────────────────────────────
+    dependent = resource.get("dependent")
+    order = resource.get("order")
+    network = resource.get("network")
+
+    # ── Reconstruct SL opinion ─────────────────────────────────
+    opinions: list[dict[str, Any]] = []
+    nodes_converted = 0
+
+    status_ext = resource.get("_status")
+    recovered = _try_recover_opinion(status_ext)
+
+    if recovered is not None:
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": recovered,
+            "source": "extension",
+        })
+    else:
+        prob = COVERAGE_STATUS_PROBABILITY.get(status, 0.50)
+        default_u = COVERAGE_STATUS_UNCERTAINTY.get(status, 0.30)
+        op = scalar_to_opinion(prob, default_uncertainty=default_u)
+        opinions.append({
+            "field": "status",
+            "value": status,
+            "opinion": op,
+            "source": "reconstructed",
+        })
+    nodes_converted += 1
+
+    # ── Build jsonld-ex document ───────────────────────────────
+    doc: dict[str, Any] = {
+        "@type": "fhir:Coverage",
+        "id": resource.get("id"),
+        "status": status,
+        "opinions": opinions,
+    }
+
+    # Metadata passthrough — no data excluded
+    if period is not None:
+        doc["period"] = period
+    if type_text is not None:
+        doc["type"] = type_text
+    if beneficiary_ref is not None:
+        doc["beneficiary"] = beneficiary_ref
+    if subscriber_ref is not None:
+        doc["subscriber"] = subscriber_ref
+    if payor_refs:
+        doc["payor_references"] = payor_refs
+    if dependent is not None:
+        doc["dependent"] = dependent
+    if relationship_code is not None:
+        doc["relationship"] = relationship_code
+    if order is not None:
+        doc["order"] = order
+    if network is not None:
+        doc["network"] = network
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return doc, report
+
+
 _CONFIGURABLE_HANDLERS: frozenset[str] = frozenset({
     "QuestionnaireResponse",
 })
@@ -2551,6 +2693,7 @@ _RESOURCE_HANDLERS = {
     "Specimen": _from_specimen_r4,
     # Phase 7B — US Core completeness
     "DocumentReference": _from_document_reference_r4,
+    "Coverage": _from_coverage_r4,
 }
 
 
@@ -3788,6 +3931,87 @@ def _to_document_reference_r4(
     return resource, report
 
 
+def _to_coverage_r4(
+    doc: dict[str, Any],
+) -> tuple[dict[str, Any], ConversionReport]:
+    """Export jsonld-ex Coverage → FHIR R4.
+
+    Reconstructs the FHIR R4 Coverage structure including beneficiary,
+    subscriber, and payor References; type and relationship
+    CodeableConcepts; period, dependent, order, and network scalars.
+    Embeds SL opinion as extension on ``_status``.
+    """
+    resource: dict[str, Any] = {
+        "resourceType": "Coverage",
+        "id": doc.get("id"),
+    }
+
+    status = doc.get("status")
+    if status is not None:
+        resource["status"] = status
+
+    # Period (pass-through)
+    period = doc.get("period")
+    if period is not None:
+        resource["period"] = period
+
+    # Type as CodeableConcept
+    type_text = doc.get("type")
+    if type_text is not None:
+        resource["type"] = {"text": type_text}
+
+    # Beneficiary reference
+    beneficiary_ref = doc.get("beneficiary")
+    if beneficiary_ref is not None:
+        resource["beneficiary"] = {"reference": beneficiary_ref}
+
+    # Subscriber reference
+    subscriber_ref = doc.get("subscriber")
+    if subscriber_ref is not None:
+        resource["subscriber"] = {"reference": subscriber_ref}
+
+    # Payor references (0..*)
+    payor_refs = doc.get("payor_references", [])
+    if payor_refs:
+        resource["payor"] = [{"reference": r} for r in payor_refs]
+
+    # Dependent
+    dependent = doc.get("dependent")
+    if dependent is not None:
+        resource["dependent"] = dependent
+
+    # Relationship as CodeableConcept
+    relationship_code = doc.get("relationship")
+    if relationship_code is not None:
+        resource["relationship"] = {"coding": [{"code": relationship_code}]}
+
+    # Order
+    order = doc.get("order")
+    if order is not None:
+        resource["order"] = order
+
+    # Network
+    network = doc.get("network")
+    if network is not None:
+        resource["network"] = network
+
+    # Embed SL opinion as extension on _status
+    opinions = doc.get("opinions", [])
+    nodes_converted = 0
+
+    for entry in opinions:
+        op: Opinion = entry["opinion"]
+        field = entry.get("field", "")
+
+        if field == "status":
+            ext = opinion_to_fhir_extension(op)
+            resource["_status"] = {"extension": [ext]}
+            nodes_converted += 1
+
+    report = ConversionReport(success=True, nodes_converted=nodes_converted)
+    return resource, report
+
+
 _TO_FHIR_HANDLERS = {
     "RiskAssessment": _to_risk_assessment_r4,
     "Observation": _to_observation_r4,
@@ -3822,4 +4046,5 @@ _TO_FHIR_HANDLERS = {
     "Specimen": _to_specimen_r4,
     # Phase 7B — US Core completeness
     "DocumentReference": _to_document_reference_r4,
+    "Coverage": _to_coverage_r4,
 }
