@@ -2,6 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0] — 2026-03-03
+
+### Added
+
+**Enhanced Byzantine-Resistant Fusion** — `confidence_byzantine` module
+
+- `ByzantineConfig` frozen dataclass: threshold, max_removals, strategy, trust_weights, min_agents
+- `AgentRemoval` frozen dataclass: records index, opinion, discord_score, and human-readable reason for each removal
+- `ByzantineFusionReport` frozen dataclass: fused opinion, removal list, full conflict matrix, cohesion score, surviving indices
+- Three removal strategies via `ByzantineStrategy` literal type:
+  - `"most_conflicting"` — remove agent with highest mean pairwise discord (default)
+  - `"least_trusted"` — remove lowest-trust agent (requires trust_weights)
+  - `"combined"` — remove by discord × (1 − trust), prioritizing untrusted rogues
+- `byzantine_fuse(opinions, config)` → `ByzantineFusionReport`: configurable Byzantine filtering with rich reporting
+- `build_conflict_matrix(opinions)` → symmetric n×n pairwise conflict matrix
+- `cohesion_score(opinions, distance_fn=None)` → scalar group agreement metric using pluggable distance (default: Euclidean)
+- `opinion_distance(a, b, distance_fn=None)` → configurable distance dispatcher with Euclidean default
+- Pluggable distance metrics on the opinion simplex (`DistanceMetric` type alias):
+  - `euclidean_opinion_distance` — L2/sqrt(2), uniform sensitivity, simple default
+  - `manhattan_opinion_distance` — L1/2, more robust to single-dimension outliers
+  - `jsd_opinion_distance` — sqrt(Jensen-Shannon divergence), information-theoretic, boundary-sensitive
+  - `hellinger_opinion_distance` — Hellinger distance, boundary-sensitive, numerically stable
+- All four metrics are proper metrics (non-negativity, identity, symmetry, triangle inequality) normalized to [0, 1]
+- Cohesion uses opinion distance (not Josang's pairwise_conflict) so identical opinions always yield 1.0
+- Backward compatible: original `robust_fuse` in `confidence_algebra` is unchanged
+
+**Temporal Fusion** — `confidence_temporal_fusion` module
+
+- `TimestampedOpinion` frozen dataclass: wraps Opinion + datetime + optional source_id
+- `TemporalFusionConfig` frozen dataclass: half_life, decay_fn, fusion_method, reference_time
+- `TemporalFusionReport` frozen dataclass: fused opinion, list of decayed opinions, reference time
+- `temporal_fuse(opinions, config)` → decay all opinions by age then fuse (cumulative or averaging)
+- `temporal_fuse_weighted(opinions, half_life_map, ...)` → per-source half-lives (e.g., academic sources decay slower than social media)
+- `temporal_byzantine_fuse(opinions, temporal_config, byzantine_config)` → full pipeline: decay → Byzantine filter → fuse
+- Composes `confidence_decay`, `confidence_algebra`, and `confidence_byzantine` without modifying any existing module
+
+### Changed
+- Version bumped to 0.7.0
+
 ## [0.6.5] — 2026-02-15
 
 ### Added

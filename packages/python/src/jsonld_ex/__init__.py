@@ -5,7 +5,7 @@ Reference implementation of proposed JSON-LD 1.2 extensions.
 Wraps PyLD for core JSON-LD processing and adds extension layers.
 """
 
-__version__ = "0.6.7.post1"
+__version__ = "0.7.0"
 
 from jsonld_ex.processor import JsonLdEx
 from jsonld_ex.ai_ml import annotate, get_confidence, get_provenance, filter_by_confidence
@@ -80,6 +80,29 @@ from jsonld_ex.confidence_decay import (
     exponential_decay,
     linear_decay,
     step_decay,
+)
+from jsonld_ex.confidence_byzantine import (
+    ByzantineStrategy,
+    ByzantineConfig,
+    AgentRemoval,
+    ByzantineFusionReport,
+    DistanceMetric,
+    euclidean_opinion_distance,
+    manhattan_opinion_distance,
+    jsd_opinion_distance,
+    hellinger_opinion_distance,
+    opinion_distance,
+    byzantine_fuse,
+    build_conflict_matrix,
+    cohesion_score,
+)
+from jsonld_ex.confidence_temporal_fusion import (
+    TimestampedOpinion,
+    TemporalFusionConfig,
+    TemporalFusionReport,
+    temporal_fuse,
+    temporal_fuse_weighted,
+    temporal_byzantine_fuse,
 )
 from jsonld_ex.merge import (
     merge_graphs,
@@ -450,4 +473,25 @@ __all__ = [
     "CONSENT_STATUS_PROBABILITY",
     "CONSENT_STATUS_UNCERTAINTY",
     "SUPPORTED_RESOURCE_TYPES",
+    # Enhanced Byzantine fusion
+    "ByzantineStrategy",
+    "ByzantineConfig",
+    "AgentRemoval",
+    "ByzantineFusionReport",
+    "DistanceMetric",
+    "euclidean_opinion_distance",
+    "manhattan_opinion_distance",
+    "jsd_opinion_distance",
+    "hellinger_opinion_distance",
+    "opinion_distance",
+    "byzantine_fuse",
+    "build_conflict_matrix",
+    "cohesion_score",
+    # Temporal fusion
+    "TimestampedOpinion",
+    "TemporalFusionConfig",
+    "TemporalFusionReport",
+    "temporal_fuse",
+    "temporal_fuse_weighted",
+    "temporal_byzantine_fuse",
 ]
