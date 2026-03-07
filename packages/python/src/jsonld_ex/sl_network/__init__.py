@@ -26,6 +26,10 @@ from jsonld_ex.sl_network.types import (
     MultiParentEdge,
     InferenceStep,
     InferenceResult,
+    # Tier 2: Trust Network types
+    TrustEdge,
+    AttestationEdge,
+    TrustPropagationResult,
 )
 
 # Tier 1: Core graph container (Step 2)
@@ -51,6 +55,12 @@ from jsonld_ex.sl_network.inference import (
     infer_all,
 )
 
+# Tier 2: Trust propagation and combined inference
+from jsonld_ex.sl_network.trust import (
+    propagate_trust,
+    infer_with_trust,
+)
+
 __all__ = [
     # Types
     "NodeType",
@@ -60,6 +70,10 @@ __all__ = [
     "MultiParentEdge",
     "InferenceStep",
     "InferenceResult",
+    # Tier 2 types
+    "TrustEdge",
+    "AttestationEdge",
+    "TrustPropagationResult",
     # Network
     "SLNetwork",
     "CycleError",
@@ -74,4 +88,7 @@ __all__ = [
     # Inference
     "infer_node",
     "infer_all",
+    # Trust propagation and combined inference
+    "propagate_trust",
+    "infer_with_trust",
 ]

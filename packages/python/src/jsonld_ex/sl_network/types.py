@@ -460,3 +460,196 @@ class InferenceResult:
             f"opinion=({op.belief:.3f},{op.disbelief:.3f},{op.uncertainty:.3f}), "
             f"steps={len(self.steps)})"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# TRUST EDGES (Tier 2)
+# ═══════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class TrustEdge:
+    """Trust relationship between two agents.
+
+    Agent ``source_id`` trusts agent ``target_id`` with opinion
+    ``trust_opinion``.  Used for transitive trust propagation
+    (Jøsang 2016, §14.3).
+
+    Attributes:
+        source_id:      The trusting agent.
+        target_id:      The trusted agent.
+        trust_opinion:  ω_{source→target} — how much source trusts target.
+        edge_type:      Always ``"trust"``.
+        metadata:       Arbitrary key–value pairs.
+
+    Constraints:
+        - ``source_id != target_id`` (no self-trust loops).
+        - Both IDs must be non-empty strings.
+        - ``trust_opinion`` must be an ``Opinion`` instance.
+    """
+
+    source_id: str
+    target_id: str
+    trust_opinion: Opinion
+    edge_type: EdgeType = "trust"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # ── Validate source_id ──
+        if not isinstance(self.source_id, str) or not self.source_id.strip():
+            raise ValueError(
+                f"source_id must be a non-empty string, got {self.source_id!r}"
+            )
+        # ── Validate target_id ──
+        if not isinstance(self.target_id, str) or not self.target_id.strip():
+            raise ValueError(
+                f"target_id must be a non-empty string, got {self.target_id!r}"
+            )
+        # ── No self-loops ──
+        if self.source_id == self.target_id:
+            raise ValueError(
+                f"Self-trust loops are not allowed: "
+                f"source_id == target_id == {self.source_id!r}"
+            )
+        # ── Validate trust_opinion ──
+        if not isinstance(self.trust_opinion, Opinion):
+            raise TypeError(
+                f"trust_opinion must be an Opinion instance, "
+                f"got {type(self.trust_opinion).__name__}"
+            )
+
+    def __hash__(self) -> int:
+        """Hash by (source_id, target_id) — the identity of a trust edge."""
+        return hash((self.source_id, self.target_id))
+
+    def __repr__(self) -> str:
+        t = self.trust_opinion
+        return (
+            f"TrustEdge({self.source_id!r}→{self.target_id!r}, "
+            f"trust=({t.belief:.3f},{t.disbelief:.3f},{t.uncertainty:.3f}))"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# ATTESTATION EDGES (Tier 2)
+# ═══════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class AttestationEdge:
+    """An agent attests to a content proposition.
+
+    Agent ``agent_id`` holds opinion ``opinion`` about content node
+    ``content_id``.  During trust-aware inference, the attestation
+    is trust-discounted by the querying agent's derived trust in
+    the attesting agent.
+
+    Attributes:
+        agent_id:   The attesting agent.
+        content_id: The content node being attested.
+        opinion:    Agent's opinion about the content proposition.
+        edge_type:  Always ``"attestation"``.
+        metadata:   Arbitrary key–value pairs.
+
+    Constraints:
+        - ``agent_id != content_id`` (no self-reference).
+        - Both IDs must be non-empty strings.
+        - ``opinion`` must be an ``Opinion`` instance.
+    """
+
+    agent_id: str
+    content_id: str
+    opinion: Opinion
+    edge_type: EdgeType = "attestation"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # ── Validate agent_id ──
+        if not isinstance(self.agent_id, str) or not self.agent_id.strip():
+            raise ValueError(
+                f"agent_id must be a non-empty string, got {self.agent_id!r}"
+            )
+        # ── Validate content_id ──
+        if not isinstance(self.content_id, str) or not self.content_id.strip():
+            raise ValueError(
+                f"content_id must be a non-empty string, got {self.content_id!r}"
+            )
+        # ── No self-reference ──
+        if self.agent_id == self.content_id:
+            raise ValueError(
+                f"Self-reference not allowed: "
+                f"agent_id == content_id == {self.agent_id!r}"
+            )
+        # ── Validate opinion ──
+        if not isinstance(self.opinion, Opinion):
+            raise TypeError(
+                f"opinion must be an Opinion instance, "
+                f"got {type(self.opinion).__name__}"
+            )
+
+    def __hash__(self) -> int:
+        """Hash by (agent_id, content_id) — the identity of an attestation."""
+        return hash((self.agent_id, self.content_id))
+
+    def __repr__(self) -> str:
+        o = self.opinion
+        return (
+            f"AttestationEdge({self.agent_id!r}→{self.content_id!r}, "
+            f"opinion=({o.belief:.3f},{o.disbelief:.3f},{o.uncertainty:.3f}))"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# TRUST PROPAGATION RESULTS (Tier 2)
+# ═══════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class TrustPropagationResult:
+    """Result of transitive trust computation.
+
+    For a querying agent *Q*, computes Q's derived trust in every
+    reachable agent in the trust subgraph.  Produced by
+    ``propagate_trust()``.
+
+    Attributes:
+        querying_agent: The agent whose perspective is being computed.
+        derived_trusts: Mapping from agent_id to the transitive trust
+                        opinion that the querying agent has in that agent.
+        trust_paths:    Mapping from agent_id to the path (list of node
+                        IDs) from the querying agent to that agent.
+        steps:          Ordered list of every ``trust_discount()`` or
+                        ``cumulative_fuse()`` call performed during
+                        propagation.
+
+    References:
+        Jøsang, A. (2016). Subjective Logic, §14.3 (transitive trust),
+        §14.5 (multi-path trust fusion).
+    """
+
+    querying_agent: str
+    derived_trusts: dict[str, Opinion]
+    trust_paths: dict[str, list[str]]
+    steps: list[InferenceStep]
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.querying_agent, str)
+            or not self.querying_agent.strip()
+        ):
+            raise ValueError(
+                f"querying_agent must be a non-empty string, "
+                f"got {self.querying_agent!r}"
+            )
+
+    def __hash__(self) -> int:
+        """Hash by querying_agent."""
+        return hash(self.querying_agent)
+
+    def __repr__(self) -> str:
+        n = len(self.derived_trusts)
+        return (
+            f"TrustPropagationResult("
+            f"agent={self.querying_agent!r}, "
+            f"derived_trusts={n})"
+        )

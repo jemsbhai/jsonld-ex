@@ -29,10 +29,13 @@ from typing import Any, Dict, List, Optional, Union
 
 from jsonld_ex.confidence_algebra import Opinion
 from jsonld_ex.sl_network.types import (
+    AttestationEdge,
     InferenceResult,
     MultiParentEdge,
     SLEdge,
     SLNode,
+    TrustEdge,
+    TrustPropagationResult,
 )
 
 
@@ -171,6 +174,12 @@ class SLNetwork:
         # Multi-parent edge storage: target_id → MultiParentEdge
         self._multi_parent_edges: dict[str, MultiParentEdge] = {}
 
+        # Trust edge storage (Tier 2): (source_id, target_id) → TrustEdge
+        self._trust_edges: dict[tuple[str, str], TrustEdge] = {}
+
+        # Attestation edge storage (Tier 2): (agent_id, content_id) → AttestationEdge
+        self._attestation_edges: dict[tuple[str, str], AttestationEdge] = {}
+
     # ── Properties ─────────────────────────────────────────────────
 
     @property
@@ -294,6 +303,255 @@ class SLNetwork:
             self._parents[tgt].append(pid)
 
         self._multi_parent_edges[tgt] = edge
+
+    # ── Agent Nodes (Tier 2) ───────────────────────────────────────────
+
+    def add_agent(self, node: SLNode) -> None:
+        """Add an agent node to the network.
+
+        Convenience method that validates ``node.node_type == "agent"``
+        before delegating to ``add_node()``.
+
+        Args:
+            node: The SLNode to add.  Must have ``node_type="agent"``.
+
+        Raises:
+            TypeError:  If ``node`` is not an SLNode.
+            ValueError: If ``node.node_type`` is not ``"agent"``.
+            ValueError: If a node with the same ID already exists.
+        """
+        if not isinstance(node, SLNode):
+            raise TypeError(
+                f"Expected SLNode, got {type(node).__name__}"
+            )
+        if node.node_type != "agent":
+            raise ValueError(
+                f"add_agent() requires node_type='agent', "
+                f"got {node.node_type!r}"
+            )
+        self.add_node(node)
+
+    # ── Trust & Attestation (Tier 2) ────────────────────────────────────
+
+    def add_trust_edge(self, edge: TrustEdge) -> None:
+        """Add a trust relationship between two agent nodes.
+
+        Trust edges live in a separate store from deduction edges
+        and do NOT participate in cycle detection (trust subgraph
+        is independent from the content deduction DAG).
+
+        Args:
+            edge: The TrustEdge to add.
+
+        Raises:
+            TypeError:  If ``edge`` is not a TrustEdge.
+            NodeNotFoundError: If either agent node is not in the network.
+            ValueError: If the trust edge already exists.
+        """
+        if not isinstance(edge, TrustEdge):
+            raise TypeError(
+                f"Expected TrustEdge, got {type(edge).__name__}"
+            )
+        src, tgt = edge.source_id, edge.target_id
+
+        if src not in self._nodes:
+            raise NodeNotFoundError(src)
+        if tgt not in self._nodes:
+            raise NodeNotFoundError(tgt)
+
+        key = (src, tgt)
+        if key in self._trust_edges:
+            raise ValueError(
+                f"Trust edge {src!r} → {tgt!r} already exists"
+            )
+
+        self._trust_edges[key] = edge
+
+    def add_attestation(self, edge: AttestationEdge) -> None:
+        """Add an attestation: an agent's opinion about a content node.
+
+        Args:
+            edge: The AttestationEdge to add.
+
+        Raises:
+            TypeError:  If ``edge`` is not an AttestationEdge.
+            NodeNotFoundError: If agent or content node is missing.
+            ValueError: If the attestation already exists.
+        """
+        if not isinstance(edge, AttestationEdge):
+            raise TypeError(
+                f"Expected AttestationEdge, got {type(edge).__name__}"
+            )
+        aid, cid = edge.agent_id, edge.content_id
+
+        if aid not in self._nodes:
+            raise NodeNotFoundError(aid)
+        if cid not in self._nodes:
+            raise NodeNotFoundError(cid)
+
+        key = (aid, cid)
+        if key in self._attestation_edges:
+            raise ValueError(
+                f"Attestation {aid!r} → {cid!r} already exists"
+            )
+
+        self._attestation_edges[key] = edge
+
+    def get_trust_edges_from(self, agent_id: str) -> list[TrustEdge]:
+        """Return all outgoing trust edges from the given agent.
+
+        Args:
+            agent_id: The trusting agent's ID.
+
+        Returns:
+            List of TrustEdge objects, sorted by target_id.
+
+        Raises:
+            NodeNotFoundError: If the agent node does not exist.
+        """
+        if agent_id not in self._nodes:
+            raise NodeNotFoundError(agent_id)
+        return sorted(
+            (
+                te for (src, _), te in self._trust_edges.items()
+                if src == agent_id
+            ),
+            key=lambda te: te.target_id,
+        )
+
+    def get_attestations_for(self, content_id: str) -> list[AttestationEdge]:
+        """Return all attestation edges targeting the given content node.
+
+        Args:
+            content_id: The content node ID.
+
+        Returns:
+            List of AttestationEdge objects, sorted by agent_id.
+
+        Raises:
+            NodeNotFoundError: If the content node does not exist.
+        """
+        if content_id not in self._nodes:
+            raise NodeNotFoundError(content_id)
+        return sorted(
+            (
+                ae for (_, cid), ae in self._attestation_edges.items()
+                if cid == content_id
+            ),
+            key=lambda ae: ae.agent_id,
+        )
+
+    # ── Node Filtering (Tier 2) ────────────────────────────────────────
+
+    def get_agents(self) -> list[str]:
+        """Return sorted list of agent node IDs."""
+        return sorted(
+            nid for nid, n in self._nodes.items()
+            if n.node_type == "agent"
+        )
+
+    def get_content_nodes(self) -> list[str]:
+        """Return sorted list of content node IDs."""
+        return sorted(
+            nid for nid, n in self._nodes.items()
+            if n.node_type == "content"
+        )
+
+    # ── Subgraph Extraction (Tier 2) ───────────────────────────────────
+
+    def get_trust_subgraph(self) -> SLNetwork:
+        """Return a new SLNetwork containing only agent nodes and trust edges.
+
+        The returned network has no content nodes, no deduction edges,
+        and no attestation edges.
+        """
+        sub = SLNetwork(name=f"{self._name}_trust" if self._name else None)
+        for nid in self.get_agents():
+            sub.add_node(self._nodes[nid])
+        for key, te in self._trust_edges.items():
+            sub.add_trust_edge(te)
+        return sub
+
+    def get_content_subgraph(self) -> SLNetwork:
+        """Return a new SLNetwork containing only content nodes and deduction edges.
+
+        The returned network has no agent nodes, no trust edges,
+        and no attestation edges.
+        """
+        sub = SLNetwork(name=f"{self._name}_content" if self._name else None)
+        content_ids = set(self.get_content_nodes())
+        for nid in sorted(content_ids):
+            sub.add_node(self._nodes[nid])
+        # Copy deduction edges where both endpoints are content nodes
+        for (src, tgt), edge in self._edges.items():
+            if src in content_ids and tgt in content_ids:
+                sub.add_edge(edge)
+        # Copy multi-parent edges where target and all parents are content
+        for tgt, mpe in self._multi_parent_edges.items():
+            if tgt in content_ids and all(
+                pid in content_ids for pid in mpe.parent_ids
+            ):
+                sub.add_edge(mpe)
+        return sub
+
+    # ── Trust Propagation (Tier 2) ─────────────────────────────────────
+
+    def propagate_trust(
+        self,
+        querying_agent: str,
+        fusion_method: str = "cumulative",
+    ) -> TrustPropagationResult:
+        """Compute transitive trust from a querying agent.
+
+        Delegates to ``trust.propagate_trust()``.
+
+        Args:
+            querying_agent: The agent whose perspective is being computed.
+            fusion_method:  ``"cumulative"`` or ``"averaging"``.
+
+        Returns:
+            A ``TrustPropagationResult``.
+        """
+        from jsonld_ex.sl_network.trust import propagate_trust as _propagate
+        return _propagate(
+            self, querying_agent, fusion_method=fusion_method,
+        )
+
+    def infer_with_trust(
+        self,
+        query_node: str,
+        querying_agent: str,
+        trust_fusion: str = "cumulative",
+        content_fusion: str = "cumulative",
+        counterfactual_fn: str = "vacuous",
+    ) -> InferenceResult:
+        """Run combined trust + content inference.
+
+        Delegates to ``trust.infer_with_trust()``.
+
+        Args:
+            query_node:       Content node to query.
+            querying_agent:   Agent whose perspective is being computed.
+            trust_fusion:     Fusion method for multi-path trust.
+            content_fusion:   Fusion method for multi-agent attestations.
+            counterfactual_fn: Strategy for deduction counterfactuals.
+
+        Returns:
+            An ``InferenceResult`` for the query node.
+        """
+        from jsonld_ex.sl_network.trust import (
+            infer_with_trust as _infer_with_trust,
+        )
+        return _infer_with_trust(
+            self,
+            query_node=query_node,
+            querying_agent=querying_agent,
+            trust_fusion=trust_fusion,
+            content_fusion=content_fusion,
+            counterfactual_fn=counterfactual_fn,
+        )
+
+    # ── Node Removal ───────────────────────────────────────────────
 
     def remove_node(self, node_id: str) -> None:
         """Remove a node and all its incident edges.
@@ -653,6 +911,26 @@ class SLNetwork:
                 }
                 for tgt, mpe in self._multi_parent_edges.items()
             },
+            "trust_edges": {
+                f"{src}->{tgt}": {
+                    "source_id": te.source_id,
+                    "target_id": te.target_id,
+                    "trust_opinion": te.trust_opinion.to_jsonld(),
+                    "edge_type": te.edge_type,
+                    "metadata": te.metadata,
+                }
+                for (src, tgt), te in self._trust_edges.items()
+            },
+            "attestation_edges": {
+                f"{aid}->{cid}": {
+                    "agent_id": ae.agent_id,
+                    "content_id": ae.content_id,
+                    "opinion": ae.opinion.to_jsonld(),
+                    "edge_type": ae.edge_type,
+                    "metadata": ae.metadata,
+                }
+                for (aid, cid), ae in self._attestation_edges.items()
+            },
         }
 
     @classmethod
@@ -723,6 +1001,30 @@ class SLNetwork:
             )
             net.add_edge(mpe)
 
+        # ── Reconstruct trust edges (Tier 2) ──
+        for _key, tedata in data.get("trust_edges", {}).items():
+            trust_op = Opinion.from_jsonld(tedata["trust_opinion"])
+            te = TrustEdge(
+                source_id=tedata["source_id"],
+                target_id=tedata["target_id"],
+                trust_opinion=trust_op,
+                edge_type=tedata.get("edge_type", "trust"),
+                metadata=tedata.get("metadata", {}),
+            )
+            net.add_trust_edge(te)
+
+        # ── Reconstruct attestation edges (Tier 2) ──
+        for _key, aedata in data.get("attestation_edges", {}).items():
+            att_op = Opinion.from_jsonld(aedata["opinion"])
+            ae = AttestationEdge(
+                agent_id=aedata["agent_id"],
+                content_id=aedata["content_id"],
+                opinion=att_op,
+                edge_type=aedata.get("edge_type", "attestation"),
+                metadata=aedata.get("metadata", {}),
+            )
+            net.add_attestation(ae)
+
         return net
 
     def to_jsonld(self) -> dict[str, Any]:
@@ -787,6 +1089,28 @@ class SLNetwork:
                 "edgeType": mpe.edge_type,
             })
 
+        graph_trust_edges = []
+        for (src, tgt), te in self._trust_edges.items():
+            graph_trust_edges.append({
+                "@type": "TrustEdge",
+                "sourceId": te.source_id,
+                "targetId": te.target_id,
+                "trustOpinion": te.trust_opinion.to_jsonld(),
+                "edgeType": te.edge_type,
+                "metadata": te.metadata if te.metadata else None,
+            })
+
+        graph_attestations = []
+        for (aid, cid), ae in self._attestation_edges.items():
+            graph_attestations.append({
+                "@type": "AttestationEdge",
+                "agentId": ae.agent_id,
+                "contentId": ae.content_id,
+                "opinion": ae.opinion.to_jsonld(),
+                "edgeType": ae.edge_type,
+                "metadata": ae.metadata if ae.metadata else None,
+            })
+
         return {
             "@context": context,
             "@type": "SLNetwork",
@@ -794,6 +1118,8 @@ class SLNetwork:
             "nodes": graph_nodes,
             "edges": graph_edges,
             "multiParentEdges": graph_mpes if graph_mpes else None,
+            "trustEdges": graph_trust_edges if graph_trust_edges else None,
+            "attestations": graph_attestations if graph_attestations else None,
         }
 
     @classmethod
@@ -856,6 +1182,30 @@ class SLNetwork:
                 edge_type=mpe_data.get("edgeType", "deduction"),
             )
             net.add_edge(mpe)
+
+        # ── Reconstruct trust edges (Tier 2) ──
+        for tedata in data.get("trustEdges", []) or []:
+            trust_op = Opinion.from_jsonld(tedata["trustOpinion"])
+            te = TrustEdge(
+                source_id=tedata["sourceId"],
+                target_id=tedata["targetId"],
+                trust_opinion=trust_op,
+                edge_type=tedata.get("edgeType", "trust"),
+                metadata=tedata.get("metadata") or {},
+            )
+            net.add_trust_edge(te)
+
+        # ── Reconstruct attestation edges (Tier 2) ──
+        for aedata in data.get("attestations", []) or []:
+            att_op = Opinion.from_jsonld(aedata["opinion"])
+            ae = AttestationEdge(
+                agent_id=aedata["agentId"],
+                content_id=aedata["contentId"],
+                opinion=att_op,
+                edge_type=aedata.get("edgeType", "attestation"),
+                metadata=aedata.get("metadata") or {},
+            )
+            net.add_attestation(ae)
 
         return net
 
