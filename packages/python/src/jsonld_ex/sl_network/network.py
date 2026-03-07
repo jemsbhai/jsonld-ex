@@ -25,7 +25,8 @@ References:
 from __future__ import annotations
 
 from collections import deque
-from typing import Any, Dict, List, Optional, Union
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
 from jsonld_ex.confidence_algebra import Opinion
 from jsonld_ex.sl_network.types import (
@@ -72,6 +73,20 @@ class NodeNotFoundError(KeyError):
 # ═══════════════════════════════════════════════════════════════════
 # SERIALIZATION HELPERS
 # ═══════════════════════════════════════════════════════════════════
+
+
+def _dt_to_str(dt: datetime | None) -> str | None:
+    """Serialize a datetime to ISO 8601 string, or None."""
+    if dt is None:
+        return None
+    return dt.isoformat()
+
+
+def _str_to_dt(s: str | None) -> datetime | None:
+    """Deserialize an ISO 8601 string to datetime, or None."""
+    if s is None:
+        return None
+    return datetime.fromisoformat(s)
 
 
 def _parse_bool_tuple(key_str: str, expected_length: int) -> tuple[bool, ...]:
@@ -517,6 +532,102 @@ class SLNetwork:
             self, querying_agent, fusion_method=fusion_method,
         )
 
+    def infer_at(
+        self,
+        node_id: str,
+        reference_time: datetime,
+        decay_model: Literal["nodes", "edges", "both"] = "both",
+        default_half_life: float = 86400.0,
+        decay_fn: Callable[[float, float], float] | None = None,
+        **kwargs,
+    ) -> InferenceResult:
+        """Infer with temporal decay applied.
+
+        1. Apply decay to node opinions (Model A) and/or edge
+           conditionals (Model B) based on ``decay_model``.
+        2. Run standard inference on the decayed network.
+
+        The original network is not modified.
+
+        Args:
+            node_id:           The node to query.
+            reference_time:    The "now" for computing elapsed time.
+            decay_model:       ``"nodes"``, ``"edges"``, or ``"both"``
+                               (default).
+            default_half_life: Half-life in seconds when a node/edge
+                               has no per-element half_life set.
+            decay_fn:          Custom decay function, or None for
+                               exponential decay.
+            **kwargs:          Forwarded to ``infer_node()``.
+
+        Returns:
+            An ``InferenceResult`` for the queried node.
+        """
+        from jsonld_ex.sl_network.temporal import (
+            decay_network_nodes,
+            decay_network_edges,
+        )
+        from jsonld_ex.confidence_decay import exponential_decay
+        from jsonld_ex.sl_network.inference import infer_node as _infer_node
+
+        fn = decay_fn if decay_fn is not None else exponential_decay
+        net = self
+
+        if decay_model in ("nodes", "both"):
+            net = decay_network_nodes(
+                net, reference_time=reference_time,
+                default_half_life=default_half_life, decay_fn=fn,
+            )
+        if decay_model in ("edges", "both"):
+            net = decay_network_edges(
+                net, reference_time=reference_time,
+                default_half_life=default_half_life, decay_fn=fn,
+            )
+
+        return _infer_node(net, node_id, **kwargs)
+
+    def infer_temporal_diff(
+        self,
+        node_id: str,
+        t1: datetime,
+        t2: datetime,
+        **kwargs,
+    ):
+        """Compare inferred opinions at two points in time.
+
+        Runs ``infer_at()`` at both ``t1`` and ``t2``, then computes
+        component-wise deltas (t2 - t1).
+
+        Args:
+            node_id: The node to query.
+            t1:      The first (typically earlier) time point.
+            t2:      The second (typically later) time point.
+            **kwargs: Forwarded to ``infer_at()`` (decay_model,
+                      default_half_life, decay_fn, etc.).
+
+        Returns:
+            A ``TemporalDiffResult`` with opinions at both times
+            and their deltas.
+        """
+        from jsonld_ex.sl_network.temporal import TemporalDiffResult
+
+        result_t1 = self.infer_at(node_id, reference_time=t1, **kwargs)
+        result_t2 = self.infer_at(node_id, reference_time=t2, **kwargs)
+
+        op1 = result_t1.opinion
+        op2 = result_t2.opinion
+
+        return TemporalDiffResult(
+            node_id=node_id,
+            t1=t1,
+            t2=t2,
+            opinion_at_t1=op1,
+            opinion_at_t2=op2,
+            delta_belief=op2.belief - op1.belief,
+            delta_disbelief=op2.disbelief - op1.disbelief,
+            delta_uncertainty=op2.uncertainty - op1.uncertainty,
+        )
+
     def infer_with_trust(
         self,
         query_node: str,
@@ -881,6 +992,8 @@ class SLNetwork:
                     "node_type": n.node_type,
                     "label": n.label,
                     "metadata": n.metadata,
+                    "timestamp": _dt_to_str(n.timestamp),
+                    "half_life": n.half_life,
                 }
                 for nid, n in self._nodes.items()
             },
@@ -896,6 +1009,10 @@ class SLNetwork:
                     ),
                     "edge_type": e.edge_type,
                     "metadata": e.metadata,
+                    "timestamp": _dt_to_str(e.timestamp),
+                    "half_life": e.half_life,
+                    "valid_from": _dt_to_str(e.valid_from),
+                    "valid_until": _dt_to_str(e.valid_until),
                 }
                 for (src, tgt), e in self._edges.items()
             },
@@ -918,6 +1035,8 @@ class SLNetwork:
                     "trust_opinion": te.trust_opinion.to_jsonld(),
                     "edge_type": te.edge_type,
                     "metadata": te.metadata,
+                    "timestamp": _dt_to_str(te.timestamp),
+                    "half_life": te.half_life,
                 }
                 for (src, tgt), te in self._trust_edges.items()
             },
@@ -928,6 +1047,8 @@ class SLNetwork:
                     "opinion": ae.opinion.to_jsonld(),
                     "edge_type": ae.edge_type,
                     "metadata": ae.metadata,
+                    "timestamp": _dt_to_str(ae.timestamp),
+                    "half_life": ae.half_life,
                 }
                 for (aid, cid), ae in self._attestation_edges.items()
             },
@@ -963,6 +1084,8 @@ class SLNetwork:
                 node_type=ndata.get("node_type", "content"),
                 label=ndata.get("label"),
                 metadata=ndata.get("metadata", {}),
+                timestamp=_str_to_dt(ndata.get("timestamp")),
+                half_life=ndata.get("half_life"),
             )
             net.add_node(node)
 
@@ -981,6 +1104,10 @@ class SLNetwork:
                 counterfactual=cf,
                 edge_type=edata.get("edge_type", "deduction"),
                 metadata=edata.get("metadata", {}),
+                timestamp=_str_to_dt(edata.get("timestamp")),
+                half_life=edata.get("half_life"),
+                valid_from=_str_to_dt(edata.get("valid_from")),
+                valid_until=_str_to_dt(edata.get("valid_until")),
             )
             net.add_edge(edge)
 
@@ -1010,6 +1137,8 @@ class SLNetwork:
                 trust_opinion=trust_op,
                 edge_type=tedata.get("edge_type", "trust"),
                 metadata=tedata.get("metadata", {}),
+                timestamp=_str_to_dt(tedata.get("timestamp")),
+                half_life=tedata.get("half_life"),
             )
             net.add_trust_edge(te)
 
@@ -1022,6 +1151,8 @@ class SLNetwork:
                 opinion=att_op,
                 edge_type=aedata.get("edge_type", "attestation"),
                 metadata=aedata.get("metadata", {}),
+                timestamp=_str_to_dt(aedata.get("timestamp")),
+                half_life=aedata.get("half_life"),
             )
             net.add_attestation(ae)
 
@@ -1058,6 +1189,8 @@ class SLNetwork:
                 "nodeType": n.node_type,
                 "label": n.label,
                 "metadata": n.metadata if n.metadata else None,
+                "timestamp": _dt_to_str(n.timestamp),
+                "halfLife": n.half_life,
             })
 
         graph_edges = []
@@ -1074,6 +1207,10 @@ class SLNetwork:
                 ),
                 "edgeType": e.edge_type,
                 "metadata": e.metadata if e.metadata else None,
+                "timestamp": _dt_to_str(e.timestamp),
+                "halfLife": e.half_life,
+                "validFrom": _dt_to_str(e.valid_from),
+                "validUntil": _dt_to_str(e.valid_until),
             })
 
         graph_mpes = []
@@ -1098,6 +1235,8 @@ class SLNetwork:
                 "trustOpinion": te.trust_opinion.to_jsonld(),
                 "edgeType": te.edge_type,
                 "metadata": te.metadata if te.metadata else None,
+                "timestamp": _dt_to_str(te.timestamp),
+                "halfLife": te.half_life,
             })
 
         graph_attestations = []
@@ -1109,6 +1248,8 @@ class SLNetwork:
                 "opinion": ae.opinion.to_jsonld(),
                 "edgeType": ae.edge_type,
                 "metadata": ae.metadata if ae.metadata else None,
+                "timestamp": _dt_to_str(ae.timestamp),
+                "halfLife": ae.half_life,
             })
 
         return {
@@ -1146,6 +1287,8 @@ class SLNetwork:
                 node_type=ndata.get("nodeType", "content"),
                 label=ndata.get("label"),
                 metadata=ndata.get("metadata") or {},
+                timestamp=_str_to_dt(ndata.get("timestamp")),
+                half_life=ndata.get("halfLife"),
             )
             net.add_node(node)
 
@@ -1164,6 +1307,10 @@ class SLNetwork:
                 counterfactual=cf,
                 edge_type=edata.get("edgeType", "deduction"),
                 metadata=edata.get("metadata") or {},
+                timestamp=_str_to_dt(edata.get("timestamp")),
+                half_life=edata.get("halfLife"),
+                valid_from=_str_to_dt(edata.get("validFrom")),
+                valid_until=_str_to_dt(edata.get("validUntil")),
             )
             net.add_edge(edge)
 
@@ -1192,6 +1339,8 @@ class SLNetwork:
                 trust_opinion=trust_op,
                 edge_type=tedata.get("edgeType", "trust"),
                 metadata=tedata.get("metadata") or {},
+                timestamp=_str_to_dt(tedata.get("timestamp")),
+                half_life=tedata.get("halfLife"),
             )
             net.add_trust_edge(te)
 
@@ -1204,6 +1353,8 @@ class SLNetwork:
                 opinion=att_op,
                 edge_type=aedata.get("edgeType", "attestation"),
                 metadata=aedata.get("metadata") or {},
+                timestamp=_str_to_dt(aedata.get("timestamp")),
+                half_life=aedata.get("halfLife"),
             )
             net.add_attestation(ae)
 

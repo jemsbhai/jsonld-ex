@@ -28,6 +28,7 @@ References:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from itertools import product as itertools_product
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
@@ -87,6 +88,8 @@ class SLNode:
     node_type: NodeType = "content"
     label: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime | None = None
+    half_life: float | None = None
 
     def __post_init__(self) -> None:
         # ── Validate node_id ──
@@ -105,6 +108,11 @@ class SLNode:
             raise ValueError(
                 f"node_type must be 'content' or 'agent', "
                 f"got {self.node_type!r}"
+            )
+        # ── Validate temporal fields ──
+        if self.half_life is not None and self.half_life <= 0.0:
+            raise ValueError(
+                f"half_life must be positive, got {self.half_life!r}"
             )
 
     def __hash__(self) -> int:
@@ -155,6 +163,10 @@ class SLEdge:
     counterfactual: Opinion | None = None
     edge_type: EdgeType = "deduction"
     metadata: dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime | None = None
+    half_life: float | None = None
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
 
     def __post_init__(self) -> None:
         # ── Validate IDs ──
@@ -190,6 +202,20 @@ class SLEdge:
             raise ValueError(
                 f"edge_type must be 'deduction', 'trust', or 'attestation', "
                 f"got {self.edge_type!r}"
+            )
+        # ── Validate temporal fields ──
+        if self.half_life is not None and self.half_life <= 0.0:
+            raise ValueError(
+                f"half_life must be positive, got {self.half_life!r}"
+            )
+        if (
+            self.valid_from is not None
+            and self.valid_until is not None
+            and self.valid_until < self.valid_from
+        ):
+            raise ValueError(
+                f"valid_until ({self.valid_until}) must not be before "
+                f"valid_from ({self.valid_from})"
             )
 
     def __hash__(self) -> int:
@@ -493,6 +519,8 @@ class TrustEdge:
     trust_opinion: Opinion
     edge_type: EdgeType = "trust"
     metadata: dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime | None = None
+    half_life: float | None = None
 
     def __post_init__(self) -> None:
         # ── Validate source_id ──
@@ -516,6 +544,11 @@ class TrustEdge:
             raise TypeError(
                 f"trust_opinion must be an Opinion instance, "
                 f"got {type(self.trust_opinion).__name__}"
+            )
+        # ── Validate temporal fields ──
+        if self.half_life is not None and self.half_life <= 0.0:
+            raise ValueError(
+                f"half_life must be positive, got {self.half_life!r}"
             )
 
     def __hash__(self) -> int:
@@ -562,6 +595,8 @@ class AttestationEdge:
     opinion: Opinion
     edge_type: EdgeType = "attestation"
     metadata: dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime | None = None
+    half_life: float | None = None
 
     def __post_init__(self) -> None:
         # ── Validate agent_id ──
@@ -585,6 +620,11 @@ class AttestationEdge:
             raise TypeError(
                 f"opinion must be an Opinion instance, "
                 f"got {type(self.opinion).__name__}"
+            )
+        # ── Validate temporal fields ──
+        if self.half_life is not None and self.half_life <= 0.0:
+            raise ValueError(
+                f"half_life must be positive, got {self.half_life!r}"
             )
 
     def __hash__(self) -> int:

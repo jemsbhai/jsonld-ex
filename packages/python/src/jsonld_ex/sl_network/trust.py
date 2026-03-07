@@ -24,7 +24,8 @@ References:
 from __future__ import annotations
 
 from collections import deque
-from typing import TYPE_CHECKING, Literal
+from datetime import datetime
+from typing import TYPE_CHECKING, Callable, Literal
 
 from jsonld_ex.confidence_algebra import (
     Opinion,
@@ -32,11 +33,13 @@ from jsonld_ex.confidence_algebra import (
     cumulative_fuse,
     trust_discount,
 )
+from jsonld_ex.confidence_decay import decay_opinion, exponential_decay
 from jsonld_ex.sl_network.types import (
     InferenceResult,
     InferenceStep,
     SLEdge,
     SLNode,
+    TrustEdge,
     TrustPropagationResult,
 )
 
@@ -44,10 +47,43 @@ if TYPE_CHECKING:
     from jsonld_ex.sl_network.network import SLNetwork
 
 
+def _decay_trust_opinion(
+    edge: TrustEdge,
+    reference_time: datetime | None,
+    default_half_life: float | None,
+    decay_fn: Callable[[float, float], float],
+) -> Opinion:
+    """Return the trust opinion for an edge, decayed by age if temporal params given.
+
+    If reference_time is None or the edge has no timestamp, returns
+    the original trust_opinion unchanged.
+    """
+    if reference_time is None or edge.timestamp is None:
+        return edge.trust_opinion
+
+    elapsed = (reference_time - edge.timestamp).total_seconds()
+    if elapsed <= 0.0:
+        return edge.trust_opinion
+
+    half_life = edge.half_life if edge.half_life is not None else default_half_life
+    if half_life is None:
+        return edge.trust_opinion
+
+    return decay_opinion(
+        edge.trust_opinion,
+        elapsed=elapsed,
+        half_life=half_life,
+        decay_fn=decay_fn,
+    )
+
+
 def propagate_trust(
     network: SLNetwork,
     querying_agent: str,
     fusion_method: Literal["cumulative", "averaging"] = "cumulative",
+    reference_time: datetime | None = None,
+    default_half_life: float | None = None,
+    decay_fn: Callable[[float, float], float] = exponential_decay,
 ) -> TrustPropagationResult:
     """Compute transitive trust from a querying agent to all reachable agents.
 
@@ -56,11 +92,20 @@ def propagate_trust(
     left-fold of ``trust_discount()``.  When multiple paths reach the
     same agent, their derived trust opinions are fused.
 
+    When ``reference_time`` is provided, each trust edge opinion is
+    decayed by its age before entering the discount chain.  This
+    ensures stale trust intermediaries properly degrade toward vacuous.
+
     Args:
-        network:         The SLNetwork containing agent nodes and trust edges.
-        querying_agent:  The agent whose perspective is being computed.
-        fusion_method:   ``"cumulative"`` (default, for independent paths)
-                         or ``"averaging"`` (for correlated paths).
+        network:           The SLNetwork containing agent nodes and trust edges.
+        querying_agent:    The agent whose perspective is being computed.
+        fusion_method:     ``"cumulative"`` (default, for independent paths)
+                           or ``"averaging"`` (for correlated paths).
+        reference_time:    If provided, trust edge opinions are decayed
+                           by their age relative to this time.
+        default_half_life: Half-life in seconds for trust decay when an
+                           edge has no per-edge half_life set.
+        decay_fn:          Decay function (default: exponential_decay).
 
     Returns:
         A ``TrustPropagationResult`` with derived trust opinions,
@@ -96,20 +141,23 @@ def propagate_trust(
     for te in network.get_trust_edges_from(querying_agent):
         target = te.target_id
 
-        # Direct (single-hop) trust — the edge opinion itself
+        # Direct (single-hop) trust — the edge opinion, decayed if temporal
+        effective_trust = _decay_trust_opinion(
+            te, reference_time, default_half_life, decay_fn,
+        )
         path = [querying_agent, target]
         per_path_opinions.setdefault(target, []).append(
-            (te.trust_opinion, path)
+            (effective_trust, path)
         )
 
         steps.append(InferenceStep(
             node_id=target,
             operation="direct_trust",
-            inputs={"trust_edge": te.trust_opinion},
-            result=te.trust_opinion,
+            inputs={"trust_edge": effective_trust},
+            result=effective_trust,
         ))
 
-        queue.append((target, te.trust_opinion, path))
+        queue.append((target, effective_trust, path))
 
     # BFS: propagate through transitive trust edges
     while queue:
@@ -122,9 +170,14 @@ def propagate_trust(
             if target in current_path:
                 continue
 
+            # Decay the edge opinion if temporal parameters given
+            effective_trust = _decay_trust_opinion(
+                te, reference_time, default_half_life, decay_fn,
+            )
+
             # Transitive trust along this specific path
             transitive_trust = trust_discount(
-                current_derived_trust, te.trust_opinion
+                current_derived_trust, effective_trust
             )
 
             path = current_path + [target]
@@ -137,7 +190,7 @@ def propagate_trust(
                 operation="trust_discount",
                 inputs={
                     "derived_trust": current_derived_trust,
-                    "edge_trust": te.trust_opinion,
+                    "edge_trust": effective_trust,
                 },
                 result=transitive_trust,
             ))

@@ -61,6 +61,20 @@ from jsonld_ex.sl_network.trust import (
     infer_with_trust,
 )
 
+# Tier 3: Temporal decay and point-in-time inference
+from jsonld_ex.sl_network.temporal import (
+    decay_network_nodes,
+    decay_network_edges,
+    network_at_time,
+    TemporalDiffResult,
+)
+
+# Tier 3: JSON-LD bridge
+from jsonld_ex.sl_network.jsonld_bridge import (
+    network_from_jsonld_graph,
+    network_to_jsonld_graph,
+)
+
 __all__ = [
     # Types
     "NodeType",
@@ -91,4 +105,12 @@ __all__ = [
     # Trust propagation and combined inference
     "propagate_trust",
     "infer_with_trust",
+    # Tier 3: Temporal decay and point-in-time inference
+    "decay_network_nodes",
+    "decay_network_edges",
+    "network_at_time",
+    "TemporalDiffResult",
+    # Tier 3: JSON-LD bridge
+    "network_from_jsonld_graph",
+    "network_to_jsonld_graph",
 ]
