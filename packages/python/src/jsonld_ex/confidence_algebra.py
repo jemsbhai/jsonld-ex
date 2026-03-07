@@ -568,7 +568,18 @@ def deduce(
         - **Additivity**:  b_y + d_y + u_y = 1 always.
         - **Classical limit**: When all opinions are dogmatic (u=0),
           reduces to the law of total probability.
-        - **Projected probability**: P(ω_y) = P(x)·P(y|x) + (1-P(x))·P(y|¬x).
+        - **Component-wise LTP**: For each c ∈ {b, d, u}:
+              c_y = P(x)·c_{y|x} + (1 − P(x))·c_{y|¬x}
+          where P(x) = b_x + a_x·u_x.  This factorization is exact.
+
+    Note on projected probability:
+        P(ω_y) = P(x)·P(y|x) + (1-P(x))·P(y|¬x) does NOT hold in
+        general.  The discrepancy arises because b_y and u_y are
+        weighted by P(x), while a_y is weighted by a_x (the base rate).
+        The product a_y·u_y in P(ω_y) = b_y + a_y·u_y therefore mixes
+        two different weighting schemes.  The projected-probability
+        LTP does hold in the classical limit (all u = 0) and when
+        a_y equals the conditional base rates.
 
     Args:
         opinion_x:            Opinion about antecedent x (ω_x).
