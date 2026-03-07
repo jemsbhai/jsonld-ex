@@ -67,6 +67,51 @@ class NodeNotFoundError(KeyError):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# SERIALIZATION HELPERS
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _parse_bool_tuple(key_str: str, expected_length: int) -> tuple[bool, ...]:
+    """Parse a stringified boolean tuple back to a tuple of bools.
+
+    Handles the format produced by ``str((True, False))`` which gives
+    ``"(True, False)"``.  Also handles compact forms like
+    ``"True,False"``.
+
+    Args:
+        key_str: String representation of a bool tuple.
+        expected_length: Expected number of elements.
+
+    Returns:
+        Tuple of bools.
+
+    Raises:
+        ValueError: If parsing fails or length doesn't match.
+    """
+    # Strip outer parens and whitespace
+    cleaned = key_str.strip().strip("()")
+    parts = [p.strip() for p in cleaned.split(",")]
+
+    if len(parts) != expected_length:
+        raise ValueError(
+            f"Expected {expected_length} elements in bool tuple, "
+            f"got {len(parts)} from {key_str!r}"
+        )
+
+    result: list[bool] = []
+    for p in parts:
+        if p == "True":
+            result.append(True)
+        elif p == "False":
+            result.append(False)
+        else:
+            raise ValueError(
+                f"Expected 'True' or 'False', got {p!r} in {key_str!r}"
+            )
+    return tuple(result)
+
+
+# ═══════════════════════════════════════════════════════════════════
 # SLNetwork CLASS
 # ═══════════════════════════════════════════════════════════════════
 
@@ -609,6 +654,210 @@ class SLNetwork:
                 for tgt, mpe in self._multi_parent_edges.items()
             },
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SLNetwork:
+        """Deserialize a network from a plain dictionary.
+
+        Inverse of ``to_dict()``.  Nodes are added first (in sorted
+        order for determinism), then edges.
+
+        Args:
+            data: Dictionary with 'name', 'nodes', 'edges', and
+                  optionally 'multi_parent_edges' keys.
+
+        Returns:
+            A reconstructed SLNetwork.
+
+        Raises:
+            KeyError: If required keys are missing.
+            ValueError: If the data is structurally invalid.
+        """
+        net = cls(name=data.get("name"))
+
+        # ── Reconstruct nodes ──
+        for nid, ndata in sorted(data.get("nodes", {}).items()):
+            op_data = ndata["opinion"]
+            opinion = Opinion.from_jsonld(op_data)
+            node = SLNode(
+                node_id=ndata["node_id"],
+                opinion=opinion,
+                node_type=ndata.get("node_type", "content"),
+                label=ndata.get("label"),
+                metadata=ndata.get("metadata", {}),
+            )
+            net.add_node(node)
+
+        # ── Reconstruct simple edges ──
+        for _key, edata in data.get("edges", {}).items():
+            cond = Opinion.from_jsonld(edata["conditional"])
+            cf = (
+                Opinion.from_jsonld(edata["counterfactual"])
+                if edata.get("counterfactual") is not None
+                else None
+            )
+            edge = SLEdge(
+                source_id=edata["source_id"],
+                target_id=edata["target_id"],
+                conditional=cond,
+                counterfactual=cf,
+                edge_type=edata.get("edge_type", "deduction"),
+                metadata=edata.get("metadata", {}),
+            )
+            net.add_edge(edge)
+
+        # ── Reconstruct multi-parent edges ──
+        for _tgt, mpe_data in data.get("multi_parent_edges", {}).items():
+            parent_ids = tuple(mpe_data["parent_ids"])
+            k = len(parent_ids)
+            conditionals: dict[tuple[bool, ...], Opinion] = {}
+            for key_str, op_data in mpe_data["conditionals"].items():
+                # Parse stringified tuple key: "(True, False)" → (True, False)
+                bool_key = _parse_bool_tuple(key_str, k)
+                conditionals[bool_key] = Opinion.from_jsonld(op_data)
+            mpe = MultiParentEdge(
+                target_id=mpe_data["target_id"],
+                parent_ids=parent_ids,
+                conditionals=conditionals,
+                edge_type=mpe_data.get("edge_type", "deduction"),
+            )
+            net.add_edge(mpe)
+
+        return net
+
+    def to_jsonld(self) -> dict[str, Any]:
+        """Serialize the network to a JSON-LD compatible document.
+
+        Produces a JSON-LD document with a ``@context`` defining the
+        SLNetwork vocabulary, and ``@graph`` containing typed nodes
+        and edges.
+
+        Returns:
+            A JSON-LD document as a dictionary.
+        """
+        context = {
+            "slnet": "https://jsonld-ex.github.io/ns/sl-network#",
+            "@vocab": "https://jsonld-ex.github.io/ns/sl-network#",
+            "xsd": "http://www.w3.org/2001/XMLSchema#",
+            "nodes": {"@id": "slnet:nodes", "@container": "@index"},
+            "edges": {"@id": "slnet:edges", "@container": "@set"},
+            "opinion": {"@id": "slnet:opinion"},
+            "conditional": {"@id": "slnet:conditional"},
+            "counterfactual": {"@id": "slnet:counterfactual"},
+        }
+
+        graph_nodes = []
+        for nid, n in self._nodes.items():
+            graph_nodes.append({
+                "@id": f"slnet:node/{nid}",
+                "@type": "SLNode",
+                "nodeId": n.node_id,
+                "opinion": n.opinion.to_jsonld(),
+                "nodeType": n.node_type,
+                "label": n.label,
+                "metadata": n.metadata if n.metadata else None,
+            })
+
+        graph_edges = []
+        for (src, tgt), e in self._edges.items():
+            graph_edges.append({
+                "@type": "SLEdge",
+                "sourceId": e.source_id,
+                "targetId": e.target_id,
+                "conditional": e.conditional.to_jsonld(),
+                "counterfactual": (
+                    e.counterfactual.to_jsonld()
+                    if e.counterfactual is not None
+                    else None
+                ),
+                "edgeType": e.edge_type,
+                "metadata": e.metadata if e.metadata else None,
+            })
+
+        graph_mpes = []
+        for tgt, mpe in self._multi_parent_edges.items():
+            graph_mpes.append({
+                "@type": "MultiParentEdge",
+                "targetId": mpe.target_id,
+                "parentIds": list(mpe.parent_ids),
+                "conditionals": {
+                    str(k): v.to_jsonld()
+                    for k, v in mpe.conditionals.items()
+                },
+                "edgeType": mpe.edge_type,
+            })
+
+        return {
+            "@context": context,
+            "@type": "SLNetwork",
+            "name": self._name,
+            "nodes": graph_nodes,
+            "edges": graph_edges,
+            "multiParentEdges": graph_mpes if graph_mpes else None,
+        }
+
+    @classmethod
+    def from_jsonld(cls, data: dict[str, Any]) -> SLNetwork:
+        """Deserialize a network from a JSON-LD document.
+
+        Inverse of ``to_jsonld()``.  Ignores ``@context`` — only
+        reads the structural content.
+
+        Args:
+            data: A JSON-LD document as produced by ``to_jsonld()``.
+
+        Returns:
+            A reconstructed SLNetwork.
+        """
+        net = cls(name=data.get("name"))
+
+        # ── Reconstruct nodes ──
+        for ndata in data.get("nodes", []):
+            opinion = Opinion.from_jsonld(ndata["opinion"])
+            node = SLNode(
+                node_id=ndata["nodeId"],
+                opinion=opinion,
+                node_type=ndata.get("nodeType", "content"),
+                label=ndata.get("label"),
+                metadata=ndata.get("metadata") or {},
+            )
+            net.add_node(node)
+
+        # ── Reconstruct edges ──
+        for edata in data.get("edges", []):
+            cond = Opinion.from_jsonld(edata["conditional"])
+            cf = (
+                Opinion.from_jsonld(edata["counterfactual"])
+                if edata.get("counterfactual") is not None
+                else None
+            )
+            edge = SLEdge(
+                source_id=edata["sourceId"],
+                target_id=edata["targetId"],
+                conditional=cond,
+                counterfactual=cf,
+                edge_type=edata.get("edgeType", "deduction"),
+                metadata=edata.get("metadata") or {},
+            )
+            net.add_edge(edge)
+
+        # ── Reconstruct multi-parent edges ──
+        for mpe_data in data.get("multiParentEdges", []) or []:
+            parent_ids = tuple(mpe_data["parentIds"])
+            k = len(parent_ids)
+            conditionals: dict[tuple[bool, ...], Opinion] = {}
+            for key_str, op_data in mpe_data["conditionals"].items():
+                bool_key = _parse_bool_tuple(key_str, k)
+                conditionals[bool_key] = Opinion.from_jsonld(op_data)
+            mpe = MultiParentEdge(
+                target_id=mpe_data["targetId"],
+                parent_ids=parent_ids,
+                conditionals=conditionals,
+                edge_type=mpe_data.get("edgeType", "deduction"),
+            )
+            net.add_edge(mpe)
+
+        return net
 
     # ── Representation ─────────────────────────────────────────────
 
