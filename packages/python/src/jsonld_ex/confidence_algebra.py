@@ -45,6 +45,14 @@ from typing import Any, Optional
 _ADDITIVITY_TOL = 1e-9
 
 
+# Tolerance for clamping IEEE 754 boundary overshoots.
+# SL operators produce outputs provably in [0, 1] analytically;
+# floating-point arithmetic can overshoot by machine epsilon (~1e-16).
+# Values within this tolerance of the [0, 1] boundary are clamped;
+# values outside are genuine errors and are rejected.
+_BOUNDARY_TOL = 1e-12
+
+
 def _validate_component(value: Any, name: str) -> float:
     """Validate a single opinion component."""
     if isinstance(value, bool):
@@ -53,9 +61,15 @@ def _validate_component(value: Any, name: str) -> float:
         raise TypeError(f"{name} must be a number, got: {type(value).__name__}")
     if math.isnan(value) or math.isinf(value):
         raise ValueError(f"{name} must be finite, got: {value}")
-    if value < 0.0 or value > 1.0:
+    fval = float(value)
+    # Clamp machine-epsilon boundary overshoots
+    if -_BOUNDARY_TOL <= fval < 0.0:
+        fval = 0.0
+    elif 1.0 < fval <= 1.0 + _BOUNDARY_TOL:
+        fval = 1.0
+    if fval < 0.0 or fval > 1.0:
         raise ValueError(f"{name} must be in [0, 1], got: {value}")
-    return float(value)
+    return fval
 
 
 @dataclass(frozen=True, eq=True)

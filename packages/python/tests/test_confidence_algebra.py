@@ -345,3 +345,77 @@ class TestOpinionSerialization:
         original = Opinion(belief=0.5, disbelief=0.3, uncertainty=0.2, base_rate=0.6)
         restored = Opinion.from_jsonld(original.to_jsonld())
         assert original == restored
+
+
+# ═══════════════════════════════════════════════════════════════════
+# IEEE 754 boundary clamping
+#
+# SL operators (trust_discount, deduce, cumulative_fuse) produce
+# outputs where each component is provably in [0, 1] analytically.
+# IEEE 754 arithmetic can overshoot by machine epsilon (~1e-16).
+# The Opinion constructor must clamp these rather than reject them.
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestFloatBoundaryClamping:
+    """Opinion accepts and clamps machine-epsilon boundary overshoots."""
+
+    def test_uncertainty_just_above_one_clamped(self):
+        """u = 1.0 + 2e-16 should be clamped to 1.0, not rejected."""
+        o = Opinion(belief=0.0, disbelief=0.0, uncertainty=1.0 + 2e-16)
+        assert o.uncertainty == 1.0
+
+    def test_belief_just_below_zero_clamped(self):
+        """b = -1e-16 should be clamped to 0.0, not rejected."""
+        o = Opinion(belief=-1e-16, disbelief=0.3, uncertainty=0.7)
+        assert o.belief == 0.0
+
+    def test_disbelief_just_above_one_clamped(self):
+        """d = 1.0 + 1e-16 should be clamped to 1.0."""
+        o = Opinion(belief=0.0, disbelief=1.0 + 1e-16, uncertainty=0.0)
+        assert o.disbelief == 1.0
+
+    def test_base_rate_just_above_one_clamped(self):
+        """a = 1.0 + 1e-16 should be clamped to 1.0."""
+        o = Opinion(belief=0.5, disbelief=0.3, uncertainty=0.2, base_rate=1.0 + 1e-16)
+        assert o.base_rate == 1.0
+
+    def test_base_rate_just_below_zero_clamped(self):
+        """a = -1e-16 should be clamped to 0.0."""
+        o = Opinion(belief=0.5, disbelief=0.3, uncertainty=0.2, base_rate=-1e-16)
+        assert o.base_rate == 0.0
+
+    def test_genuinely_negative_still_rejected(self):
+        """b = -0.01 is a real error, not float noise. Must reject."""
+        with pytest.raises(ValueError):
+            Opinion(belief=-0.01, disbelief=0.5, uncertainty=0.51)
+
+    def test_genuinely_above_one_still_rejected(self):
+        """u = 1.01 is a real error, not float noise. Must reject."""
+        with pytest.raises(ValueError):
+            Opinion(belief=0.0, disbelief=0.0, uncertainty=1.01)
+
+    def test_large_overshoot_rejected(self):
+        """Values well outside [0,1] must still be rejected."""
+        with pytest.raises(ValueError):
+            Opinion(belief=0.0, disbelief=0.0, uncertainty=1.001)
+
+    def test_trust_discount_vacuous_no_error(self):
+        """trust_discount(partial_trust, vacuous) must not raise.
+
+        This is the motivating case: u_result = b_t + d_t + u_t = 1.0
+        analytically, but IEEE 754 can produce 1.0 + epsilon.
+        """
+        from jsonld_ex.confidence_algebra import trust_discount
+
+        # The exact input that triggered the original failure
+        t1 = Opinion(belief=0.01384816048582176, disbelief=0.3226531225406439,
+                     uncertainty=1.0 - 0.01384816048582176 - 0.3226531225406439)
+        vacuous = Opinion(belief=0.0, disbelief=0.0, uncertainty=1.0)
+        result = trust_discount(t1, vacuous)
+
+        # Result must be valid and vacuous
+        assert result.belief < 1e-15
+        assert result.disbelief < 1e-15
+        assert abs(result.uncertainty - 1.0) < 1e-15
+        assert abs(result.belief + result.disbelief + result.uncertainty - 1.0) < 1e-9
