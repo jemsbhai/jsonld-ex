@@ -301,3 +301,103 @@ class MultinomialOpinion:
             self._uncertainty,
             tuple(self._base_rates[x] for x in self._domain),
         ))
+
+
+# ═══════════════════════════════════════════════════════════════════
+# COARSENING AND PROMOTION
+# ═══════════════════════════════════════════════════════════════════
+
+
+def coarsen(
+    opinion: MultinomialOpinion,
+    focus_state: str,
+) -> "Opinion":
+    """Coarsen a multinomial opinion to a binomial opinion.
+
+    Selects one state as the "focus" (positive) state and collapses
+    all other states into the complementary (negative) class.
+
+    Mapping:
+        belief    = b(focus_state)
+        disbelief = Σ b(x) for x ≠ focus_state
+        uncertainty = u  (unchanged)
+        base_rate = a(focus_state)
+
+    The projected probability is preserved:
+        P_binomial = b + a·u = b(focus) + a(focus)·u = P_multinomial(focus)
+
+    Args:
+        opinion: A MultinomialOpinion to coarsen.
+        focus_state: The state to treat as "positive" (True).
+
+    Returns:
+        A binomial ``Opinion`` from ``confidence_algebra``.
+
+    Raises:
+        ValueError: If focus_state is not in the opinion's domain.
+
+    References:
+        Jøsang (2016), §3.5.4 (Coarsening Example: From Ternary to Binary).
+    """
+    from jsonld_ex.confidence_algebra import Opinion
+
+    if focus_state not in opinion.domain:
+        raise ValueError(
+            f"focus_state {focus_state!r} not in domain {opinion.domain}"
+        )
+
+    belief = opinion.beliefs[focus_state]
+    disbelief = sum(
+        b for x, b in opinion.beliefs.items() if x != focus_state
+    )
+    uncertainty = opinion.uncertainty
+    base_rate = opinion.base_rates[focus_state]
+
+    return Opinion(
+        belief=belief,
+        disbelief=disbelief,
+        uncertainty=uncertainty,
+        base_rate=base_rate,
+    )
+
+
+def promote(
+    opinion: "Opinion",
+    true_state: str = "T",
+    false_state: str = "F",
+) -> MultinomialOpinion:
+    """Promote a binomial opinion to a MultinomialOpinion with k=2.
+
+    Mapping:
+        beliefs = {true_state: b, false_state: d}
+        uncertainty = u
+        base_rates = {true_state: a, false_state: 1-a}
+
+    The projected probability is preserved:
+        P_multinomial(true_state) = b + a·u = P_binomial
+
+    Args:
+        opinion: A binomial ``Opinion`` from ``confidence_algebra``.
+        true_state: Name for the positive state (default "T").
+        false_state: Name for the negative state (default "F").
+
+    Returns:
+        A MultinomialOpinion with two states.
+
+    Raises:
+        ValueError: If true_state == false_state.
+    """
+    if true_state == false_state:
+        raise ValueError(
+            f"true_state and false_state must be different, "
+            f"got {true_state!r} for both"
+        )
+
+    return MultinomialOpinion(
+        beliefs={true_state: opinion.belief, false_state: opinion.disbelief},
+        uncertainty=opinion.uncertainty,
+        base_rates={
+            true_state: opinion.base_rate,
+            false_state: 1.0 - opinion.base_rate,
+        },
+    )

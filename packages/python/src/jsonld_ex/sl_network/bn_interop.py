@@ -54,6 +54,14 @@ def _require_pgmpy() -> None:
             "pgmpy is required for Bayesian network interoperability. "
             "Install it with: pip install pgmpy"
         ) from None
+    except TypeError:
+        # pgmpy uses PEP 604 union types (`int | float`) internally,
+        # which fail on Python < 3.10.
+        raise ImportError(
+            "pgmpy requires Python >= 3.10 (uses PEP 604 type syntax). "
+            "Please upgrade Python or use a pgmpy version compatible "
+            "with your Python version."
+        ) from None
 
 
 def _get_pgmpy_bn_class() -> type:
@@ -64,7 +72,7 @@ def _get_pgmpy_bn_class() -> type:
     try:
         from pgmpy.models import DiscreteBayesianNetwork
         return DiscreteBayesianNetwork
-    except ImportError:
+    except (ImportError, TypeError):
         from pgmpy.models import BayesianNetwork
         return BayesianNetwork
 

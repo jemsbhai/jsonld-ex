@@ -23,14 +23,20 @@ from jsonld_ex.confidence_algebra import Opinion
 from jsonld_ex.sl_network.network import SLNetwork
 from jsonld_ex.sl_network.types import SLEdge, SLNode, MultiParentEdge
 
-# pgmpy is an optional dependency — guard import and skip if missing
-pgmpy = pytest.importorskip("pgmpy", reason="pgmpy not installed")
-
-# pgmpy >= 0.0.2 renamed BayesianNetwork to DiscreteBayesianNetwork
+# pgmpy is an optional dependency and requires Python >= 3.10
+# (uses PEP 604 `int | float` syntax internally).
+# Skip the entire module if pgmpy cannot be imported for any reason.
 try:
     from pgmpy.models import DiscreteBayesianNetwork as BN
 except ImportError:
-    from pgmpy.models import BayesianNetwork as BN
+    try:
+        from pgmpy.models import BayesianNetwork as BN
+    except (ImportError, TypeError):
+        pytest.skip("pgmpy not available", allow_module_level=True)
+except TypeError:
+    # pgmpy uses PEP 604 union types internally, which fail on Python < 3.10
+    pytest.skip("pgmpy requires Python >= 3.10", allow_module_level=True)
+
 from pgmpy.factors.discrete import TabularCPD
 
 

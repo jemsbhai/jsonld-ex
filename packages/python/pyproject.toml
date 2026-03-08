@@ -82,7 +82,7 @@ viz = [
     "networkx>=3.0",
 ]
 bn = [
-    "pgmpy>=0.0.2",
+    "pgmpy>=0.0.2; python_version>='3.10'",
 ]
 bench = [
     "rdflib>=7.0",

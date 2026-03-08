@@ -424,3 +424,229 @@ class TestMultinomialOpinionImmutability:
         )
         with pytest.raises((TypeError, AttributeError)):
             op.uncertainty = 0.9  # type: ignore
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Step 2: Coarsening and Promotion
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestCoarsenToBinomial:
+    """Test coarsening: MultinomialOpinion → binomial Opinion.
+
+    Coarsening selects one state as the "focus" (positive) state.
+    All other states collapse into the complementary (negative) class.
+
+    Given MultinomialOpinion with focus state x_f:
+        belief    = b(x_f)
+        disbelief = Σ b(x_i) for i ≠ f   (= 1 - u - b(x_f))
+        uncertainty = u  (unchanged)
+        base_rate = a(x_f)
+
+    References:
+        Jøsang (2016), §3.5.4 (Coarsening Example: From Ternary to Binary)
+    """
+
+    def test_coarsen_basic(self) -> None:
+        """Coarsening a ternary opinion to binary."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion, coarsen
+        from jsonld_ex.confidence_algebra import Opinion
+
+        mop = MultinomialOpinion(
+            beliefs={"x1": 0.3, "x2": 0.2, "x3": 0.1},
+            uncertainty=0.4,
+            base_rates={"x1": 0.5, "x2": 0.3, "x3": 0.2},
+        )
+        op = coarsen(mop, focus_state="x1")
+
+        assert isinstance(op, Opinion)
+        assert abs(op.belief - 0.3) < 1e-9
+        assert abs(op.disbelief - 0.3) < 1e-9  # 0.2 + 0.1
+        assert abs(op.uncertainty - 0.4) < 1e-9
+        assert abs(op.base_rate - 0.5) < 1e-9
+
+    def test_coarsen_preserves_bdu_sum(self) -> None:
+        """Coarsened opinion must satisfy b+d+u=1."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion, coarsen
+
+        mop = MultinomialOpinion(
+            beliefs={"a": 0.1, "b": 0.2, "c": 0.3, "d": 0.0},
+            uncertainty=0.4,
+            base_rates={"a": 0.25, "b": 0.25, "c": 0.25, "d": 0.25},
+        )
+        op = coarsen(mop, focus_state="c")
+        total = op.belief + op.disbelief + op.uncertainty
+        assert abs(total - 1.0) < 1e-9
+
+    def test_coarsen_preserves_projected_probability(self) -> None:
+        """P(x_f) in multinomial should equal P(ω) in coarsened binomial.
+
+        This is the key correctness requirement: coarsening must not
+        change the projected probability of the focus state.
+        """
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion, coarsen
+
+        mop = MultinomialOpinion(
+            beliefs={"x1": 0.3, "x2": 0.2, "x3": 0.1},
+            uncertainty=0.4,
+            base_rates={"x1": 0.5, "x2": 0.3, "x3": 0.2},
+        )
+        pp_multi = mop.projected_probability()["x1"]
+        op = coarsen(mop, focus_state="x1")
+        pp_bin = op.projected_probability()
+
+        assert abs(pp_multi - pp_bin) < 1e-9
+
+    def test_coarsen_each_state(self) -> None:
+        """Coarsening to each state should produce valid opinions."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion, coarsen
+
+        mop = MultinomialOpinion(
+            beliefs={"x1": 0.3, "x2": 0.2, "x3": 0.1},
+            uncertainty=0.4,
+            base_rates={"x1": 0.5, "x2": 0.3, "x3": 0.2},
+        )
+        for state in ["x1", "x2", "x3"]:
+            op = coarsen(mop, focus_state=state)
+            total = op.belief + op.disbelief + op.uncertainty
+            assert abs(total - 1.0) < 1e-9
+            assert op.belief == mop.beliefs[state]
+            assert abs(op.base_rate - mop.base_rates[state]) < 1e-9
+
+    def test_coarsen_vacuous(self) -> None:
+        """Coarsening a vacuous multinomial gives a vacuous binomial."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion, coarsen
+
+        mop = MultinomialOpinion(
+            beliefs={"x1": 0.0, "x2": 0.0, "x3": 0.0},
+            uncertainty=1.0,
+            base_rates={"x1": 0.5, "x2": 0.3, "x3": 0.2},
+        )
+        op = coarsen(mop, focus_state="x1")
+        assert abs(op.uncertainty - 1.0) < 1e-9
+        assert abs(op.belief) < 1e-9
+        assert abs(op.disbelief) < 1e-9
+
+    def test_coarsen_dogmatic(self) -> None:
+        """Coarsening a dogmatic multinomial gives a dogmatic binomial."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion, coarsen
+
+        mop = MultinomialOpinion(
+            beliefs={"x1": 0.5, "x2": 0.3, "x3": 0.2},
+            uncertainty=0.0,
+            base_rates={"x1": 0.5, "x2": 0.3, "x3": 0.2},
+        )
+        op = coarsen(mop, focus_state="x2")
+        assert abs(op.uncertainty) < 1e-9
+        assert abs(op.belief - 0.3) < 1e-9
+        assert abs(op.disbelief - 0.7) < 1e-9
+
+    def test_coarsen_invalid_state_raises(self) -> None:
+        """Coarsening on a state not in the domain should raise."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion, coarsen
+
+        mop = MultinomialOpinion(
+            beliefs={"x1": 0.3, "x2": 0.3},
+            uncertainty=0.4,
+            base_rates={"x1": 0.5, "x2": 0.5},
+        )
+        with pytest.raises(ValueError, match="not in domain"):
+            coarsen(mop, focus_state="x99")
+
+
+class TestPromoteFromBinomial:
+    """Test promotion: binomial Opinion → MultinomialOpinion.
+
+    Converts an Opinion(b, d, u, a) to a MultinomialOpinion with k=2
+    states named by the caller (default: "T", "F").
+
+    Mapping:
+        beliefs = {true_state: b, false_state: d}
+        uncertainty = u
+        base_rates = {true_state: a, false_state: 1-a}
+    """
+
+    def test_promote_basic(self) -> None:
+        """Promote a binomial opinion to MultinomialOpinion."""
+        from jsonld_ex.multinomial_algebra import promote
+        from jsonld_ex.confidence_algebra import Opinion
+
+        op = Opinion(0.6, 0.2, 0.2, 0.5)
+        mop = promote(op)
+
+        assert mop.cardinality == 2
+        assert abs(mop.beliefs["T"] - 0.6) < 1e-9
+        assert abs(mop.beliefs["F"] - 0.2) < 1e-9
+        assert abs(mop.uncertainty - 0.2) < 1e-9
+        assert abs(mop.base_rates["T"] - 0.5) < 1e-9
+        assert abs(mop.base_rates["F"] - 0.5) < 1e-9
+
+    def test_promote_custom_state_names(self) -> None:
+        """Promote with custom state names."""
+        from jsonld_ex.multinomial_algebra import promote
+        from jsonld_ex.confidence_algebra import Opinion
+
+        op = Opinion(0.7, 0.1, 0.2, 0.6)
+        mop = promote(op, true_state="positive", false_state="negative")
+
+        assert mop.domain == ("negative", "positive")
+        assert abs(mop.beliefs["positive"] - 0.7) < 1e-9
+        assert abs(mop.beliefs["negative"] - 0.1) < 1e-9
+        assert abs(mop.base_rates["positive"] - 0.6) < 1e-9
+        assert abs(mop.base_rates["negative"] - 0.4) < 1e-9
+
+    def test_promote_preserves_projected_probability(self) -> None:
+        """Projected probability must be preserved through promotion."""
+        from jsonld_ex.multinomial_algebra import promote
+        from jsonld_ex.confidence_algebra import Opinion
+
+        op = Opinion(0.6, 0.2, 0.2, 0.7)
+        pp_bin = op.projected_probability()
+
+        mop = promote(op)
+        pp_multi = mop.projected_probability()
+
+        assert abs(pp_multi["T"] - pp_bin) < 1e-9
+        assert abs(pp_multi["F"] - (1.0 - pp_bin)) < 1e-9
+
+    def test_round_trip_promote_coarsen(self) -> None:
+        """Promote then coarsen should return the original opinion."""
+        from jsonld_ex.multinomial_algebra import promote, coarsen
+        from jsonld_ex.confidence_algebra import Opinion
+
+        op_orig = Opinion(0.5, 0.3, 0.2, 0.6)
+        mop = promote(op_orig)
+        op_rt = coarsen(mop, focus_state="T")
+
+        assert abs(op_rt.belief - op_orig.belief) < 1e-9
+        assert abs(op_rt.disbelief - op_orig.disbelief) < 1e-9
+        assert abs(op_rt.uncertainty - op_orig.uncertainty) < 1e-9
+        assert abs(op_rt.base_rate - op_orig.base_rate) < 1e-9
+
+    def test_round_trip_coarsen_promote(self) -> None:
+        """Coarsen then promote should give a k=2 MultinomialOpinion
+        that matches the coarsened opinion's values."""
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion, promote, coarsen,
+        )
+
+        mop_orig = MultinomialOpinion(
+            beliefs={"x1": 0.3, "x2": 0.2, "x3": 0.1},
+            uncertainty=0.4,
+            base_rates={"x1": 0.5, "x2": 0.3, "x3": 0.2},
+        )
+        op_bin = coarsen(mop_orig, focus_state="x1")
+        mop_rt = promote(op_bin, true_state="x1", false_state="not_x1")
+
+        assert abs(mop_rt.beliefs["x1"] - op_bin.belief) < 1e-9
+        assert abs(mop_rt.beliefs["not_x1"] - op_bin.disbelief) < 1e-9
+        assert abs(mop_rt.uncertainty - op_bin.uncertainty) < 1e-9
+
+    def test_promote_same_state_names_raises(self) -> None:
+        """true_state and false_state must be different."""
+        from jsonld_ex.multinomial_algebra import promote
+        from jsonld_ex.confidence_algebra import Opinion
+
+        op = Opinion(0.5, 0.3, 0.2, 0.5)
+        with pytest.raises(ValueError, match="must be different"):
+            promote(op, true_state="X", false_state="X")
