@@ -75,6 +75,16 @@ from jsonld_ex.sl_network.jsonld_bridge import (
     network_to_jsonld_graph,
 )
 
+# Tier 1: Bayesian Network interop (optional: pip install jsonld-ex[bn])
+# pgmpy is optional — bn_interop.py has no module-level pgmpy imports,
+# so this import is safe even without pgmpy installed.  The functions
+# themselves call _require_pgmpy() and raise ImportError with a clear
+# message if pgmpy is missing at call time.
+from jsonld_ex.sl_network.bn_interop import (
+    from_bayesian_network,
+    to_bayesian_network,
+)
+
 __all__ = [
     # Types
     "NodeType",
@@ -113,4 +123,7 @@ __all__ = [
     # Tier 3: JSON-LD bridge
     "network_from_jsonld_graph",
     "network_to_jsonld_graph",
+    # Tier 1: Bayesian Network interop
+    "from_bayesian_network",
+    "to_bayesian_network",
 ]

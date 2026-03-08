@@ -81,16 +81,19 @@ mcp = [
 viz = [
     "networkx>=3.0",
 ]
+bn = [
+    "pgmpy>=0.0.2",
+]
 bench = [
     "rdflib>=7.0",
     "pyshacl>=0.26",
 ]
 # Convenience bundles
 all = [
-    "jsonld-ex[fhir,gdpr,w3c,ml,iot,mcp,viz]",
+    "jsonld-ex[fhir,gdpr,w3c,ml,iot,mcp,viz,bn]",
 ]
 dev = [
-    "jsonld-ex[all,bench]",
+    "jsonld-ex[all,bench,bn]",
     "pytest>=7.0",
     "pytest-asyncio>=0.23",
     "pytest-benchmark>=4.0",
