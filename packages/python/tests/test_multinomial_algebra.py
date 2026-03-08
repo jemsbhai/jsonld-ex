@@ -397,6 +397,50 @@ class TestMultinomialOpinionFromEvidence:
                 evidence={"x1": -5, "x2": 10},
             )
 
+    def test_k2_matches_binomial_from_evidence(self) -> None:
+        """from_evidence with k=2 must match binomial Opinion.from_evidence.
+
+        For k=2, the dynamic prior weight W = (2 + 4Σr) / (1 + 2Σr) = 2
+        always, so multinomial from_evidence reduces exactly to the
+        binomial case.  This is a critical consistency requirement.
+        """
+        from jsonld_ex.confidence_algebra import Opinion
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        pos, neg = 30, 70
+        bin_op = Opinion.from_evidence(positive=pos, negative=neg)
+        multi_op = MultinomialOpinion.from_evidence(
+            evidence={"T": pos, "F": neg},
+            base_rates={"T": 0.5, "F": 0.5},
+        )
+
+        assert abs(multi_op.beliefs["T"] - bin_op.belief) < 1e-9
+        assert abs(multi_op.beliefs["F"] - bin_op.disbelief) < 1e-9
+        assert abs(multi_op.uncertainty - bin_op.uncertainty) < 1e-9
+
+    def test_dynamic_w_equals_two_for_k2(self) -> None:
+        """For k=2, dynamic W = (2+4Σr)/(1+2Σr) = 2 for all Σr.
+
+        This is a mathematical identity: 2(1+2Σr)/(1+2Σr) = 2.
+        Verifying it ensures multinomial and binomial are consistent.
+        """
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+        from jsonld_ex.confidence_algebra import Opinion
+
+        for total_evidence in [0, 1, 10, 100, 10000]:
+            r = total_evidence // 2
+            s = total_evidence - r
+
+            bin_op = Opinion.from_evidence(positive=r, negative=s)
+            multi_op = MultinomialOpinion.from_evidence(
+                evidence={"T": r, "F": s},
+                base_rates={"T": 0.5, "F": 0.5},
+            )
+            assert abs(multi_op.uncertainty - bin_op.uncertainty) < 1e-9, (
+                f"Mismatch at total_evidence={total_evidence}: "
+                f"multi_u={multi_op.uncertainty}, bin_u={bin_op.uncertainty}"
+            )
+
 
 class TestMultinomialOpinionImmutability:
     """MultinomialOpinion should be immutable (frozen)."""
@@ -650,3 +694,725 @@ class TestPromoteFromBinomial:
         op = Opinion(0.5, 0.3, 0.2, 0.5)
         with pytest.raises(ValueError, match="must be different"):
             promote(op, true_state="X", false_state="X")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Step 3: Multinomial cumulative fusion
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestMultinomialCumulativeFuse:
+    """Test multinomial cumulative belief fusion.
+
+    Cumulative fusion combines independent evidence additively,
+    reducing uncertainty.  The formula generalizes the binomial
+    case to k-ary domains.
+
+    For two opinions with at least one non-dogmatic (u > 0):
+        κ = u_A + u_B − u_A · u_B
+        b_fused(x) = (b_A(x) · u_B + b_B(x) · u_A) / κ
+        u_fused = (u_A · u_B) / κ
+
+    References:
+        Jøsang (2016), §12.3 (Cumulative Fusion).
+    """
+
+    def test_two_ternary_opinions(self) -> None:
+        """Fuse two ternary opinions."""
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion,
+            multinomial_cumulative_fuse,
+        )
+
+        op_a = MultinomialOpinion(
+            beliefs={"x1": 0.3, "x2": 0.2, "x3": 0.1},
+            uncertainty=0.4,
+            base_rates={"x1": 1/3, "x2": 1/3, "x3": 1/3},
+        )
+        op_b = MultinomialOpinion(
+            beliefs={"x1": 0.1, "x2": 0.4, "x3": 0.2},
+            uncertainty=0.3,
+            base_rates={"x1": 1/3, "x2": 1/3, "x3": 1/3},
+        )
+        result = multinomial_cumulative_fuse(op_a, op_b)
+
+        # b+u=1 constraint must hold
+        total = sum(result.beliefs.values()) + result.uncertainty
+        assert abs(total - 1.0) < 1e-9
+
+        # Uncertainty must decrease
+        assert result.uncertainty < op_a.uncertainty
+        assert result.uncertainty < op_b.uncertainty
+
+    def test_uncertainty_is_product_over_kappa(self) -> None:
+        """u_fused = (u_A · u_B) / κ where κ = u_A + u_B - u_A*u_B."""
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion,
+            multinomial_cumulative_fuse,
+        )
+
+        op_a = MultinomialOpinion(
+            beliefs={"x1": 0.3, "x2": 0.3},
+            uncertainty=0.4,
+            base_rates={"x1": 0.5, "x2": 0.5},
+        )
+        op_b = MultinomialOpinion(
+            beliefs={"x1": 0.2, "x2": 0.5},
+            uncertainty=0.3,
+            base_rates={"x1": 0.5, "x2": 0.5},
+        )
+        result = multinomial_cumulative_fuse(op_a, op_b)
+
+        kappa = 0.4 + 0.3 - 0.4 * 0.3
+        expected_u = (0.4 * 0.3) / kappa
+        assert abs(result.uncertainty - expected_u) < 1e-9
+
+    def test_commutativity(self) -> None:
+        """A ⊕ B = B ⊕ A."""
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion,
+            multinomial_cumulative_fuse,
+        )
+
+        op_a = MultinomialOpinion(
+            beliefs={"x1": 0.3, "x2": 0.2, "x3": 0.1},
+            uncertainty=0.4,
+            base_rates={"x1": 0.5, "x2": 0.3, "x3": 0.2},
+        )
+        op_b = MultinomialOpinion(
+            beliefs={"x1": 0.1, "x2": 0.4, "x3": 0.2},
+            uncertainty=0.3,
+            base_rates={"x1": 0.5, "x2": 0.3, "x3": 0.2},
+        )
+        ab = multinomial_cumulative_fuse(op_a, op_b)
+        ba = multinomial_cumulative_fuse(op_b, op_a)
+
+        for x in ["x1", "x2", "x3"]:
+            assert abs(ab.beliefs[x] - ba.beliefs[x]) < 1e-9
+        assert abs(ab.uncertainty - ba.uncertainty) < 1e-9
+
+    def test_identity_with_vacuous(self) -> None:
+        """A ⊕ vacuous = A (vacuous is the identity element)."""
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion,
+            multinomial_cumulative_fuse,
+        )
+
+        op = MultinomialOpinion(
+            beliefs={"x1": 0.3, "x2": 0.2, "x3": 0.1},
+            uncertainty=0.4,
+            base_rates={"x1": 0.5, "x2": 0.3, "x3": 0.2},
+        )
+        vacuous = MultinomialOpinion(
+            beliefs={"x1": 0.0, "x2": 0.0, "x3": 0.0},
+            uncertainty=1.0,
+            base_rates={"x1": 0.5, "x2": 0.3, "x3": 0.2},
+        )
+        result = multinomial_cumulative_fuse(op, vacuous)
+
+        for x in ["x1", "x2", "x3"]:
+            assert abs(result.beliefs[x] - op.beliefs[x]) < 1e-9
+        assert abs(result.uncertainty - op.uncertainty) < 1e-9
+
+    def test_dogmatic_both(self) -> None:
+        """When both are dogmatic (u=0), result is average of beliefs."""
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion,
+            multinomial_cumulative_fuse,
+        )
+
+        op_a = MultinomialOpinion(
+            beliefs={"x1": 0.6, "x2": 0.3, "x3": 0.1},
+            uncertainty=0.0,
+            base_rates={"x1": 1/3, "x2": 1/3, "x3": 1/3},
+        )
+        op_b = MultinomialOpinion(
+            beliefs={"x1": 0.2, "x2": 0.5, "x3": 0.3},
+            uncertainty=0.0,
+            base_rates={"x1": 1/3, "x2": 1/3, "x3": 1/3},
+        )
+        result = multinomial_cumulative_fuse(op_a, op_b)
+
+        assert abs(result.uncertainty) < 1e-9
+        assert abs(result.beliefs["x1"] - 0.4) < 1e-9  # (0.6+0.2)/2
+        assert abs(result.beliefs["x2"] - 0.4) < 1e-9  # (0.3+0.5)/2
+        assert abs(result.beliefs["x3"] - 0.2) < 1e-9  # (0.1+0.3)/2
+
+    def test_three_opinions(self) -> None:
+        """Fusing three opinions should work via left-fold."""
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion,
+            multinomial_cumulative_fuse,
+        )
+
+        ops = [
+            MultinomialOpinion(
+                beliefs={"a": 0.2, "b": 0.3},
+                uncertainty=0.5,
+                base_rates={"a": 0.5, "b": 0.5},
+            ),
+            MultinomialOpinion(
+                beliefs={"a": 0.4, "b": 0.1},
+                uncertainty=0.5,
+                base_rates={"a": 0.5, "b": 0.5},
+            ),
+            MultinomialOpinion(
+                beliefs={"a": 0.1, "b": 0.4},
+                uncertainty=0.5,
+                base_rates={"a": 0.5, "b": 0.5},
+            ),
+        ]
+        result = multinomial_cumulative_fuse(*ops)
+
+        total = sum(result.beliefs.values()) + result.uncertainty
+        assert abs(total - 1.0) < 1e-9
+        # Uncertainty should be much less than any single input
+        assert result.uncertainty < 0.5
+
+    def test_single_opinion_returned_unchanged(self) -> None:
+        """Fusing a single opinion returns it unchanged."""
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion,
+            multinomial_cumulative_fuse,
+        )
+
+        op = MultinomialOpinion(
+            beliefs={"x1": 0.3, "x2": 0.3},
+            uncertainty=0.4,
+            base_rates={"x1": 0.5, "x2": 0.5},
+        )
+        result = multinomial_cumulative_fuse(op)
+        assert result == op
+
+    def test_no_opinions_raises(self) -> None:
+        """Fusing zero opinions should raise."""
+        from jsonld_ex.multinomial_algebra import multinomial_cumulative_fuse
+
+        with pytest.raises(ValueError):
+            multinomial_cumulative_fuse()
+
+    def test_domain_mismatch_raises(self) -> None:
+        """Fusing opinions with different domains should raise."""
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion,
+            multinomial_cumulative_fuse,
+        )
+
+        op_a = MultinomialOpinion(
+            beliefs={"x1": 0.3, "x2": 0.3},
+            uncertainty=0.4,
+            base_rates={"x1": 0.5, "x2": 0.5},
+        )
+        op_b = MultinomialOpinion(
+            beliefs={"a": 0.3, "b": 0.3},
+            uncertainty=0.4,
+            base_rates={"a": 0.5, "b": 0.5},
+        )
+        with pytest.raises(ValueError, match="domain"):
+            multinomial_cumulative_fuse(op_a, op_b)
+
+    def test_consistency_with_binomial_fuse(self) -> None:
+        """Multinomial fusion of k=2 should match binomial cumulative_fuse.
+
+        This is the critical consistency test: when applied to promoted
+        binomial opinions, multinomial fusion must give the same result
+        as the existing binomial cumulative_fuse().
+        """
+        from jsonld_ex.confidence_algebra import Opinion, cumulative_fuse
+        from jsonld_ex.multinomial_algebra import (
+            promote,
+            coarsen,
+            multinomial_cumulative_fuse,
+        )
+
+        op_a = Opinion(0.5, 0.2, 0.3, 0.6)
+        op_b = Opinion(0.3, 0.4, 0.3, 0.6)
+
+        # Binomial fusion
+        bin_result = cumulative_fuse(op_a, op_b)
+
+        # Multinomial fusion via promote → fuse → coarsen
+        mop_a = promote(op_a)
+        mop_b = promote(op_b)
+        multi_result = multinomial_cumulative_fuse(mop_a, mop_b)
+        coarsened = coarsen(multi_result, focus_state="T")
+
+        assert abs(coarsened.belief - bin_result.belief) < 1e-9
+        assert abs(coarsened.disbelief - bin_result.disbelief) < 1e-9
+        assert abs(coarsened.uncertainty - bin_result.uncertainty) < 1e-9
+        assert abs(coarsened.base_rate - bin_result.base_rate) < 1e-9
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Step 4: Multinomial deduction
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestMultinomialDeduce:
+    """Test multinomial deduction operator.
+
+    Generalizes binomial deduce() to k-ary parent and child domains.
+
+    Given parent opinion ω_X over domain X = {x_1, ..., x_k_X}
+    and conditional opinions ω_{Y|x_i} for each x_i, each over
+    domain Y = {y_1, ..., y_k_Y}:
+
+    For each y_j:
+        b_Y(y_j) = Σ_i b_X(x_i) · b_{Y|x_i}(y_j)
+                 + u_X · Σ_i a_X(x_i) · b_{Y|x_i}(y_j)
+
+        u_Y = Σ_i b_X(x_i) · u_{Y|x_i}
+            + u_X · Σ_i a_X(x_i) · u_{Y|x_i}
+
+        a_Y(y_j) = Σ_i a_X(x_i) · P_{Y|x_i}(y_j)
+
+    Reduces to binomial deduce() when k_X = k_Y = 2.
+
+    References:
+        Jøsang (2016), Ch. 9 (Multinomial Deduction), §12.6 (Binomial).
+    """
+
+    def test_basic_ternary_parent_binary_child(self) -> None:
+        """Ternary parent, binary child: produces a valid result."""
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion,
+            multinomial_deduce,
+        )
+
+        parent = MultinomialOpinion(
+            beliefs={"x1": 0.4, "x2": 0.2, "x3": 0.1},
+            uncertainty=0.3,
+            base_rates={"x1": 1/3, "x2": 1/3, "x3": 1/3},
+        )
+        conditionals = {
+            "x1": MultinomialOpinion(
+                beliefs={"y1": 0.7, "y2": 0.1},
+                uncertainty=0.2,
+                base_rates={"y1": 0.5, "y2": 0.5},
+            ),
+            "x2": MultinomialOpinion(
+                beliefs={"y1": 0.2, "y2": 0.5},
+                uncertainty=0.3,
+                base_rates={"y1": 0.5, "y2": 0.5},
+            ),
+            "x3": MultinomialOpinion(
+                beliefs={"y1": 0.1, "y2": 0.3},
+                uncertainty=0.6,
+                base_rates={"y1": 0.5, "y2": 0.5},
+            ),
+        }
+        result = multinomial_deduce(parent, conditionals)
+
+        # Must have the child domain
+        assert result.domain == ("y1", "y2")
+
+        # b+u=1 constraint
+        total = sum(result.beliefs.values()) + result.uncertainty
+        assert abs(total - 1.0) < 1e-9
+
+    def test_additivity_always_holds(self) -> None:
+        """Prove: Σ b_Y(y_j) + u_Y = 1 for arbitrary inputs."""
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion,
+            multinomial_deduce,
+        )
+
+        parent = MultinomialOpinion(
+            beliefs={"a": 0.15, "b": 0.25, "c": 0.35},
+            uncertainty=0.25,
+            base_rates={"a": 0.2, "b": 0.3, "c": 0.5},
+        )
+        conditionals = {
+            "a": MultinomialOpinion(
+                beliefs={"y1": 0.5, "y2": 0.3, "y3": 0.0},
+                uncertainty=0.2,
+                base_rates={"y1": 0.4, "y2": 0.4, "y3": 0.2},
+            ),
+            "b": MultinomialOpinion(
+                beliefs={"y1": 0.1, "y2": 0.1, "y3": 0.4},
+                uncertainty=0.4,
+                base_rates={"y1": 0.4, "y2": 0.4, "y3": 0.2},
+            ),
+            "c": MultinomialOpinion(
+                beliefs={"y1": 0.2, "y2": 0.6, "y3": 0.1},
+                uncertainty=0.1,
+                base_rates={"y1": 0.4, "y2": 0.4, "y3": 0.2},
+            ),
+        }
+        result = multinomial_deduce(parent, conditionals)
+
+        total = sum(result.beliefs.values()) + result.uncertainty
+        assert abs(total - 1.0) < 1e-9
+
+    def test_base_rates_sum_to_one(self) -> None:
+        """Deduced base rates must sum to 1."""
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion,
+            multinomial_deduce,
+        )
+
+        parent = MultinomialOpinion(
+            beliefs={"x1": 0.4, "x2": 0.2},
+            uncertainty=0.4,
+            base_rates={"x1": 0.6, "x2": 0.4},
+        )
+        conditionals = {
+            "x1": MultinomialOpinion(
+                beliefs={"y1": 0.7, "y2": 0.1},
+                uncertainty=0.2,
+                base_rates={"y1": 0.5, "y2": 0.5},
+            ),
+            "x2": MultinomialOpinion(
+                beliefs={"y1": 0.2, "y2": 0.5},
+                uncertainty=0.3,
+                base_rates={"y1": 0.5, "y2": 0.5},
+            ),
+        }
+        result = multinomial_deduce(parent, conditionals)
+
+        assert abs(sum(result.base_rates.values()) - 1.0) < 1e-9
+
+    def test_dogmatic_parent_dogmatic_conditionals(self) -> None:
+        """When all opinions are dogmatic, reduces to law of total probability.
+
+        P_Y(y_j) = Σ_i P_X(x_i) · P_{Y|x_i}(y_j)
+        with u_Y = 0.
+        """
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion,
+            multinomial_deduce,
+        )
+
+        parent = MultinomialOpinion(
+            beliefs={"x1": 0.6, "x2": 0.4},
+            uncertainty=0.0,
+            base_rates={"x1": 0.5, "x2": 0.5},
+        )
+        conditionals = {
+            "x1": MultinomialOpinion(
+                beliefs={"y1": 0.9, "y2": 0.1},
+                uncertainty=0.0,
+                base_rates={"y1": 0.5, "y2": 0.5},
+            ),
+            "x2": MultinomialOpinion(
+                beliefs={"y1": 0.2, "y2": 0.8},
+                uncertainty=0.0,
+                base_rates={"y1": 0.5, "y2": 0.5},
+            ),
+        }
+        result = multinomial_deduce(parent, conditionals)
+
+        # u_Y should be 0
+        assert abs(result.uncertainty) < 1e-9
+
+        # b_Y(y1) = 0.6*0.9 + 0.4*0.2 = 0.62
+        assert abs(result.beliefs["y1"] - 0.62) < 1e-9
+        # b_Y(y2) = 0.6*0.1 + 0.4*0.8 = 0.38
+        assert abs(result.beliefs["y2"] - 0.38) < 1e-9
+
+    def test_vacuous_parent_gives_base_rate_weighted_result(self) -> None:
+        """With vacuous parent (u=1), result is base-rate-weighted conditionals."""
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion,
+            multinomial_deduce,
+        )
+
+        parent = MultinomialOpinion(
+            beliefs={"x1": 0.0, "x2": 0.0},
+            uncertainty=1.0,
+            base_rates={"x1": 0.7, "x2": 0.3},
+        )
+        cond_x1 = MultinomialOpinion(
+            beliefs={"y1": 0.8, "y2": 0.0},
+            uncertainty=0.2,
+            base_rates={"y1": 0.5, "y2": 0.5},
+        )
+        cond_x2 = MultinomialOpinion(
+            beliefs={"y1": 0.1, "y2": 0.6},
+            uncertainty=0.3,
+            base_rates={"y1": 0.5, "y2": 0.5},
+        )
+        result = multinomial_deduce(parent, {"x1": cond_x1, "x2": cond_x2})
+
+        # b_Y(y1) = 0 + 1.0 * (0.7*0.8 + 0.3*0.1) = 0.59
+        assert abs(result.beliefs["y1"] - 0.59) < 1e-9
+        # u_Y = 0 + 1.0 * (0.7*0.2 + 0.3*0.3) = 0.23
+        assert abs(result.uncertainty - 0.23) < 1e-9
+
+    def test_uncertainty_propagation(self) -> None:
+        """Uncertainty from both parent and conditionals propagates to child."""
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion,
+            multinomial_deduce,
+        )
+
+        # Moderate uncertainty parent
+        parent = MultinomialOpinion(
+            beliefs={"x1": 0.3, "x2": 0.3},
+            uncertainty=0.4,
+            base_rates={"x1": 0.5, "x2": 0.5},
+        )
+        # Moderate uncertainty conditionals
+        conditionals = {
+            "x1": MultinomialOpinion(
+                beliefs={"y1": 0.4, "y2": 0.2},
+                uncertainty=0.4,
+                base_rates={"y1": 0.5, "y2": 0.5},
+            ),
+            "x2": MultinomialOpinion(
+                beliefs={"y1": 0.2, "y2": 0.4},
+                uncertainty=0.4,
+                base_rates={"y1": 0.5, "y2": 0.5},
+            ),
+        }
+        result = multinomial_deduce(parent, conditionals)
+
+        # u_Y = 0.3*0.4 + 0.3*0.4 + 0.4*(0.5*0.4 + 0.5*0.4) = 0.24 + 0.16 = 0.40
+        assert abs(result.uncertainty - 0.40) < 1e-9
+
+    def test_consistency_with_binomial_deduce(self) -> None:
+        """Multinomial deduce on promoted binomial opinions must match
+        the existing binomial deduce().
+
+        This is the critical backward-compatibility test.
+        """
+        from jsonld_ex.confidence_algebra import Opinion, deduce
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion,
+            multinomial_deduce,
+            promote,
+            coarsen,
+        )
+
+        op_x = Opinion(0.5, 0.3, 0.2, 0.6)
+        op_y_given_x = Opinion(0.8, 0.1, 0.1, 0.5)
+        op_y_given_not_x = Opinion(0.2, 0.6, 0.2, 0.5)
+
+        # Binomial deduce
+        bin_result = deduce(op_x, op_y_given_x, op_y_given_not_x)
+
+        # Multinomial deduce via promote
+        m_parent = promote(op_x, true_state="x", false_state="not_x")
+        m_conditionals = {
+            "x": promote(op_y_given_x),
+            "not_x": promote(op_y_given_not_x),
+        }
+        m_result = multinomial_deduce(m_parent, m_conditionals)
+        coarsened = coarsen(m_result, focus_state="T")
+
+        assert abs(coarsened.belief - bin_result.belief) < 1e-9
+        assert abs(coarsened.disbelief - bin_result.disbelief) < 1e-9
+        assert abs(coarsened.uncertainty - bin_result.uncertainty) < 1e-9
+        assert abs(coarsened.base_rate - bin_result.base_rate) < 1e-9
+
+    def test_missing_conditional_raises(self) -> None:
+        """Conditionals must cover all parent states."""
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion,
+            multinomial_deduce,
+        )
+
+        parent = MultinomialOpinion(
+            beliefs={"x1": 0.4, "x2": 0.2, "x3": 0.1},
+            uncertainty=0.3,
+            base_rates={"x1": 1/3, "x2": 1/3, "x3": 1/3},
+        )
+        # Missing x3 conditional
+        conditionals = {
+            "x1": MultinomialOpinion(
+                beliefs={"y1": 0.5, "y2": 0.3}, uncertainty=0.2,
+                base_rates={"y1": 0.5, "y2": 0.5},
+            ),
+            "x2": MultinomialOpinion(
+                beliefs={"y1": 0.3, "y2": 0.4}, uncertainty=0.3,
+                base_rates={"y1": 0.5, "y2": 0.5},
+            ),
+        }
+        with pytest.raises(ValueError, match="conditional"):
+            multinomial_deduce(parent, conditionals)
+
+    def test_child_domain_mismatch_raises(self) -> None:
+        """All conditionals must share the same child domain."""
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion,
+            multinomial_deduce,
+        )
+
+        parent = MultinomialOpinion(
+            beliefs={"x1": 0.5, "x2": 0.2},
+            uncertainty=0.3,
+            base_rates={"x1": 0.5, "x2": 0.5},
+        )
+        conditionals = {
+            "x1": MultinomialOpinion(
+                beliefs={"y1": 0.5, "y2": 0.3}, uncertainty=0.2,
+                base_rates={"y1": 0.5, "y2": 0.5},
+            ),
+            "x2": MultinomialOpinion(
+                beliefs={"z1": 0.3, "z2": 0.4}, uncertainty=0.3,
+                base_rates={"z1": 0.5, "z2": 0.5},
+            ),
+        }
+        with pytest.raises(ValueError, match="domain"):
+            multinomial_deduce(parent, conditionals)
+
+    def test_component_wise_ltp_holds(self) -> None:
+        """Component-wise LTP holds exactly for beliefs and uncertainty.
+
+        For each child state y_j:
+            b_Y(y_j) = Σ_i P_X(x_i) · b_{Y|x_i}(y_j)
+            u_Y      = Σ_i P_X(x_i) · u_{Y|x_i}
+
+        where P_X(x_i) = b_X(x_i) + a_X(x_i) · u_X.
+
+        This is exact, not an approximation.
+        """
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion,
+            multinomial_deduce,
+        )
+
+        parent = MultinomialOpinion(
+            beliefs={"x1": 0.3, "x2": 0.2, "x3": 0.1},
+            uncertainty=0.4,
+            base_rates={"x1": 0.5, "x2": 0.3, "x3": 0.2},
+        )
+        conditionals = {
+            "x1": MultinomialOpinion(
+                beliefs={"y1": 0.7, "y2": 0.1},
+                uncertainty=0.2,
+                base_rates={"y1": 0.6, "y2": 0.4},
+            ),
+            "x2": MultinomialOpinion(
+                beliefs={"y1": 0.2, "y2": 0.5},
+                uncertainty=0.3,
+                base_rates={"y1": 0.6, "y2": 0.4},
+            ),
+            "x3": MultinomialOpinion(
+                beliefs={"y1": 0.1, "y2": 0.3},
+                uncertainty=0.6,
+                base_rates={"y1": 0.6, "y2": 0.4},
+            ),
+        }
+        result = multinomial_deduce(parent, conditionals)
+
+        pp_parent = parent.projected_probability()
+
+        # Belief component-wise LTP
+        for y in ["y1", "y2"]:
+            expected_b = sum(
+                pp_parent[x] * conditionals[x].beliefs[y]
+                for x in ["x1", "x2", "x3"]
+            )
+            assert abs(result.beliefs[y] - expected_b) < 1e-9, (
+                f"b_Y({y}): expected={expected_b}, got={result.beliefs[y]}"
+            )
+
+        # Uncertainty component-wise LTP
+        expected_u = sum(
+            pp_parent[x] * conditionals[x].uncertainty
+            for x in ["x1", "x2", "x3"]
+        )
+        assert abs(result.uncertainty - expected_u) < 1e-9
+
+    def test_projected_probability_ltp_does_not_hold_in_general(self) -> None:
+        """Document: projected probability LTP does NOT hold in general.
+
+        P_Y(y_j) ≠ Σ_i P_X(x_i) · P_{Y|x_i}(y_j)  in general.
+
+        The discrepancy arises because P_Y(y) = b_Y(y) + a_Y(y)·u_Y
+        mixes two different weighting schemes: a_Y uses parent base
+        rates a_X(x_i), while u_Y uses projected probabilities P_X(x_i).
+        The product a_Y·u_Y is therefore not a simple weighted sum.
+
+        This is consistent with binomial deduce() which documents
+        the same limitation (see confidence_algebra.py).
+
+        The LTP DOES hold in the dogmatic limit (u=0 for all opinions)
+        because the base rate weighting becomes irrelevant.
+        """
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion,
+            multinomial_deduce,
+        )
+
+        parent = MultinomialOpinion(
+            beliefs={"x1": 0.3, "x2": 0.2, "x3": 0.1},
+            uncertainty=0.4,
+            base_rates={"x1": 0.5, "x2": 0.3, "x3": 0.2},
+        )
+        conditionals = {
+            "x1": MultinomialOpinion(
+                beliefs={"y1": 0.7, "y2": 0.1},
+                uncertainty=0.2,
+                base_rates={"y1": 0.6, "y2": 0.4},
+            ),
+            "x2": MultinomialOpinion(
+                beliefs={"y1": 0.2, "y2": 0.5},
+                uncertainty=0.3,
+                base_rates={"y1": 0.6, "y2": 0.4},
+            ),
+            "x3": MultinomialOpinion(
+                beliefs={"y1": 0.1, "y2": 0.3},
+                uncertainty=0.6,
+                base_rates={"y1": 0.6, "y2": 0.4},
+            ),
+        }
+        result = multinomial_deduce(parent, conditionals)
+
+        pp_parent = parent.projected_probability()
+        pp_result = result.projected_probability()
+
+        # Compute what LTP would predict
+        for y in ["y1", "y2"]:
+            ltp = sum(
+                pp_parent[x] * conditionals[x].projected_probability()[y]
+                for x in ["x1", "x2", "x3"]
+            )
+            actual = pp_result[y]
+            # They should NOT be equal (with non-trivial uncertainty)
+            # but should be close — the gap is the documented discrepancy
+            assert abs(actual - ltp) > 1e-6, (
+                f"Expected discrepancy for P_Y({y}) but got exact match: "
+                f"LTP={ltp}, actual={actual}"
+            )
+
+    def test_projected_probability_ltp_holds_in_dogmatic_limit(self) -> None:
+        """In the dogmatic limit (all u=0), projected probability LTP holds exactly."""
+        from jsonld_ex.multinomial_algebra import (
+            MultinomialOpinion,
+            multinomial_deduce,
+        )
+
+        parent = MultinomialOpinion(
+            beliefs={"x1": 0.6, "x2": 0.3, "x3": 0.1},
+            uncertainty=0.0,
+            base_rates={"x1": 1/3, "x2": 1/3, "x3": 1/3},
+        )
+        conditionals = {
+            "x1": MultinomialOpinion(
+                beliefs={"y1": 0.8, "y2": 0.2}, uncertainty=0.0,
+                base_rates={"y1": 0.5, "y2": 0.5},
+            ),
+            "x2": MultinomialOpinion(
+                beliefs={"y1": 0.3, "y2": 0.7}, uncertainty=0.0,
+                base_rates={"y1": 0.5, "y2": 0.5},
+            ),
+            "x3": MultinomialOpinion(
+                beliefs={"y1": 0.1, "y2": 0.9}, uncertainty=0.0,
+                base_rates={"y1": 0.5, "y2": 0.5},
+            ),
+        }
+        result = multinomial_deduce(parent, conditionals)
+
+        pp_parent = parent.projected_probability()
+        pp_result = result.projected_probability()
+
+        for y in ["y1", "y2"]:
+            ltp = sum(
+                pp_parent[x] * conditionals[x].projected_probability()[y]
+                for x in ["x1", "x2", "x3"]
+            )
+            assert abs(pp_result[y] - ltp) < 1e-9, (
+                f"Dogmatic limit: P_Y({y}) should match LTP"
+            )

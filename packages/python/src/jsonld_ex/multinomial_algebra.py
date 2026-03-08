@@ -401,3 +401,231 @@ def promote(
             false_state: 1.0 - opinion.base_rate,
         },
     )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# MULTINOMIAL FUSION OPERATORS
+# ═══════════════════════════════════════════════════════════════════
+
+
+def multinomial_cumulative_fuse(
+    *opinions: MultinomialOpinion,
+) -> MultinomialOpinion:
+    """Cumulative fusion (⊕) for multinomial opinions.
+
+    Combines independent evidence sources additively, reducing
+    uncertainty.  Generalizes binomial cumulative_fuse() to k-ary
+    domains.
+
+    For two opinions with at least one non-dogmatic (u > 0):
+        κ = u_A + u_B − u_A · u_B
+        b_fused(x) = (b_A(x) · u_B + b_B(x) · u_A) / κ
+        u_fused = (u_A · u_B) / κ
+
+    When both are dogmatic (u_A = u_B = 0), the limit with equal
+    relative dogmatism yields the simple average of beliefs.
+
+    Properties:
+        - Commutativity:  A ⊕ B = B ⊕ A
+        - Associativity:  (A ⊕ B) ⊕ C = A ⊕ (B ⊕ C)  for beliefs
+          and uncertainty.  Base rate averaging is associative only
+          when all input base rates are identical.  When base rates
+          differ, the fused base rate depends on fusion order.
+          This is consistent with binomial cumulative_fuse().
+        - Identity:       A ⊕ vacuous = A
+        - Uncertainty reduction: u_{A⊕B} ≤ min(u_A, u_B)
+
+    Args:
+        *opinions: Two or more MultinomialOpinions to fuse.
+            All must share the same domain.  A single opinion
+            is returned unchanged.
+
+    Returns:
+        Fused MultinomialOpinion.
+
+    Raises:
+        ValueError: If fewer than one opinion, or domains differ.
+
+    References:
+        Jøsang (2016), §12.3 (Cumulative Fusion).
+    """
+    if len(opinions) == 0:
+        raise ValueError(
+            "multinomial_cumulative_fuse requires at least one opinion"
+        )
+    if len(opinions) == 1:
+        return opinions[0]
+
+    result = opinions[0]
+    for i in range(1, len(opinions)):
+        result = _multinomial_cumulative_fuse_pair(result, opinions[i])
+    return result
+
+
+def _multinomial_cumulative_fuse_pair(
+    a: MultinomialOpinion,
+    b: MultinomialOpinion,
+) -> MultinomialOpinion:
+    """Cumulative fusion of exactly two multinomial opinions."""
+    # Validate same domain
+    if a.domain != b.domain:
+        raise ValueError(
+            f"Cannot fuse opinions with different domains: "
+            f"{a.domain} vs {b.domain}"
+        )
+
+    domain = a.domain
+    u_a, u_b = a.uncertainty, b.uncertainty
+
+    if u_a == 0.0 and u_b == 0.0:
+        # Dogmatic case: limit with equal weight γ_A = γ_B = 0.5
+        fused_beliefs = {
+            x: 0.5 * a.beliefs[x] + 0.5 * b.beliefs[x]
+            for x in domain
+        }
+        fused_u = 0.0
+    else:
+        # Standard cumulative fusion
+        kappa = u_a + u_b - u_a * u_b  # > 0 if at least one u > 0
+        fused_beliefs = {
+            x: (a.beliefs[x] * u_b + b.beliefs[x] * u_a) / kappa
+            for x in domain
+        }
+        fused_u = (u_a * u_b) / kappa
+
+    # Average base rates
+    fused_base_rates = {
+        x: (a.base_rates[x] + b.base_rates[x]) / 2.0
+        for x in domain
+    }
+
+    return MultinomialOpinion(
+        beliefs=fused_beliefs,
+        uncertainty=fused_u,
+        base_rates=fused_base_rates,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# MULTINOMIAL DEDUCTION
+# ═══════════════════════════════════════════════════════════════════
+
+
+def multinomial_deduce(
+    parent: MultinomialOpinion,
+    conditionals: Mapping[str, MultinomialOpinion],
+) -> MultinomialOpinion:
+    """Multinomial deduction — conditional reasoning under uncertainty.
+
+    Generalizes binomial ``deduce()`` to k-ary parent and child domains.
+
+    Given a parent opinion ω_X over domain X = {x_1, ..., x_k} and
+    conditional opinions ω_{Y|x_i} for each parent state x_i, each
+    over the same child domain Y = {y_1, ..., y_m}, compute the
+    deduced opinion ω_Y about Y.
+
+    For each child state y_j:
+
+        b_Y(y_j) = Σ_i b_X(x_i) · b_{Y|x_i}(y_j)
+                 + u_X · Σ_i a_X(x_i) · b_{Y|x_i}(y_j)
+
+        u_Y = Σ_i b_X(x_i) · u_{Y|x_i}
+            + u_X · Σ_i a_X(x_i) · u_{Y|x_i}
+
+        a_Y(y_j) = Σ_i a_X(x_i) · P_{Y|x_i}(y_j)
+
+    Properties:
+        - **Additivity**: Σ b_Y(y_j) + u_Y = 1  (always).
+        - **Classical limit**: When all opinions are dogmatic (u=0),
+          reduces to the law of total probability.
+        - **Component-wise LTP**: For each component c ∈ {b, u}:
+              c_Y(y) = Σ_i P_X(x_i) · c_{Y|x_i}(y)
+          This is exact.
+
+    Note on projected probability:
+        P_Y(y) = b_Y(y) + a_Y(y)·u_Y does NOT in general equal
+        Σ_i P_X(x_i) · P_{Y|x_i}(y).  The discrepancy arises because
+        a_Y is weighted by parent base rates a_X(x_i), while u_Y is
+        weighted by projected probabilities P_X(x_i).  The product
+        a_Y·u_Y mixes these two weighting schemes.  The projected
+        probability LTP does hold in the dogmatic limit (all u=0).
+        This is consistent with the binomial deduce() operator.
+
+    Args:
+        parent: Opinion about the parent variable X.
+        conditionals: Mapping from each parent state x_i to the
+            conditional opinion ω_{Y|x_i} about Y.  Must cover
+            all states in parent.domain, and all conditional
+            opinions must share the same child domain.
+
+    Returns:
+        Deduced MultinomialOpinion about Y.
+
+    Raises:
+        ValueError: If conditionals don't cover all parent states,
+            or child domains are inconsistent.
+
+    References:
+        Jøsang (2016), Ch. 9 (Multinomial Deduction), §12.6 (Binomial).
+    """
+    # ── Validate conditionals cover all parent states ──
+    missing = set(parent.domain) - set(conditionals.keys())
+    if missing:
+        raise ValueError(
+            f"Missing conditional opinions for parent states: "
+            f"{sorted(missing)}"
+        )
+
+    # ── Validate all conditionals share the same child domain ──
+    child_domains = [
+        conditionals[x].domain for x in parent.domain
+    ]
+    if len(set(child_domains)) != 1:
+        raise ValueError(
+            f"All conditional opinions must share the same child domain. "
+            f"Got: {dict(zip(parent.domain, child_domains))}"
+        )
+    child_domain = child_domains[0]
+
+    # ── Compute deduced beliefs ──
+    # b_Y(y_j) = Σ_i b_X(x_i) · b_{Y|x_i}(y_j)
+    #          + u_X · Σ_i a_X(x_i) · b_{Y|x_i}(y_j)
+    deduced_beliefs: dict[str, float] = {}
+    for y in child_domain:
+        evidence_sum = sum(
+            parent.beliefs[x] * conditionals[x].beliefs[y]
+            for x in parent.domain
+        )
+        prior_sum = sum(
+            parent.base_rates[x] * conditionals[x].beliefs[y]
+            for x in parent.domain
+        )
+        deduced_beliefs[y] = evidence_sum + parent.uncertainty * prior_sum
+
+    # ── Compute deduced uncertainty ──
+    # u_Y = Σ_i b_X(x_i) · u_{Y|x_i}
+    #     + u_X · Σ_i a_X(x_i) · u_{Y|x_i}
+    evidence_u = sum(
+        parent.beliefs[x] * conditionals[x].uncertainty
+        for x in parent.domain
+    )
+    prior_u = sum(
+        parent.base_rates[x] * conditionals[x].uncertainty
+        for x in parent.domain
+    )
+    deduced_u = evidence_u + parent.uncertainty * prior_u
+
+    # ── Compute deduced base rates ──
+    # a_Y(y_j) = Σ_i a_X(x_i) · P_{Y|x_i}(y_j)
+    deduced_base_rates: dict[str, float] = {}
+    for y in child_domain:
+        deduced_base_rates[y] = sum(
+            parent.base_rates[x] * conditionals[x].projected_probability()[y]
+            for x in parent.domain
+        )
+
+    return MultinomialOpinion(
+        beliefs=deduced_beliefs,
+        uncertainty=deduced_u,
+        base_rates=deduced_base_rates,
+    )
