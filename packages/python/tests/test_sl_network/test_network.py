@@ -215,7 +215,7 @@ class TestAddEdge:
             empty_net.add_edge(SLEdge("A", "B", conditional=op_mod))
 
     def test_non_edge_type_raises(self, empty_net: SLNetwork) -> None:
-        with pytest.raises(TypeError, match="SLEdge or MultiParentEdge"):
+        with pytest.raises(TypeError, match="Expected SLEdge"):
             empty_net.add_edge(("A", "B"))  # type: ignore[arg-type]
 
     def test_edge_updates_parents_children(

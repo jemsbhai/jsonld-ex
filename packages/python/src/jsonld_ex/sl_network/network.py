@@ -32,6 +32,7 @@ from jsonld_ex.confidence_algebra import Opinion
 from jsonld_ex.sl_network.types import (
     AttestationEdge,
     InferenceResult,
+    MultinomialEdge,
     MultiParentEdge,
     SLEdge,
     SLNode,
@@ -189,6 +190,9 @@ class SLNetwork:
         # Multi-parent edge storage: target_id → MultiParentEdge
         self._multi_parent_edges: dict[str, MultiParentEdge] = {}
 
+        # Multinomial edge storage: (source_id, target_id) → MultinomialEdge
+        self._multinomial_edges: dict[tuple[str, str], MultinomialEdge] = {}
+
         # Trust edge storage (Tier 2): (source_id, target_id) → TrustEdge
         self._trust_edges: dict[tuple[str, str], TrustEdge] = {}
 
@@ -248,9 +252,11 @@ class SLNetwork:
             self._add_simple_edge(edge)
         elif isinstance(edge, MultiParentEdge):
             self._add_multi_parent_edge(edge)
+        elif isinstance(edge, MultinomialEdge):
+            self._add_multinomial_edge(edge)
         else:
             raise TypeError(
-                f"Expected SLEdge or MultiParentEdge, "
+                f"Expected SLEdge, MultiParentEdge, or MultinomialEdge, "
                 f"got {type(edge).__name__}"
             )
 
@@ -264,10 +270,14 @@ class SLNetwork:
         if tgt not in self._nodes:
             raise NodeNotFoundError(tgt)
 
-        # Check for duplicate edge
+        # Check for duplicate edge (including cross-type conflicts)
         if (src, tgt) in self._edges:
             raise ValueError(
                 f"Edge {src!r} → {tgt!r} already exists"
+            )
+        if (src, tgt) in self._multinomial_edges:
+            raise ValueError(
+                f"Edge {src!r} → {tgt!r} already exists as MultinomialEdge"
             )
 
         # Cycle detection: would adding src → tgt create a cycle?
@@ -318,6 +328,36 @@ class SLNetwork:
             self._parents[tgt].append(pid)
 
         self._multi_parent_edges[tgt] = edge
+
+    def _add_multinomial_edge(self, edge: MultinomialEdge) -> None:
+        """Add a multinomial conditional edge."""
+        src, tgt = edge.source_id, edge.target_id
+
+        # Validate nodes exist
+        if src not in self._nodes:
+            raise NodeNotFoundError(src)
+        if tgt not in self._nodes:
+            raise NodeNotFoundError(tgt)
+
+        # Check for duplicate edge (including cross-type conflicts)
+        if (src, tgt) in self._multinomial_edges:
+            raise ValueError(
+                f"MultinomialEdge {src!r} → {tgt!r} already exists"
+            )
+        if (src, tgt) in self._edges:
+            raise ValueError(
+                f"Edge {src!r} → {tgt!r} already exists as SLEdge"
+            )
+
+        # Cycle detection: would adding src → tgt create a cycle?
+        if self._has_path(tgt, src):
+            path = self._find_path(tgt, src)
+            raise CycleError([src] + path + [src])
+
+        # Commit the edge
+        self._multinomial_edges[(src, tgt)] = edge
+        self._children[src].append(tgt)
+        self._parents[tgt].append(src)
 
     # ── Agent Nodes (Tier 2) ───────────────────────────────────────────
 
@@ -700,6 +740,13 @@ class SLNetwork:
                         self._parents[tgt].remove(pid)
                 del self._multi_parent_edges[tgt]
 
+        # Remove multinomial edges where this node is source or target
+        for (src, tgt) in list(self._multinomial_edges.keys()):
+            if src == node_id or tgt == node_id:
+                del self._multinomial_edges[(src, tgt)]
+                # Adjacency cleanup is already handled above via
+                # _remove_edge_internal for outgoing/incoming edges
+
         # Remove the node itself
         del self._nodes[node_id]
         del self._children[node_id]
@@ -733,6 +780,8 @@ class SLNetwork:
         key = (source_id, target_id)
         if key in self._edges:
             del self._edges[key]
+        if key in self._multinomial_edges:
+            del self._multinomial_edges[key]
         if target_id in self._children.get(source_id, []):
             self._children[source_id].remove(target_id)
         if source_id in self._parents.get(target_id, []):
@@ -831,6 +880,32 @@ class SLNetwork:
         """Check if an edge exists in the network."""
         return (source_id, target_id) in self._edges
 
+    def get_multinomial_edge(
+        self, source_id: str, target_id: str
+    ) -> MultinomialEdge:
+        """Return the MultinomialEdge between two nodes.
+
+        Args:
+            source_id: Source node ID.
+            target_id: Target node ID.
+
+        Returns:
+            The MultinomialEdge.
+
+        Raises:
+            ValueError: If no MultinomialEdge exists between the nodes.
+        """
+        key = (source_id, target_id)
+        if key not in self._multinomial_edges:
+            raise ValueError(
+                f"MultinomialEdge {source_id!r} → {target_id!r} not found"
+            )
+        return self._multinomial_edges[key]
+
+    def has_multinomial_edge(self, source_id: str, target_id: str) -> bool:
+        """Check if a MultinomialEdge exists between two nodes."""
+        return (source_id, target_id) in self._multinomial_edges
+
     def node_count(self) -> int:
         """Return the number of nodes in the network."""
         return len(self._nodes)
@@ -844,7 +919,11 @@ class SLNetwork:
         multi_edges = sum(
             len(mpe.parent_ids) for mpe in self._multi_parent_edges.values()
         )
-        return len(self._edges) + multi_edges
+        return (
+            len(self._edges)
+            + multi_edges
+            + len(self._multinomial_edges)
+        )
 
     # ── Structural Analysis ────────────────────────────────────────
 

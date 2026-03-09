@@ -2,10 +2,11 @@
 Data structures for the SLNetwork inference engine.
 
 Defines the core types used throughout the SLNetwork module:
-nodes, edges, multi-parent edges, and inference results.
+nodes, edges, multi-parent edges, multinomial edges, and inference results.
 
 All types are frozen (immutable) dataclasses.  SLNetwork composes
 existing ``Opinion`` objects from ``jsonld_ex.confidence_algebra``
+and ``MultinomialOpinion`` objects from ``jsonld_ex.multinomial_algebra``
 — it never reimplements opinion algebra.
 
 Design Decisions:
@@ -33,6 +34,7 @@ from itertools import product as itertools_product
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from jsonld_ex.confidence_algebra import Opinion
+from jsonld_ex.multinomial_algebra import MultinomialOpinion
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -72,11 +74,17 @@ class SLNode:
     Attributes:
         node_id:   Unique identifier within the network.  Must be a
                    non-empty string.
-        opinion:   Marginal SL opinion for this proposition.
+        opinion:   Marginal SL opinion for this proposition (binomial).
         node_type: ``"content"`` (Tier 1) or ``"agent"`` (Tier 2).
         label:     Optional human-readable description.
         metadata:  Arbitrary key–value pairs for application-specific
                    data (provenance URIs, timestamps, etc.).
+        multinomial_opinion:
+                   Optional k-ary opinion for multi-valued variables.
+                   When present, the inference engine uses multinomial
+                   deduction.  When ``None`` (default), inference uses
+                   the binomial ``opinion`` field — preserving full
+                   backward compatibility.
 
     Invariant:
         ``opinion.belief + opinion.disbelief + opinion.uncertainty == 1``
@@ -90,6 +98,7 @@ class SLNode:
     metadata: dict[str, Any] = field(default_factory=dict)
     timestamp: datetime | None = None
     half_life: float | None = None
+    multinomial_opinion: MultinomialOpinion | None = None
 
     def __post_init__(self) -> None:
         # ── Validate node_id ──
@@ -114,6 +123,19 @@ class SLNode:
             raise ValueError(
                 f"half_life must be positive, got {self.half_life!r}"
             )
+        # ── Validate multinomial_opinion ──
+        if self.multinomial_opinion is not None and not isinstance(
+            self.multinomial_opinion, MultinomialOpinion
+        ):
+            raise TypeError(
+                f"multinomial_opinion must be a MultinomialOpinion or None, "
+                f"got {type(self.multinomial_opinion).__name__}"
+            )
+
+    @property
+    def is_multinomial(self) -> bool:
+        """Whether this node carries a multinomial (k-ary) opinion."""
+        return self.multinomial_opinion is not None
 
     def __hash__(self) -> int:
         """Hash by node_id — the unique identity of a node."""
@@ -121,11 +143,15 @@ class SLNode:
 
     def __repr__(self) -> str:
         op = self.opinion
-        return (
+        base = (
             f"SLNode(id={self.node_id!r}, "
             f"opinion=({op.belief:.3f},{op.disbelief:.3f},{op.uncertainty:.3f}), "
-            f"type={self.node_type!r})"
+            f"type={self.node_type!r}"
         )
+        if self.multinomial_opinion is not None:
+            base += f", k={self.multinomial_opinion.cardinality}"
+        base += ")"
+        return base
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -379,6 +405,165 @@ class MultiParentEdge:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# MULTINOMIAL EDGES
+# ═══════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class MultinomialEdge:
+    """A directed conditional edge between multinomial (k-ary) nodes.
+
+    For a parent node with domain X = {x_1, ..., x_k}, carries a
+    conditional ``MultinomialOpinion`` ω_{Y|x_i} for each parent
+    state x_i, each over the same child domain Y = {y_1, ..., y_m}.
+
+    This is the multinomial counterpart of ``SLEdge`` (which handles
+    binary conditional/counterfactual pairs).  The parent and child
+    domains may have different cardinalities (k ≠ m is allowed).
+
+    Example (ternary parent → binary child):
+        conditionals = {
+            "sunny":  MultinomialOpinion(beliefs={"H": 0.8, "L": 0.1}, ...),
+            "cloudy": MultinomialOpinion(beliefs={"H": 0.4, "L": 0.3}, ...),
+            "rainy":  MultinomialOpinion(beliefs={"H": 0.1, "L": 0.7}, ...),
+        }
+
+    Attributes:
+        source_id:    Parent node ID.
+        target_id:    Child node ID.
+        conditionals: Mapping from each parent state (str) to the
+                      conditional MultinomialOpinion about the child.
+                      Must cover all parent states, and all conditional
+                      opinions must share the same child domain.
+        edge_type:    ``"deduction"`` (default) for content inference.
+        metadata:     Arbitrary key–value pairs.
+        timestamp:    When this edge was created/observed.
+        half_life:    Decay half-life for temporal inference.
+        valid_from:   Start of validity window.
+        valid_until:  End of validity window.
+
+    Constraints:
+        - ``source_id != target_id`` (no self-loops).
+        - Both IDs must be non-empty strings.
+        - ``conditionals`` must be non-empty.
+        - All values must be ``MultinomialOpinion`` instances.
+        - All conditional opinions must share the same child domain.
+
+    References:
+        Jøsang, A. (2016). Subjective Logic, Ch. 9 (Multinomial
+        Deduction).
+    """
+
+    source_id: str
+    target_id: str
+    conditionals: dict[str, MultinomialOpinion]
+    edge_type: EdgeType = "deduction"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime | None = None
+    half_life: float | None = None
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
+
+    def __post_init__(self) -> None:
+        # ── Validate IDs ──
+        if not isinstance(self.source_id, str) or not self.source_id.strip():
+            raise ValueError(
+                f"source_id must be a non-empty string, got {self.source_id!r}"
+            )
+        if not isinstance(self.target_id, str) or not self.target_id.strip():
+            raise ValueError(
+                f"target_id must be a non-empty string, got {self.target_id!r}"
+            )
+        if self.source_id == self.target_id:
+            raise ValueError(
+                f"Self-loop not allowed: "
+                f"source_id == target_id == {self.source_id!r}"
+            )
+
+        # ── Validate conditionals non-empty ──
+        if not self.conditionals:
+            raise ValueError(
+                "conditionals must not be empty: at least one parent "
+                "state → child opinion mapping is required"
+            )
+
+        # ── Validate all values are MultinomialOpinion ──
+        child_domain: tuple[str, ...] | None = None
+        for state, opinion in self.conditionals.items():
+            if not isinstance(opinion, MultinomialOpinion):
+                raise TypeError(
+                    f"conditionals[{state!r}] must be a MultinomialOpinion, "
+                    f"got {type(opinion).__name__}"
+                )
+            # ── Validate consistent child domain ──
+            if child_domain is None:
+                child_domain = opinion.domain
+            elif opinion.domain != child_domain:
+                raise ValueError(
+                    f"All conditional opinions must share the same child "
+                    f"domain. Expected {child_domain}, but "
+                    f"conditionals[{state!r}] has domain {opinion.domain}"
+                )
+
+        # ── Validate edge_type ──
+        if self.edge_type not in ("deduction", "trust", "attestation"):
+            raise ValueError(
+                f"edge_type must be 'deduction', 'trust', or 'attestation', "
+                f"got {self.edge_type!r}"
+            )
+
+        # ── Validate temporal fields ──
+        if self.half_life is not None and self.half_life <= 0.0:
+            raise ValueError(
+                f"half_life must be positive, got {self.half_life!r}"
+            )
+        if (
+            self.valid_from is not None
+            and self.valid_until is not None
+            and self.valid_until < self.valid_from
+        ):
+            raise ValueError(
+                f"valid_until ({self.valid_until}) must not be before "
+                f"valid_from ({self.valid_from})"
+            )
+
+    # ── Convenience properties ─────────────────────────────────────
+
+    @property
+    def parent_states(self) -> frozenset[str]:
+        """The set of parent domain states covered by this edge."""
+        return frozenset(self.conditionals.keys())
+
+    @property
+    def child_domain(self) -> tuple[str, ...]:
+        """The shared child domain (sorted tuple of state names)."""
+        # Guaranteed consistent by __post_init__ validation.
+        return next(iter(self.conditionals.values())).domain
+
+    @property
+    def parent_cardinality(self) -> int:
+        """Number of parent states (k)."""
+        return len(self.conditionals)
+
+    @property
+    def child_cardinality(self) -> int:
+        """Number of child states (m)."""
+        return len(self.child_domain)
+
+    def __hash__(self) -> int:
+        """Hash by (source_id, target_id) — the identity of an edge."""
+        return hash((self.source_id, self.target_id))
+
+    def __repr__(self) -> str:
+        k = self.parent_cardinality
+        m = self.child_cardinality
+        return (
+            f"MultinomialEdge({self.source_id!r}→{self.target_id!r}, "
+            f"k_parent={k}, k_child={m})"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════
 # INFERENCE RESULTS
 # ═══════════════════════════════════════════════════════════════════
 
@@ -456,6 +641,11 @@ class InferenceResult:
                                in the connected component.
         topological_order:     The order in which nodes were processed
                                during inference.
+        multinomial_intermediate_opinions:
+                               Per-node inferred MultinomialOpinions for
+                               nodes that carry or receive multinomial
+                               opinions during inference.  Empty dict
+                               for purely binary networks.
     """
 
     query_node: str
@@ -463,6 +653,9 @@ class InferenceResult:
     steps: list[InferenceStep]
     intermediate_opinions: dict[str, Opinion]
     topological_order: list[str]
+    multinomial_intermediate_opinions: dict[str, MultinomialOpinion] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.query_node, str) or not self.query_node.strip():

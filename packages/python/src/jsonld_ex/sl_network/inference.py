@@ -45,6 +45,10 @@ import warnings
 from typing import Callable, Dict, List, Literal, Optional
 
 from jsonld_ex.confidence_algebra import Opinion, cumulative_fuse, deduce
+from jsonld_ex.multinomial_algebra import (
+    MultinomialOpinion,
+    multinomial_deduce,
+)
 from jsonld_ex.sl_network.counterfactuals import (
     CounterfactualFn,
     get_counterfactual_fn,
@@ -53,6 +57,7 @@ from jsonld_ex.sl_network.counterfactuals import (
 from jsonld_ex.sl_network.types import (
     InferenceResult,
     InferenceStep,
+    MultinomialEdge,
     MultiParentEdge,
     SLEdge,
 )
@@ -196,6 +201,9 @@ def infer_all(
             steps=node_steps,
             intermediate_opinions=full_result.intermediate_opinions,
             topological_order=full_result.topological_order,
+            multinomial_intermediate_opinions=(
+                full_result.multinomial_intermediate_opinions
+            ),
         )
 
     return results
@@ -217,18 +225,25 @@ def _infer_tree(
     computes:
         ω_child = deduce(ω_parent, conditional, counterfactual)
 
+    Multinomial extension: when a parent has a multinomial opinion and
+    the edge is a MultinomialEdge, dispatches to multinomial_deduce().
+
     Complexity: O(n) where n = number of nodes.
     """
     topo_order = network.topological_sort()
     intermediate: dict[str, Opinion] = {}
+    multinomial_intermediate: dict[str, MultinomialOpinion] = {}
     steps: list[InferenceStep] = []
 
     for nid in topo_order:
+        node = network.get_node(nid)
         parents = network.get_parents(nid)
 
         if len(parents) == 0:
-            node = network.get_node(nid)
+            # Root node
             intermediate[nid] = node.opinion
+            if node.is_multinomial:
+                multinomial_intermediate[nid] = node.multinomial_opinion
             steps.append(InferenceStep(
                 node_id=nid,
                 operation="passthrough",
@@ -238,27 +253,17 @@ def _infer_tree(
 
         elif len(parents) == 1:
             parent_id = parents[0]
-            parent_opinion = intermediate[parent_id]
-            edge = network.get_edge(parent_id, nid)
-
-            counterfactual = (
-                edge.counterfactual
-                if edge.counterfactual is not None
-                else cf_fn(edge.conditional)
-            )
-
-            deduced = deduce(parent_opinion, edge.conditional, counterfactual)
-            intermediate[nid] = deduced
-            steps.append(InferenceStep(
-                node_id=nid,
-                operation="deduce",
-                inputs={
-                    "parent": parent_opinion,
-                    "conditional": edge.conditional,
-                    "counterfactual": counterfactual,
-                },
-                result=deduced,
-            ))
+            if network.has_multinomial_edge(parent_id, nid):
+                # Multinomial path
+                _deduce_single_parent_multinomial(
+                    network, nid, parent_id,
+                    intermediate, multinomial_intermediate, steps,
+                )
+            else:
+                # Standard binary path
+                _deduce_single_parent(
+                    network, nid, parent_id, intermediate, steps, cf_fn
+                )
 
         else:
             raise ValueError(
@@ -276,6 +281,7 @@ def _infer_tree(
         steps=steps,
         intermediate_opinions=intermediate,
         topological_order=topo_order,
+        multinomial_intermediate_opinions=multinomial_intermediate,
     )
 
 
@@ -306,15 +312,18 @@ def _infer_dag_approximate(
     """
     topo_order = network.topological_sort()
     intermediate: dict[str, Opinion] = {}
+    multinomial_intermediate: dict[str, MultinomialOpinion] = {}
     steps: list[InferenceStep] = []
 
     for nid in topo_order:
+        node = network.get_node(nid)
         parents = network.get_parents(nid)
 
         if len(parents) == 0:
             # Root node
-            node = network.get_node(nid)
             intermediate[nid] = node.opinion
+            if node.is_multinomial:
+                multinomial_intermediate[nid] = node.multinomial_opinion
             steps.append(InferenceStep(
                 node_id=nid,
                 operation="passthrough",
@@ -323,10 +332,18 @@ def _infer_dag_approximate(
             ))
 
         elif len(parents) == 1:
-            # Single parent: exact deduction (no approximation)
-            _deduce_single_parent(
-                network, nid, parents[0], intermediate, steps, cf_fn
-            )
+            parent_id = parents[0]
+            if network.has_multinomial_edge(parent_id, nid):
+                # Multinomial path
+                _deduce_single_parent_multinomial(
+                    network, nid, parent_id,
+                    intermediate, multinomial_intermediate, steps,
+                )
+            else:
+                # Standard binary path
+                _deduce_single_parent(
+                    network, nid, parent_id, intermediate, steps, cf_fn
+                )
 
         else:
             # Multiple parents: deduce per-parent, then fuse
@@ -344,6 +361,7 @@ def _infer_dag_approximate(
         steps=steps,
         intermediate_opinions=intermediate,
         topological_order=topo_order,
+        multinomial_intermediate_opinions=multinomial_intermediate,
     )
 
 
@@ -376,6 +394,46 @@ def _deduce_single_parent(
             "counterfactual": counterfactual,
         },
         result=deduced,
+    ))
+
+
+def _deduce_single_parent_multinomial(
+    network: SLNetwork,
+    nid: str,
+    parent_id: str,
+    intermediate: dict[str, Opinion],
+    multinomial_intermediate: dict[str, MultinomialOpinion],
+    steps: list[InferenceStep],
+) -> None:
+    """Multinomial deduction from a single parent via MultinomialEdge.
+
+    When the parent has a multinomial opinion and the edge is a
+    MultinomialEdge, applies ``multinomial_deduce()`` to produce
+    a MultinomialOpinion for the child node.
+
+    The child's binomial ``opinion`` field is stored in ``intermediate``
+    for backward compatibility.  The multinomial result is stored in
+    ``multinomial_intermediate``.
+    """
+    edge = network.get_multinomial_edge(parent_id, nid)
+    node = network.get_node(nid)
+
+    if parent_id in multinomial_intermediate:
+        # Parent has a multinomial opinion — use multinomial_deduce
+        parent_multi = multinomial_intermediate[parent_id]
+        deduced_multi = multinomial_deduce(parent_multi, edge.conditionals)
+        multinomial_intermediate[nid] = deduced_multi
+    # else: parent has no multinomial opinion (shouldn't normally
+    # happen in a well-constructed network, but we handle it
+    # gracefully by skipping multinomial computation)
+
+    # For binomial intermediate: use the node's prior opinion
+    intermediate[nid] = node.opinion
+    steps.append(InferenceStep(
+        node_id=nid,
+        operation="multinomial_deduce",
+        inputs={},
+        result=node.opinion,
     ))
 
 
@@ -459,14 +517,17 @@ def _infer_dag_enumerate(
     """
     topo_order = network.topological_sort()
     intermediate: dict[str, Opinion] = {}
+    multinomial_intermediate: dict[str, MultinomialOpinion] = {}
     steps: list[InferenceStep] = []
 
     for nid in topo_order:
+        node = network.get_node(nid)
         parents = network.get_parents(nid)
 
         if len(parents) == 0:
-            node = network.get_node(nid)
             intermediate[nid] = node.opinion
+            if node.is_multinomial:
+                multinomial_intermediate[nid] = node.multinomial_opinion
             steps.append(InferenceStep(
                 node_id=nid,
                 operation="passthrough",
@@ -475,9 +536,16 @@ def _infer_dag_enumerate(
             ))
 
         elif len(parents) == 1:
-            _deduce_single_parent(
-                network, nid, parents[0], intermediate, steps, cf_fn
-            )
+            parent_id = parents[0]
+            if network.has_multinomial_edge(parent_id, nid):
+                _deduce_single_parent_multinomial(
+                    network, nid, parent_id,
+                    intermediate, multinomial_intermediate, steps,
+                )
+            else:
+                _deduce_single_parent(
+                    network, nid, parent_id, intermediate, steps, cf_fn
+                )
 
         else:
             # Check if a MultiParentEdge exists for this node
@@ -502,6 +570,7 @@ def _infer_dag_enumerate(
         steps=steps,
         intermediate_opinions=intermediate,
         topological_order=topo_order,
+        multinomial_intermediate_opinions=multinomial_intermediate,
     )
 
 
