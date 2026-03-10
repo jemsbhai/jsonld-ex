@@ -84,6 +84,7 @@ from jsonld_ex.sl_network.jsonld_bridge import (
 # message if pgmpy is missing at call time.
 from jsonld_ex.sl_network.bn_interop import (
     from_bayesian_network,
+    from_dynamic_bayesian_network,
     to_bayesian_network,
 )
 
@@ -129,5 +130,6 @@ __all__ = [
     "network_to_jsonld_graph",
     # Tier 1: Bayesian Network interop
     "from_bayesian_network",
+    "from_dynamic_bayesian_network",
     "to_bayesian_network",
 ]

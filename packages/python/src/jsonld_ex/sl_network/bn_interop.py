@@ -38,6 +38,7 @@ References:
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from jsonld_ex.confidence_algebra import Opinion
@@ -607,3 +608,281 @@ def to_bayesian_network(
             bn.add_cpds(cpd)
 
     return bn
+
+
+def from_dynamic_bayesian_network(
+    dbn: Any,
+    num_slices: int = 2,
+    slice_duration: float = 3600.0,
+    start_time: datetime | None = None,
+    sample_counts: dict[str, int] | None = None,
+    default_sample_count: int = 100,
+    base_rate: float = 0.5,
+) -> SLNetwork:
+    """Convert a pgmpy DynamicBayesianNetwork to a temporal SLNetwork.
+
+    Unrolls the DBN template for ``num_slices`` time steps, producing
+    a flat DAG where each variable at each time step becomes a node
+    named ``"{variable}_t{slice}"``.  Intra-slice edges are replicated
+    at every time step; inter-slice edges connect consecutive slices.
+
+    Nodes and edges carry temporal metadata (timestamps, validity
+    windows) compatible with Tier 3 temporal inference (``infer_at``,
+    ``network_at_time``, etc.).
+
+    Args:
+        dbn: A ``pgmpy.models.DynamicBayesianNetwork`` instance.
+        num_slices: Number of time slices to unroll (>= 2).
+        slice_duration: Duration in seconds between consecutive slices.
+        start_time: Timestamp for slice 0.  Defaults to ``datetime.now(UTC)``.
+        sample_counts: Optional per-variable evidence counts.
+        default_sample_count: Default evidence count.  Default 100.
+        base_rate: Prior probability for generated opinions.  Default 0.5.
+
+    Returns:
+        An ``SLNetwork`` with temporal metadata on all nodes and edges.
+
+    Raises:
+        ImportError: If pgmpy is not installed.
+        ValueError: If ``num_slices < 2`` or ``slice_duration <= 0``.
+
+    Node naming:
+        ``"{variable_name}_t{slice_index}"``
+        e.g., ``"Rain_t0"``, ``"Rain_t1"``, ``"Umbrella_t0"``.
+
+    Temporal metadata:
+        - Node ``timestamp``: ``start_time + slice_index * slice_duration``.
+        - Intra-slice edge ``timestamp``: matches the slice time.
+        - Inter-slice edge ``timestamp``: source slice time.
+        - Inter-slice edge ``valid_from``: source slice time.
+        - Inter-slice edge ``valid_until``: target slice time.
+
+    References:
+        Murphy, K. (2002). Dynamic Bayesian Networks.
+        J\u00f8sang, A. (2016). Subjective Logic, Ch. 5.3.
+    """
+    _require_pgmpy()
+
+    from pgmpy.factors.discrete import TabularCPD
+
+    # ── Validate inputs ──
+    if num_slices < 2:
+        raise ValueError(
+            f"num_slices must be >= 2, got {num_slices}"
+        )
+    if slice_duration <= 0:
+        raise ValueError(
+            f"slice_duration must be positive, got {slice_duration}"
+        )
+    if start_time is None:
+        start_time = datetime.now(tz=timezone.utc)
+    if sample_counts is None:
+        sample_counts = {}
+
+    # ── Extract DBN template ──
+    vars_t0 = sorted(set(var for var, t in dbn.nodes() if t == 0))
+
+    # Variables with an explicit transition CPD at t=1
+    # (not all t=1 nodes have their own CPD -- intra-slice-only
+    # variables are replicated from t=0)
+    vars_with_transition = set()
+    for cpd in dbn.get_cpds():
+        var, t = cpd.variable
+        if t == 1:
+            vars_with_transition.add(var)
+
+    intra_edges: list[tuple[str, str]] = []
+    inter_edges: list[tuple[str, str]] = []
+    for (sv, st), (tv, tt) in dbn.edges():
+        if st == 0 and tt == 0:
+            intra_edges.append((sv, tv))
+        elif st == 0 and tt == 1:
+            inter_edges.append((sv, tv))
+
+    # ── Build flat static BN ──
+    BNClass = _get_pgmpy_bn_class()
+
+    flat_edges: list[tuple[str, str]] = []
+    for t in range(num_slices):
+        for sv, tv in intra_edges:
+            flat_edges.append((f"{sv}_t{t}", f"{tv}_t{t}"))
+    for t in range(num_slices - 1):
+        for sv, tv in inter_edges:
+            flat_edges.append((f"{sv}_t{t}", f"{tv}_t{t + 1}"))
+
+    flat_bn = BNClass(flat_edges) if flat_edges else BNClass()
+
+    # Add isolated nodes (variables with no edges in some slices)
+    for t in range(num_slices):
+        for var in vars_t0:
+            name = f"{var}_t{t}"
+            if name not in flat_bn.nodes():
+                flat_bn.add_node(name)
+
+    # ── Build CPDs for the flat BN ──
+    for t in range(num_slices):
+        for var in vars_t0:
+            node_name = f"{var}_t{t}"
+
+            # Decide which template CPD to use
+            if t == 0:
+                orig_cpd = dbn.get_cpds((var, 0))
+                using_transition = False
+            elif var in vars_with_transition:
+                # Variable has a transition (inter-slice) CPD
+                orig_cpd = dbn.get_cpds((var, 1))
+                using_transition = True
+            else:
+                # Replicate the intra-slice CPD from t=0
+                orig_cpd = dbn.get_cpds((var, 0))
+                using_transition = False
+
+            values = orig_cpd.get_values()
+            card = int(values.shape[0])
+
+            # Evidence variables: cpd.variables[0] is the node itself,
+            # the rest are evidence (parent) variables.
+            evidence_tuples = list(orig_cpd.variables[1:])
+
+            if not evidence_tuples:
+                # Root node at this slice
+                new_cpd = TabularCPD(
+                    variable=node_name,
+                    variable_card=card,
+                    values=values.tolist(),
+                )
+            else:
+                # Rename evidence variables for this time slice
+                renamed_evidence: list[str] = []
+                evidence_cards: list[int] = []
+                for ev_var, ev_time in evidence_tuples:
+                    ev_card = int(
+                        dbn.get_cpds((ev_var, ev_time)).get_values().shape[0]
+                    )
+                    evidence_cards.append(ev_card)
+
+                    if t == 0:
+                        # All evidence at time 0 in the template
+                        renamed_evidence.append(f"{ev_var}_t0")
+                    elif using_transition and ev_time == 0:
+                        # Inter-slice parent: template t=0 → unrolled t-1
+                        renamed_evidence.append(f"{ev_var}_t{t - 1}")
+                    else:
+                        # Intra-slice parent: maps to current time t
+                        renamed_evidence.append(f"{ev_var}_t{t}")
+
+                new_cpd = TabularCPD(
+                    variable=node_name,
+                    variable_card=card,
+                    values=values.tolist(),
+                    evidence=renamed_evidence,
+                    evidence_card=evidence_cards,
+                )
+
+            flat_bn.add_cpds(new_cpd)
+
+    flat_bn.check_model()
+
+    # ── Convert flat BN to SLNetwork (no temporal metadata yet) ──
+    base_net = from_bayesian_network(
+        flat_bn,
+        sample_counts=sample_counts,
+        default_sample_count=default_sample_count,
+        base_rate=base_rate,
+    )
+
+    # ── Post-process: add temporal metadata ──
+    result = SLNetwork(name="from_dbn")
+
+    # Add nodes with timestamps
+    for t in range(num_slices):
+        slice_time = start_time + timedelta(seconds=t * slice_duration)
+        for var in vars_t0:
+            node_name = f"{var}_t{t}"
+            old = base_net.get_node(node_name)
+            result.add_node(SLNode(
+                node_id=old.node_id,
+                opinion=old.opinion,
+                node_type=old.node_type,
+                label=old.label,
+                metadata=old.metadata,
+                timestamp=slice_time,
+                multinomial_opinion=old.multinomial_opinion,
+            ))
+
+    # Copy SLEdges with temporal metadata
+    for (src, tgt), edge in base_net._edges.items():
+        src_t = int(src.rsplit("_t", 1)[1])
+        tgt_t = int(tgt.rsplit("_t", 1)[1])
+        src_time = start_time + timedelta(seconds=src_t * slice_duration)
+        tgt_time = start_time + timedelta(seconds=tgt_t * slice_duration)
+
+        if src_t == tgt_t:
+            # Intra-slice edge
+            new_edge = SLEdge(
+                source_id=edge.source_id,
+                target_id=edge.target_id,
+                conditional=edge.conditional,
+                counterfactual=edge.counterfactual,
+                edge_type=edge.edge_type,
+                timestamp=src_time,
+            )
+        else:
+            # Inter-slice edge
+            new_edge = SLEdge(
+                source_id=edge.source_id,
+                target_id=edge.target_id,
+                conditional=edge.conditional,
+                counterfactual=edge.counterfactual,
+                edge_type=edge.edge_type,
+                timestamp=src_time,
+                valid_from=src_time,
+                valid_until=tgt_time,
+            )
+        result.add_edge(new_edge)
+
+    # Copy MultinomialEdges with temporal metadata
+    for (src, tgt), edge in base_net._multinomial_edges.items():
+        src_t = int(src.rsplit("_t", 1)[1])
+        tgt_t = int(tgt.rsplit("_t", 1)[1])
+        src_time = start_time + timedelta(seconds=src_t * slice_duration)
+        tgt_time = start_time + timedelta(seconds=tgt_t * slice_duration)
+
+        if src_t == tgt_t:
+            new_edge = MultinomialEdge(
+                source_id=edge.source_id,
+                target_id=edge.target_id,
+                conditionals=dict(edge.conditionals),
+                edge_type=edge.edge_type,
+                timestamp=src_time,
+            )
+        else:
+            new_edge = MultinomialEdge(
+                source_id=edge.source_id,
+                target_id=edge.target_id,
+                conditionals=dict(edge.conditionals),
+                edge_type=edge.edge_type,
+                timestamp=src_time,
+                valid_from=src_time,
+                valid_until=tgt_time,
+            )
+        result.add_edge(new_edge)
+
+    # Copy MultiParentEdges (no temporal fields on this type)
+    for tgt, mpe in base_net._multi_parent_edges.items():
+        result.add_edge(mpe)
+
+    # Copy MultiParentMultinomialEdges with temporal metadata
+    for tgt, mpe in base_net._multi_parent_multinomial_edges.items():
+        tgt_t = int(tgt.rsplit("_t", 1)[1])
+        tgt_time = start_time + timedelta(seconds=tgt_t * slice_duration)
+        new_mpe = MultiParentMultinomialEdge(
+            parent_ids=mpe.parent_ids,
+            target_id=mpe.target_id,
+            conditionals=dict(mpe.conditionals),
+            edge_type=mpe.edge_type,
+            timestamp=tgt_time,
+        )
+        result.add_edge(new_mpe)
+
+    return result
