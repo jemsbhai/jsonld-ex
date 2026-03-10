@@ -28,6 +28,9 @@ docs/neurips_experiment_roadmap.md
 benchmarks/E*_*.md
 DOCS_PLAN.md
 
+# Pre-publication mathematical analysis (publish after paper submission)
+packages/python/src/jsonld_ex/sl_network/UNCERTAINTY_INVARIANCE.md
+
 # Experiment artifacts (notebooks tracked selectively, not outputs)
 experiments/**/*.csv
 experiments/**/*.png
