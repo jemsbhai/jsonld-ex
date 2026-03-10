@@ -25,6 +25,7 @@ from jsonld_ex.sl_network.types import (
     SLEdge,
     MultiParentEdge,
     MultinomialEdge,
+    MultiParentMultinomialEdge,
     InferenceStep,
     InferenceResult,
     # Tier 2: Trust Network types
@@ -94,6 +95,7 @@ __all__ = [
     "SLEdge",
     "MultiParentEdge",
     "MultinomialEdge",
+    "MultiParentMultinomialEdge",
     "InferenceStep",
     "InferenceResult",
     # Tier 2 types

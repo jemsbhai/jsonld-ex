@@ -34,6 +34,7 @@ from jsonld_ex.sl_network.types import (
     InferenceResult,
     MultinomialEdge,
     MultiParentEdge,
+    MultiParentMultinomialEdge,
     SLEdge,
     SLNode,
     TrustEdge,
@@ -193,6 +194,9 @@ class SLNetwork:
         # Multinomial edge storage: (source_id, target_id) → MultinomialEdge
         self._multinomial_edges: dict[tuple[str, str], MultinomialEdge] = {}
 
+        # Multi-parent multinomial edge storage: target_id → MultiParentMultinomialEdge
+        self._multi_parent_multinomial_edges: dict[str, MultiParentMultinomialEdge] = {}
+
         # Trust edge storage (Tier 2): (source_id, target_id) → TrustEdge
         self._trust_edges: dict[tuple[str, str], TrustEdge] = {}
 
@@ -254,9 +258,12 @@ class SLNetwork:
             self._add_multi_parent_edge(edge)
         elif isinstance(edge, MultinomialEdge):
             self._add_multinomial_edge(edge)
+        elif isinstance(edge, MultiParentMultinomialEdge):
+            self._add_multi_parent_multinomial_edge(edge)
         else:
             raise TypeError(
-                f"Expected SLEdge, MultiParentEdge, or MultinomialEdge, "
+                f"Expected SLEdge, MultiParentEdge, MultinomialEdge, "
+                f"or MultiParentMultinomialEdge, "
                 f"got {type(edge).__name__}"
             )
 
@@ -358,6 +365,44 @@ class SLNetwork:
         self._multinomial_edges[(src, tgt)] = edge
         self._children[src].append(tgt)
         self._parents[tgt].append(src)
+
+    def _add_multi_parent_multinomial_edge(
+        self, edge: MultiParentMultinomialEdge
+    ) -> None:
+        """Add a multi-parent multinomial conditional table edge."""
+        tgt = edge.target_id
+
+        # Validate target node exists
+        if tgt not in self._nodes:
+            raise NodeNotFoundError(tgt)
+
+        # Validate all parent nodes exist
+        for pid in edge.parent_ids:
+            if pid not in self._nodes:
+                raise NodeNotFoundError(pid)
+
+        # Check for existing multi-parent multinomial edge on this target
+        if tgt in self._multi_parent_multinomial_edges:
+            raise ValueError(
+                f"MultiParentMultinomialEdge for target {tgt!r} already exists"
+            )
+
+        # Cycle detection and cross-type conflict check for each parent
+        for pid in edge.parent_ids:
+            if (pid, tgt) in self._edges:
+                raise ValueError(
+                    f"Edge {pid!r} → {tgt!r} already exists as SLEdge"
+                )
+            if self._has_path(tgt, pid):
+                path = self._find_path(tgt, pid)
+                raise CycleError([pid] + path + [pid])
+
+        # Commit: add adjacency entries for all parents
+        for pid in edge.parent_ids:
+            self._children[pid].append(tgt)
+            self._parents[tgt].append(pid)
+
+        self._multi_parent_multinomial_edges[tgt] = edge
 
     # ── Agent Nodes (Tier 2) ───────────────────────────────────────────
 
@@ -747,6 +792,21 @@ class SLNetwork:
                 # Adjacency cleanup is already handled above via
                 # _remove_edge_internal for outgoing/incoming edges
 
+        # Remove multi-parent multinomial edge if this node is a target
+        if node_id in self._multi_parent_multinomial_edges:
+            del self._multi_parent_multinomial_edges[node_id]
+
+        # Remove multi-parent multinomial edges where this node is a parent
+        for tgt, mpe in list(self._multi_parent_multinomial_edges.items()):
+            if node_id in mpe.parent_ids:
+                # Remove the entire edge since it's now structurally invalid
+                for pid in mpe.parent_ids:
+                    if pid in self._children and tgt in self._children[pid]:
+                        self._children[pid].remove(tgt)
+                    if tgt in self._parents and pid in self._parents[tgt]:
+                        self._parents[tgt].remove(pid)
+                del self._multi_parent_multinomial_edges[tgt]
+
         # Remove the node itself
         del self._nodes[node_id]
         del self._children[node_id]
@@ -906,6 +966,30 @@ class SLNetwork:
         """Check if a MultinomialEdge exists between two nodes."""
         return (source_id, target_id) in self._multinomial_edges
 
+    def get_multi_parent_multinomial_edge(
+        self, target_id: str
+    ) -> MultiParentMultinomialEdge:
+        """Return the MultiParentMultinomialEdge for a target node.
+
+        Args:
+            target_id: Target node ID.
+
+        Returns:
+            The MultiParentMultinomialEdge.
+
+        Raises:
+            ValueError: If no MultiParentMultinomialEdge exists for this target.
+        """
+        if target_id not in self._multi_parent_multinomial_edges:
+            raise ValueError(
+                f"MultiParentMultinomialEdge for target {target_id!r} not found"
+            )
+        return self._multi_parent_multinomial_edges[target_id]
+
+    def has_multi_parent_multinomial_edge(self, target_id: str) -> bool:
+        """Check if a MultiParentMultinomialEdge exists for a target node."""
+        return target_id in self._multi_parent_multinomial_edges
+
     def node_count(self) -> int:
         """Return the number of nodes in the network."""
         return len(self._nodes)
@@ -914,15 +998,20 @@ class SLNetwork:
         """Return the number of edges in the network.
 
         Counts simple edges plus the individual parent→target edges
-        contributed by multi-parent edges.
+        contributed by multi-parent edges (both binary and multinomial).
         """
         multi_edges = sum(
             len(mpe.parent_ids) for mpe in self._multi_parent_edges.values()
+        )
+        multi_multinomial_edges = sum(
+            len(mpe.parent_ids)
+            for mpe in self._multi_parent_multinomial_edges.values()
         )
         return (
             len(self._edges)
             + multi_edges
             + len(self._multinomial_edges)
+            + multi_multinomial_edges
         )
 
     # ── Structural Analysis ────────────────────────────────────────

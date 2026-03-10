@@ -564,6 +564,186 @@ class MultinomialEdge:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# MULTI-PARENT MULTINOMIAL EDGE
+# ═══════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class MultiParentMultinomialEdge:
+    """A directed conditional edge from multiple k-ary parents to a k-ary child.
+
+    This is the multinomial generalization of ``MultiParentEdge`` (which
+    handles binary parents with ``tuple[bool, ...]`` keys and binomial
+    ``Opinion`` values).  Here, parent state combinations are identified
+    by ``tuple[str, ...]`` keys (one state name per parent, matching
+    ``parent_ids`` order), and each conditional is a
+    ``MultinomialOpinion`` over the shared child domain.
+
+    Example (two ternary parents → binary child)::
+
+        conditionals = {
+            ("sunny", "high"):  MultinomialOpinion(beliefs={"H": 0.8, "L": 0.1}, ...),
+            ("sunny", "low"):   MultinomialOpinion(beliefs={"H": 0.6, "L": 0.2}, ...),
+            ("cloudy", "high"): MultinomialOpinion(beliefs={"H": 0.4, "L": 0.3}, ...),
+            ...
+        }
+
+    Attributes:
+        parent_ids:   Ordered tuple of parent node IDs.
+        target_id:    Child node ID.
+        conditionals: Mapping from parent-state tuples to conditional
+                      ``MultinomialOpinion`` over the child domain.
+                      Key tuples must have ``len(parent_ids)`` elements.
+                      All conditional opinions must share the same child
+                      domain.
+        edge_type:    ``"deduction"`` (default) for content inference.
+        metadata:     Arbitrary key–value pairs.
+        timestamp:    When this edge was created/observed.
+        half_life:    Decay half-life for temporal inference.
+        valid_from:   Start of validity window.
+        valid_until:  End of validity window.
+
+    Constraints:
+        - ``parent_ids`` must be non-empty with no duplicates.
+        - ``target_id`` must not appear in ``parent_ids``.
+        - ``conditionals`` must be non-empty.
+        - All values must be ``MultinomialOpinion`` instances.
+        - All conditional opinions must share the same child domain.
+        - All key tuples must have length ``len(parent_ids)``.
+
+    References:
+        Jøsang, A. (2016). Subjective Logic, Ch. 9 (Multinomial Deduction).
+        SLNetworks_plan.md §1.6 (BN interop).
+    """
+
+    parent_ids: tuple[str, ...]
+    target_id: str
+    conditionals: dict[tuple[str, ...], MultinomialOpinion]
+    edge_type: EdgeType = "deduction"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime | None = None
+    half_life: float | None = None
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
+
+    def __post_init__(self) -> None:
+        # ── Validate parent_ids ──
+        if not self.parent_ids:
+            raise ValueError(
+                "parent_ids must be non-empty (at least one parent required)"
+            )
+        if len(set(self.parent_ids)) != len(self.parent_ids):
+            raise ValueError(
+                f"Duplicate parent_ids not allowed: {self.parent_ids!r}"
+            )
+
+        # ── Validate target_id ──
+        if not isinstance(self.target_id, str) or not self.target_id.strip():
+            raise ValueError(
+                f"target_id must be a non-empty string, got {self.target_id!r}"
+            )
+        if self.target_id in self.parent_ids:
+            raise ValueError(
+                f"target_id {self.target_id!r} must not appear in "
+                f"parent_ids {self.parent_ids!r}"
+            )
+
+        # ── Validate conditionals non-empty ──
+        if not self.conditionals:
+            raise ValueError(
+                "conditionals must not be empty: at least one parent-state "
+                "combination → child opinion mapping is required"
+            )
+
+        # ── Validate all values are MultinomialOpinion with consistent child domain ──
+        num_parents = len(self.parent_ids)
+        child_domain: tuple[str, ...] | None = None
+
+        for key, opinion in self.conditionals.items():
+            # Validate key tuple length
+            if len(key) != num_parents:
+                raise ValueError(
+                    f"Conditional key {key!r} has length {len(key)}, "
+                    f"expected {num_parents} (matching parent_ids)"
+                )
+
+            # Validate type
+            if not isinstance(opinion, MultinomialOpinion):
+                raise TypeError(
+                    f"conditionals[{key!r}] must be a MultinomialOpinion, "
+                    f"got {type(opinion).__name__}"
+                )
+
+            # Validate consistent child domain
+            if child_domain is None:
+                child_domain = opinion.domain
+            elif opinion.domain != child_domain:
+                raise ValueError(
+                    f"All conditional opinions must share the same child "
+                    f"domain. Expected {child_domain}, but "
+                    f"conditionals[{key!r}] has domain {opinion.domain}"
+                )
+
+        # ── Validate edge_type ──
+        if self.edge_type not in ("deduction", "trust", "attestation"):
+            raise ValueError(
+                f"edge_type must be 'deduction', 'trust', or 'attestation', "
+                f"got {self.edge_type!r}"
+            )
+
+        # ── Validate temporal fields ──
+        if self.half_life is not None and self.half_life <= 0.0:
+            raise ValueError(
+                f"half_life must be positive, got {self.half_life!r}"
+            )
+        if (
+            self.valid_from is not None
+            and self.valid_until is not None
+            and self.valid_until < self.valid_from
+        ):
+            raise ValueError(
+                f"valid_until ({self.valid_until}) must not be before "
+                f"valid_from ({self.valid_from})"
+            )
+
+    # ── Convenience properties ─────────────────────────────────────
+
+    @property
+    def child_domain(self) -> tuple[str, ...]:
+        """The shared child domain (sorted tuple of state names)."""
+        return next(iter(self.conditionals.values())).domain
+
+    @property
+    def child_cardinality(self) -> int:
+        """Number of child states (m)."""
+        return len(self.child_domain)
+
+    @property
+    def num_parent_configs(self) -> int:
+        """Number of parent-state combinations in the conditional table."""
+        return len(self.conditionals)
+
+    @property
+    def parent_count(self) -> int:
+        """Number of parent nodes."""
+        return len(self.parent_ids)
+
+    def __hash__(self) -> int:
+        """Hash by (parent_ids, target_id) — the identity of this edge."""
+        return hash((self.parent_ids, self.target_id))
+
+    def __repr__(self) -> str:
+        n = self.num_parent_configs
+        m = self.child_cardinality
+        parents = ", ".join(self.parent_ids)
+        return (
+            f"MultiParentMultinomialEdge("
+            f"({parents})→{self.target_id!r}, "
+            f"configs={n}, k_child={m})"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════
 # INFERENCE RESULTS
 # ═══════════════════════════════════════════════════════════════════
 

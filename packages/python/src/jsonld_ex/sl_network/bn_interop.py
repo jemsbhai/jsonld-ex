@@ -41,8 +41,15 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from jsonld_ex.confidence_algebra import Opinion
+from jsonld_ex.multinomial_algebra import MultinomialOpinion
 from jsonld_ex.sl_network.network import SLNetwork
-from jsonld_ex.sl_network.types import MultiParentEdge, SLEdge, SLNode
+from jsonld_ex.sl_network.types import (
+    MultiParentEdge,
+    MultiParentMultinomialEdge,
+    MultinomialEdge,
+    SLEdge,
+    SLNode,
+)
 
 
 def _require_pgmpy() -> None:
@@ -77,6 +84,36 @@ def _get_pgmpy_bn_class() -> type:
         return BayesianNetwork
 
 
+def _get_variable_card(bn: Any, node_name: str) -> int:
+    """Return the cardinality of a variable in the BN."""
+    cpd = bn.get_cpds(node_name)
+    return int(cpd.get_values().shape[0])
+
+
+def _multinomial_opinion_from_cpd_column(
+    values: Any,
+    col_idx: int,
+    child_card: int,
+    n: int,
+) -> MultinomialOpinion:
+    """Build a MultinomialOpinion from one column of a CPD matrix.
+
+    Args:
+        values: The CPD values matrix (shape: child_card x num_parent_configs).
+        col_idx: Which column (parent config) to read.
+        child_card: Number of child states.
+        n: Sample count for evidence weighting.
+
+    Returns:
+        MultinomialOpinion via from_evidence().
+    """
+    evidence: dict[str, int | float] = {}
+    for state_idx in range(child_card):
+        p = float(values[state_idx, col_idx])
+        evidence[str(state_idx)] = p * n
+    return MultinomialOpinion.from_evidence(evidence)
+
+
 def from_bayesian_network(
     bn: Any,
     sample_counts: dict[str, int] | None = None,
@@ -102,22 +139,19 @@ def from_bayesian_network(
 
     Raises:
         ImportError: If pgmpy is not installed.
-        ValueError: If the BN is invalid or contains non-binary variables.
+        ValueError: If the BN is invalid.
 
     Conversion details:
-        - **Root nodes** get opinions via ``Opinion.from_evidence()``
-          using the marginal probability from the CPT and the sample
-          count.  This preserves the relationship between evidence
-          quantity and epistemic uncertainty.
-        - **Non-root nodes** get vacuous opinions ``(b=0, d=0, u=1)``
-          as placeholders.  Their actual opinions are computed by
-          SLNetwork inference from the graph structure, not baked in
-          from BN marginals.
-        - **Single-parent edges** become ``SLEdge`` with:
-          - ``conditional`` from ``P(Y=1|X=1)``
-          - ``counterfactual`` from ``P(Y=1|X=0)``
-        - **Multi-parent edges** become ``MultiParentEdge`` with the
-          full conditional opinion table from the CPT.
+        - **Binary root nodes** (card=2) get ``Opinion.from_evidence()``.
+        - **K-ary root nodes** (card>2) get ``MultinomialOpinion.from_evidence()``
+          stored in ``SLNode.multinomial_opinion``.
+        - **Non-root nodes** get vacuous opinions as placeholders.
+        - **Binary single-parent edges** become ``SLEdge``.
+        - **K-ary single-parent edges** (parent or child card>2) become
+          ``MultinomialEdge``.
+        - **Binary multi-parent edges** become ``MultiParentEdge``.
+        - **K-ary multi-parent edges** (any card>2) become
+          ``MultiParentMultinomialEdge``.
 
     Example::
 
@@ -157,24 +191,48 @@ def from_bayesian_network(
 
     for node_name in bn.nodes():
         n = sample_counts.get(node_name, default_sample_count)
+        cpd = bn.get_cpds(node_name)
+        card = int(cpd.get_values().shape[0])
 
-        if node_name in root_nodes:
-            # Root node: opinion from marginal probability
-            cpd = bn.get_cpds(node_name)
-            # pgmpy CPD values: rows are states, columns are parent configs
-            # For a root node (no parents), it's a single column
-            # State 0 = False, State 1 = True
+        multinomial_opinion = None
+
+        if card > 2:
+            # K-ary variable: MultinomialOpinion
+            if node_name in root_nodes:
+                values = cpd.get_values()
+                evidence: dict[str, int | float] = {
+                    str(i): float(values[i, 0]) * n
+                    for i in range(card)
+                }
+                multinomial_opinion = MultinomialOpinion.from_evidence(
+                    evidence
+                )
+            else:
+                # Vacuous multinomial: uniform base rates, u=1
+                multinomial_opinion = MultinomialOpinion(
+                    beliefs={str(i): 0.0 for i in range(card)},
+                    uncertainty=1.0,
+                    base_rates={str(i): 1.0 / card for i in range(card)},
+                )
+            # Binomial opinion is vacuous placeholder for backward compat
+            opinion = Opinion(
+                belief=0.0,
+                disbelief=0.0,
+                uncertainty=1.0,
+                base_rate=base_rate,
+            )
+        elif node_name in root_nodes:
+            # Binary root node: opinion from marginal probability
             values = cpd.get_values()
-            p_true = float(values[1, 0])  # P(X=1)
+            p_true = float(values[1, 0])   # P(X=1)
             p_false = float(values[0, 0])  # P(X=0)
-
             opinion = Opinion.from_evidence(
                 positive=p_true * n,
                 negative=p_false * n,
                 base_rate=base_rate,
             )
         else:
-            # Non-root node: vacuous placeholder
+            # Binary non-root node: vacuous placeholder
             opinion = Opinion(
                 belief=0.0,
                 disbelief=0.0,
@@ -187,6 +245,7 @@ def from_bayesian_network(
             opinion=opinion,
             node_type="content",
             label=node_name,
+            multinomial_opinion=multinomial_opinion,
         )
         net.add_node(sl_node)
 
@@ -198,87 +257,127 @@ def from_bayesian_network(
 
         cpd = bn.get_cpds(node_name)
         values = cpd.get_values()
-        # values shape: (variable_card, product of parent cards)
-        # For binary: (2, 2^num_parents)
+        child_card = int(values.shape[0])
+        n = sample_counts.get(node_name, default_sample_count)
+
+        # Determine parent cardinalities
+        parent_cards = [
+            cpd.get_cardinality([p])[p] for p in parents
+        ]
+
+        # Check if any variable is k-ary (card > 2)
+        any_kary = child_card > 2 or any(c > 2 for c in parent_cards)
 
         if len(parents) == 1:
-            # Single parent → SLEdge
             parent = parents[0]
-            n = sample_counts.get(node_name, default_sample_count)
+            parent_card = parent_cards[0]
 
-            # pgmpy orders parent states as 0, 1
-            # Column 0: parent=0 (False), Column 1: parent=1 (True)
-            p_true_given_parent_true = float(values[1, 1])   # P(Y=1|X=1)
-            p_false_given_parent_true = float(values[0, 1])  # P(Y=0|X=1)
-            p_true_given_parent_false = float(values[1, 0])  # P(Y=1|X=0)
-            p_false_given_parent_false = float(values[0, 0]) # P(Y=0|X=0)
+            if any_kary:
+                # K-ary single parent → MultinomialEdge
+                # One MultinomialOpinion per parent state
+                cond_map: dict[str, MultinomialOpinion] = {}
+                for col_idx in range(parent_card):
+                    cond_map[str(col_idx)] = \
+                        _multinomial_opinion_from_cpd_column(
+                            values, col_idx, child_card, n,
+                        )
 
-            conditional = Opinion.from_evidence(
-                positive=p_true_given_parent_true * n,
-                negative=p_false_given_parent_true * n,
-                base_rate=base_rate,
-            )
-            counterfactual = Opinion.from_evidence(
-                positive=p_true_given_parent_false * n,
-                negative=p_false_given_parent_false * n,
-                base_rate=base_rate,
-            )
+                edge = MultinomialEdge(
+                    source_id=parent,
+                    target_id=node_name,
+                    conditionals=cond_map,
+                    edge_type="deduction",
+                )
+                net.add_edge(edge)
+            else:
+                # Binary single parent → SLEdge
+                p_true_given_parent_true = float(values[1, 1])
+                p_false_given_parent_true = float(values[0, 1])
+                p_true_given_parent_false = float(values[1, 0])
+                p_false_given_parent_false = float(values[0, 0])
 
-            edge = SLEdge(
-                source_id=parent,
-                target_id=node_name,
-                conditional=conditional,
-                counterfactual=counterfactual,
-                edge_type="deduction",
-            )
-            net.add_edge(edge)
-
-        else:
-            # Multiple parents → MultiParentEdge
-            n = sample_counts.get(node_name, default_sample_count)
-
-            # Build the conditional opinion table
-            # pgmpy column ordering: rightmost parent varies fastest
-            # We need to map column index to parent state tuple
-            parent_ids = tuple(parents)
-            num_parents = len(parents)
-            conditionals: dict[tuple[bool, ...], Opinion] = {}
-
-            # Get parent cardinalities in CPD column order
-            # pgmpy orders columns with first evidence variable varying slowest
-            parent_cards = [
-                cpd.get_cardinality([p])[p] for p in parents
-            ]
-
-            for col_idx in range(values.shape[1]):
-                # Decode column index to parent state tuple
-                # pgmpy: first parent varies slowest (row-major)
-                state_tuple = []
-                remainder = col_idx
-                for i in range(num_parents - 1, -1, -1):
-                    card = parent_cards[i]
-                    state_tuple.insert(0, remainder % card)
-                    remainder //= card
-
-                # Convert 0/1 states to False/True
-                bool_tuple = tuple(bool(s) for s in state_tuple)
-
-                p_true = float(values[1, col_idx])
-                p_false = float(values[0, col_idx])
-
-                conditionals[bool_tuple] = Opinion.from_evidence(
-                    positive=p_true * n,
-                    negative=p_false * n,
+                conditional = Opinion.from_evidence(
+                    positive=p_true_given_parent_true * n,
+                    negative=p_false_given_parent_true * n,
+                    base_rate=base_rate,
+                )
+                counterfactual = Opinion.from_evidence(
+                    positive=p_true_given_parent_false * n,
+                    negative=p_false_given_parent_false * n,
                     base_rate=base_rate,
                 )
 
-            multi_edge = MultiParentEdge(
-                target_id=node_name,
-                parent_ids=parent_ids,
-                conditionals=conditionals,
-                edge_type="deduction",
-            )
-            net.add_edge(multi_edge)
+                edge = SLEdge(
+                    source_id=parent,
+                    target_id=node_name,
+                    conditional=conditional,
+                    counterfactual=counterfactual,
+                    edge_type="deduction",
+                )
+                net.add_edge(edge)
+
+        else:
+            # Multiple parents
+            parent_ids = tuple(parents)
+            num_parents = len(parents)
+
+            if any_kary:
+                # K-ary multi-parent → MultiParentMultinomialEdge
+                mn_conditionals: dict[
+                    tuple[str, ...], MultinomialOpinion
+                ] = {}
+
+                for col_idx in range(values.shape[1]):
+                    # Decode column index to parent state tuple (str names)
+                    state_list: list[str] = []
+                    remainder = col_idx
+                    for i in range(num_parents - 1, -1, -1):
+                        pc = parent_cards[i]
+                        state_list.insert(0, str(remainder % pc))
+                        remainder //= pc
+
+                    key = tuple(state_list)
+                    mn_conditionals[key] = \
+                        _multinomial_opinion_from_cpd_column(
+                            values, col_idx, child_card, n,
+                        )
+
+                multi_edge = MultiParentMultinomialEdge(
+                    target_id=node_name,
+                    parent_ids=parent_ids,
+                    conditionals=mn_conditionals,
+                    edge_type="deduction",
+                )
+                net.add_edge(multi_edge)
+            else:
+                # Binary multi-parent → MultiParentEdge
+                bin_conditionals: dict[tuple[bool, ...], Opinion] = {}
+
+                for col_idx in range(values.shape[1]):
+                    state_tuple: list[int] = []
+                    remainder = col_idx
+                    for i in range(num_parents - 1, -1, -1):
+                        pc = parent_cards[i]
+                        state_tuple.insert(0, remainder % pc)
+                        remainder //= pc
+
+                    bool_tuple = tuple(bool(s) for s in state_tuple)
+                    p_true = float(values[1, col_idx])
+                    p_false = float(values[0, col_idx])
+
+                    bin_conditionals[bool_tuple] = Opinion.from_evidence(
+                        positive=p_true * n,
+                        negative=p_false * n,
+                        base_rate=base_rate,
+                    )
+
+                multi_edge = MultiParentEdge(
+                    target_id=node_name,
+                    parent_ids=parent_ids,
+                    conditionals=bin_conditionals,
+                    edge_type="deduction",
+                )
+                net.add_edge(multi_edge)
 
     return net
 
@@ -333,8 +432,17 @@ def to_bayesian_network(
     for (src, tgt) in network._edges:
         edges.append((src, tgt))
 
-    # Collect edges from MultiParentEdges
+    # Collect edges from MultinomialEdges
+    for (src, tgt) in network._multinomial_edges:
+        edges.append((src, tgt))
+
+    # Collect edges from MultiParentEdges (binary)
     for tgt, mpe in network._multi_parent_edges.items():
+        for pid in mpe.parent_ids:
+            edges.append((pid, tgt))
+
+    # Collect edges from MultiParentMultinomialEdges
+    for tgt, mpe in network._multi_parent_multinomial_edges.items():
         for pid in mpe.parent_ids:
             edges.append((pid, tgt))
 
@@ -345,40 +453,89 @@ def to_bayesian_network(
         if node_id not in bn.nodes():
             bn.add_node(node_id)
 
+    # --- Helper: determine node cardinality ---
+    def _node_card(nid: str) -> int:
+        nd = network.get_node(nid)
+        if nd.is_multinomial:
+            return nd.multinomial_opinion.cardinality
+        return 2  # binary
+
     # --- Step 2: Build CPDs ---
     topo_order = network.topological_sort()
 
     for node_id in topo_order:
         node = network.get_node(node_id)
         parents = network.get_parents(node_id)
+        child_card = _node_card(node_id)
 
         if not parents:
-            # Root node: marginal CPD from projected probability
-            p_true = node.opinion.projected_probability()
-            p_false = 1.0 - p_true
+            # Root node: marginal CPD
+            if node.is_multinomial:
+                pp = node.multinomial_opinion.projected_probability()
+                # Rows ordered by sorted state name ("0", "1", "2", ...)
+                values = [
+                    [pp[s]] for s in sorted(pp.keys())
+                ]
+            else:
+                p_true = node.opinion.projected_probability()
+                values = [[1.0 - p_true], [p_true]]
+
             cpd = TabularCPD(
                 variable=node_id,
-                variable_card=2,
-                values=[[p_false], [p_true]],
+                variable_card=child_card,
+                values=values,
+            )
+            bn.add_cpds(cpd)
+
+        elif node_id in network._multi_parent_multinomial_edges:
+            # K-ary multi-parent: MultiParentMultinomialEdge
+            mpe = network._multi_parent_multinomial_edges[node_id]
+            parent_ids = list(mpe.parent_ids)
+            num_parents = len(parent_ids)
+            parent_cards = [_node_card(pid) for pid in parent_ids]
+            num_cols = 1
+            for pc in parent_cards:
+                num_cols *= pc
+
+            # Build values matrix: shape (child_card, num_cols)
+            # pgmpy column ordering: first parent varies slowest
+            rows: list[list[float]] = [[] for _ in range(child_card)]
+
+            for col_idx in range(num_cols):
+                # Decode column index to parent state name tuple
+                state_list: list[str] = []
+                remainder = col_idx
+                for i in range(num_parents - 1, -1, -1):
+                    pc = parent_cards[i]
+                    state_list.insert(0, str(remainder % pc))
+                    remainder //= pc
+
+                key = tuple(state_list)
+                pp = mpe.conditionals[key].projected_probability()
+                for row_idx, state in enumerate(sorted(pp.keys())):
+                    rows[row_idx].append(pp[state])
+
+            cpd = TabularCPD(
+                variable=node_id,
+                variable_card=child_card,
+                values=rows,
+                evidence=parent_ids,
+                evidence_card=parent_cards,
             )
             bn.add_cpds(cpd)
 
         elif node_id in network._multi_parent_edges:
-            # Multi-parent node: build CPT from MultiParentEdge
+            # Binary multi-parent: MultiParentEdge
             mpe = network._multi_parent_edges[node_id]
             parent_ids = list(mpe.parent_ids)
             num_parents = len(parent_ids)
             num_cols = 2 ** num_parents
 
-            # Build values matrix: shape (2, 2^num_parents)
-            # Column ordering: first parent varies slowest (pgmpy convention)
-            p_false_row = []
-            p_true_row = []
+            p_false_row: list[float] = []
+            p_true_row: list[float] = []
 
             for col_idx in range(num_cols):
-                # Decode column index to parent states
-                # pgmpy: first evidence parent varies slowest
-                state_tuple = []
+                state_tuple: list[bool] = []
                 remainder = col_idx
                 for i in range(num_parents - 1, -1, -1):
                     state_tuple.insert(0, bool(remainder % 2))
@@ -399,17 +556,42 @@ def to_bayesian_network(
             )
             bn.add_cpds(cpd)
 
+        elif len(parents) == 1 and network.has_multinomial_edge(
+            parents[0], node_id
+        ):
+            # K-ary single-parent: MultinomialEdge
+            parent = parents[0]
+            mn_edge = network.get_multinomial_edge(parent, node_id)
+            parent_card = _node_card(parent)
+
+            rows = [[] for _ in range(child_card)]
+            for col_idx in range(parent_card):
+                state_name = str(col_idx)
+                pp = mn_edge.conditionals[state_name].projected_probability()
+                for row_idx, state in enumerate(sorted(pp.keys())):
+                    rows[row_idx].append(pp[state])
+
+            cpd = TabularCPD(
+                variable=node_id,
+                variable_card=child_card,
+                values=rows,
+                evidence=[parent],
+                evidence_card=[parent_card],
+            )
+            bn.add_cpds(cpd)
+
         else:
-            # Single-parent node: build CPT from SLEdge
+            # Binary single-parent: SLEdge
             assert len(parents) == 1
             parent = parents[0]
             edge = network._edges[(parent, node_id)]
 
             p_true_given_true = edge.conditional.projected_probability()
             if edge.counterfactual is not None:
-                p_true_given_false = edge.counterfactual.projected_probability()
+                p_true_given_false = (
+                    edge.counterfactual.projected_probability()
+                )
             else:
-                # If no counterfactual, use base rate as fallback
                 p_true_given_false = node.opinion.base_rate
 
             cpd = TabularCPD(
