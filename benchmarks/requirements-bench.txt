@@ -1,3 +1,19 @@
-# Baseline comparison tools for benchmarks
+# jsonld-ex benchmark dependencies
+# Install with: pip install -r requirements-bench.txt
+
+# The library itself (install from local source or PyPI)
+# pip install -e ../packages/python  OR  pip install jsonld-ex>=0.7.1
+
+# Required baseline comparison tools
 rdflib>=7.0
 pyshacl>=0.26
+
+# Required for statistical computations in bench_utils and bench_algebra
+numpy>=1.24
+
+# Required for bench_iot.py (CBOR-LD and MQTT benchmarks)
+cbor2>=5.4
+paho-mqtt>=1.6
+
+# Required for bench_algebra.py (already a jsonld-ex dep, listed for completeness)
+# hypothesis>=6.0  # only needed if running property-based tests, not benchmarks
