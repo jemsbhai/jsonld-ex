@@ -1416,3 +1416,301 @@ class TestMultinomialDeduce:
             assert abs(pp_result[y] - ltp) < 1e-9, (
                 f"Dogmatic limit: P_Y({y}) should match LTP"
             )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Step 5: MultinomialOpinion Serialization (Gap 2)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestMultinomialOpinionToDict:
+    """Test to_dict() serialization."""
+
+    def test_to_dict_basic_ternary(self) -> None:
+        """to_dict() returns beliefs, uncertainty, base_rates as plain dict."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        op = MultinomialOpinion(
+            beliefs={"x1": 0.3, "x2": 0.2, "x3": 0.1},
+            uncertainty=0.4,
+            base_rates={"x1": 0.5, "x2": 0.3, "x3": 0.2},
+        )
+        d = op.to_dict()
+
+        assert isinstance(d, dict)
+        assert d["beliefs"] == {"x1": 0.3, "x2": 0.2, "x3": 0.1}
+        assert d["uncertainty"] == 0.4
+        assert d["base_rates"] == {"x1": 0.5, "x2": 0.3, "x3": 0.2}
+
+    def test_to_dict_binary(self) -> None:
+        """to_dict() works for k=2 (binary) opinions."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        op = MultinomialOpinion(
+            beliefs={"T": 0.6, "F": 0.2},
+            uncertainty=0.2,
+            base_rates={"T": 0.5, "F": 0.5},
+        )
+        d = op.to_dict()
+
+        assert d["beliefs"]["T"] == 0.6
+        assert d["beliefs"]["F"] == 0.2
+        assert d["uncertainty"] == 0.2
+
+    def test_to_dict_returns_plain_dicts(self) -> None:
+        """to_dict() must return plain dicts, not MappingProxyType."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        op = MultinomialOpinion(
+            beliefs={"x1": 0.3, "x2": 0.3},
+            uncertainty=0.4,
+            base_rates={"x1": 0.5, "x2": 0.5},
+        )
+        d = op.to_dict()
+
+        assert type(d["beliefs"]) is dict
+        assert type(d["base_rates"]) is dict
+
+    def test_to_dict_vacuous(self) -> None:
+        """Vacuous opinion serializes correctly."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        op = MultinomialOpinion(
+            beliefs={"a": 0.0, "b": 0.0, "c": 0.0},
+            uncertainty=1.0,
+            base_rates={"a": 1 / 3, "b": 1 / 3, "c": 1 / 3},
+        )
+        d = op.to_dict()
+
+        assert d["uncertainty"] == 1.0
+        for v in d["beliefs"].values():
+            assert v == 0.0
+
+
+class TestMultinomialOpinionFromDict:
+    """Test from_dict() deserialization."""
+
+    def test_from_dict_basic(self) -> None:
+        """from_dict() reconstructs a MultinomialOpinion."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        data = {
+            "beliefs": {"x1": 0.3, "x2": 0.2, "x3": 0.1},
+            "uncertainty": 0.4,
+            "base_rates": {"x1": 0.5, "x2": 0.3, "x3": 0.2},
+        }
+        op = MultinomialOpinion.from_dict(data)
+
+        assert op.beliefs["x1"] == 0.3
+        assert op.uncertainty == 0.4
+        assert op.base_rates["x3"] == 0.2
+
+    def test_round_trip_to_dict_from_dict(self) -> None:
+        """to_dict() → from_dict() round-trip preserves values."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        original = MultinomialOpinion(
+            beliefs={"x1": 0.3, "x2": 0.2, "x3": 0.1},
+            uncertainty=0.4,
+            base_rates={"x1": 0.5, "x2": 0.3, "x3": 0.2},
+        )
+        reconstructed = MultinomialOpinion.from_dict(original.to_dict())
+        assert reconstructed == original
+
+    def test_round_trip_10_state(self) -> None:
+        """Round-trip works for a 10-state domain."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        k = 10
+        beliefs = {f"s{i}": 0.05 for i in range(k)}  # 10 * 0.05 = 0.5
+        base_rates = {f"s{i}": 1.0 / k for i in range(k)}
+        original = MultinomialOpinion(
+            beliefs=beliefs,
+            uncertainty=0.5,
+            base_rates=base_rates,
+        )
+        reconstructed = MultinomialOpinion.from_dict(original.to_dict())
+        assert reconstructed == original
+
+    def test_round_trip_near_zero_values(self) -> None:
+        """Round-trip preserves near-zero belief values."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        original = MultinomialOpinion(
+            beliefs={"a": 1e-15, "b": 1.0 - 1e-15 - 0.3, "c": 0.3},
+            uncertainty=0.0,
+            base_rates={"a": 0.1, "b": 0.5, "c": 0.4},
+        )
+        reconstructed = MultinomialOpinion.from_dict(original.to_dict())
+        assert reconstructed == original
+
+    def test_round_trip_from_evidence_factory(self) -> None:
+        """Round-trip works for opinions created via from_evidence()."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        original = MultinomialOpinion.from_evidence(
+            evidence={"x1": 30, "x2": 50, "x3": 20},
+        )
+        reconstructed = MultinomialOpinion.from_dict(original.to_dict())
+        assert reconstructed == original
+
+
+class TestMultinomialOpinionToJsonLD:
+    """Test to_jsonld() serialization."""
+
+    def test_to_jsonld_has_type(self) -> None:
+        """to_jsonld() must include @type: MultinomialOpinion."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        op = MultinomialOpinion(
+            beliefs={"x1": 0.3, "x2": 0.3},
+            uncertainty=0.4,
+            base_rates={"x1": 0.5, "x2": 0.5},
+        )
+        d = op.to_jsonld()
+
+        assert d["@type"] == "MultinomialOpinion"
+
+    def test_to_jsonld_uses_camel_case(self) -> None:
+        """to_jsonld() uses baseRates (camelCase), matching Opinion pattern."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        op = MultinomialOpinion(
+            beliefs={"x1": 0.3, "x2": 0.3},
+            uncertainty=0.4,
+            base_rates={"x1": 0.5, "x2": 0.5},
+        )
+        d = op.to_jsonld()
+
+        assert "baseRates" in d
+        assert "base_rates" not in d
+        assert d["baseRates"] == {"x1": 0.5, "x2": 0.5}
+
+    def test_to_jsonld_structure(self) -> None:
+        """to_jsonld() returns the expected full structure."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        op = MultinomialOpinion(
+            beliefs={"a": 0.2, "b": 0.3},
+            uncertainty=0.5,
+            base_rates={"a": 0.4, "b": 0.6},
+        )
+        d = op.to_jsonld()
+
+        assert d == {
+            "@type": "MultinomialOpinion",
+            "beliefs": {"a": 0.2, "b": 0.3},
+            "uncertainty": 0.5,
+            "baseRates": {"a": 0.4, "b": 0.6},
+        }
+
+
+class TestMultinomialOpinionFromJsonLD:
+    """Test from_jsonld() deserialization."""
+
+    def test_from_jsonld_basic(self) -> None:
+        """from_jsonld() reconstructs from JSON-LD dict."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        data = {
+            "@type": "MultinomialOpinion",
+            "beliefs": {"x1": 0.3, "x2": 0.3},
+            "uncertainty": 0.4,
+            "baseRates": {"x1": 0.5, "x2": 0.5},
+        }
+        op = MultinomialOpinion.from_jsonld(data)
+
+        assert op.beliefs["x1"] == 0.3
+        assert op.uncertainty == 0.4
+        assert op.base_rates["x1"] == 0.5
+
+    def test_from_jsonld_accepts_snake_case_fallback(self) -> None:
+        """from_jsonld() accepts base_rates as fallback for robustness."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        data = {
+            "@type": "MultinomialOpinion",
+            "beliefs": {"x1": 0.3, "x2": 0.3},
+            "uncertainty": 0.4,
+            "base_rates": {"x1": 0.5, "x2": 0.5},
+        }
+        op = MultinomialOpinion.from_jsonld(data)
+
+        assert op.base_rates["x1"] == 0.5
+
+    def test_from_jsonld_prefers_camel_case(self) -> None:
+        """When both baseRates and base_rates present, prefer baseRates."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        data = {
+            "@type": "MultinomialOpinion",
+            "beliefs": {"x1": 0.3, "x2": 0.3},
+            "uncertainty": 0.4,
+            "baseRates": {"x1": 0.6, "x2": 0.4},
+            "base_rates": {"x1": 0.5, "x2": 0.5},  # should be ignored
+        }
+        op = MultinomialOpinion.from_jsonld(data)
+
+        assert abs(op.base_rates["x1"] - 0.6) < 1e-9
+        assert abs(op.base_rates["x2"] - 0.4) < 1e-9
+
+    def test_round_trip_to_jsonld_from_jsonld(self) -> None:
+        """to_jsonld() → from_jsonld() round-trip preserves values."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        original = MultinomialOpinion(
+            beliefs={"x1": 0.3, "x2": 0.2, "x3": 0.1},
+            uncertainty=0.4,
+            base_rates={"x1": 0.5, "x2": 0.3, "x3": 0.2},
+        )
+        reconstructed = MultinomialOpinion.from_jsonld(original.to_jsonld())
+        assert reconstructed == original
+
+    def test_round_trip_jsonld_10_state(self) -> None:
+        """JSON-LD round-trip works for a 10-state domain."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        k = 10
+        beliefs = {f"s{i}": 0.05 for i in range(k)}
+        base_rates = {f"s{i}": 1.0 / k for i in range(k)}
+        original = MultinomialOpinion(
+            beliefs=beliefs,
+            uncertainty=0.5,
+            base_rates=base_rates,
+        )
+        reconstructed = MultinomialOpinion.from_jsonld(original.to_jsonld())
+        assert reconstructed == original
+
+    def test_round_trip_jsonld_from_evidence(self) -> None:
+        """JSON-LD round-trip works for opinions created via from_evidence()."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        original = MultinomialOpinion.from_evidence(
+            evidence={"x1": 30, "x2": 50, "x3": 20},
+        )
+        reconstructed = MultinomialOpinion.from_jsonld(original.to_jsonld())
+        assert reconstructed == original
+
+    def test_round_trip_jsonld_vacuous(self) -> None:
+        """JSON-LD round-trip works for vacuous opinion."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        original = MultinomialOpinion(
+            beliefs={"a": 0.0, "b": 0.0},
+            uncertainty=1.0,
+            base_rates={"a": 0.5, "b": 0.5},
+        )
+        reconstructed = MultinomialOpinion.from_jsonld(original.to_jsonld())
+        assert reconstructed == original
+
+    def test_round_trip_jsonld_dogmatic(self) -> None:
+        """JSON-LD round-trip works for dogmatic opinion (u=0)."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        original = MultinomialOpinion(
+            beliefs={"a": 0.6, "b": 0.4},
+            uncertainty=0.0,
+            base_rates={"a": 0.5, "b": 0.5},
+        )
+        reconstructed = MultinomialOpinion.from_jsonld(original.to_jsonld())
+        assert reconstructed == original

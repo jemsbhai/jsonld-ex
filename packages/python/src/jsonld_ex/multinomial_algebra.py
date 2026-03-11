@@ -302,6 +302,79 @@ class MultinomialOpinion:
             tuple(self._base_rates[x] for x in self._domain),
         ))
 
+    # ── Serialization ──────────────────────────────────────────────
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a plain dictionary.
+
+        Returns:
+            A dict with keys ``beliefs``, ``uncertainty``, ``base_rates``.
+            Inner mappings are plain ``dict`` objects (not MappingProxyType).
+        """
+        return {
+            "beliefs": dict(self._beliefs),
+            "uncertainty": self._uncertainty,
+            "base_rates": dict(self._base_rates),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MultinomialOpinion:
+        """Reconstruct a MultinomialOpinion from a plain dictionary.
+
+        Inverse of :meth:`to_dict`.
+
+        Args:
+            data: Dict with keys ``beliefs``, ``uncertainty``, ``base_rates``.
+
+        Returns:
+            A MultinomialOpinion matching the serialized values.
+        """
+        return cls(
+            beliefs=data["beliefs"],
+            uncertainty=data["uncertainty"],
+            base_rates=data["base_rates"],
+        )
+
+    def to_jsonld(self) -> dict[str, Any]:
+        """Serialize to a JSON-LD compatible dictionary.
+
+        Follows the same pattern as ``Opinion.to_jsonld()`` from
+        ``confidence_algebra``.  Uses camelCase for JSON-LD keys
+        (``baseRates`` instead of ``base_rates``).
+
+        Returns:
+            A dict with ``@type``, ``beliefs``, ``uncertainty``,
+            ``baseRates``.
+        """
+        return {
+            "@type": "MultinomialOpinion",
+            "beliefs": dict(self._beliefs),
+            "uncertainty": self._uncertainty,
+            "baseRates": dict(self._base_rates),
+        }
+
+    @classmethod
+    def from_jsonld(cls, data: dict[str, Any]) -> MultinomialOpinion:
+        """Reconstruct a MultinomialOpinion from a JSON-LD dictionary.
+
+        Inverse of :meth:`to_jsonld`.  Accepts both ``baseRates``
+        (preferred, camelCase) and ``base_rates`` (fallback, snake_case)
+        for robustness.
+
+        Args:
+            data: Dict with ``beliefs``, ``uncertainty``, and either
+                ``baseRates`` or ``base_rates``.
+
+        Returns:
+            A MultinomialOpinion matching the serialized values.
+        """
+        base_rates = data.get("baseRates", data.get("base_rates"))
+        return cls(
+            beliefs=data["beliefs"],
+            uncertainty=data["uncertainty"],
+            base_rates=base_rates,
+        )
+
 
 # ═══════════════════════════════════════════════════════════════════
 # COARSENING AND PROMOTION
