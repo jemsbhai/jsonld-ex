@@ -456,3 +456,456 @@ class TestInferenceEquivalence:
         _assert_opinions_equal(
             roundtripped.opinion, original.opinion, "jsonld DAG inference"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Gap 3: Multinomial Component Serialization
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _assert_multinomial_opinions_equal(
+    a: "MultinomialOpinion",
+    b: "MultinomialOpinion",
+    label: str = "",
+) -> None:
+    """Assert two MultinomialOpinions are equal within tolerance."""
+    from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+    prefix = f"[{label}] " if label else ""
+    assert a.domain == b.domain, f"{prefix}domain mismatch: {a.domain} vs {b.domain}"
+    assert abs(a.uncertainty - b.uncertainty) < _TOL, f"{prefix}uncertainty"
+    for x in a.domain:
+        assert abs(a.beliefs[x] - b.beliefs[x]) < _TOL, f"{prefix}belief[{x}]"
+        assert abs(a.base_rates[x] - b.base_rates[x]) < _TOL, f"{prefix}base_rate[{x}]"
+
+
+class TestDictRoundtripMultinomialNode:
+    """Gap 3a: SLNode.multinomial_opinion must survive to_dict/from_dict."""
+
+    def test_node_with_multinomial_opinion_dict_roundtrip(self) -> None:
+        """A node carrying a multinomial_opinion survives dict roundtrip."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        mop = MultinomialOpinion(
+            beliefs={"H": 0.4, "M": 0.2, "L": 0.1},
+            uncertainty=0.3,
+            base_rates={"H": 1 / 3, "M": 1 / 3, "L": 1 / 3},
+        )
+        node = SLNode(
+            node_id="weather",
+            opinion=Opinion(0.4, 0.3, 0.3),
+            multinomial_opinion=mop,
+        )
+        net = SLNetwork()
+        net.add_node(node)
+
+        restored = SLNetwork.from_dict(net.to_dict())
+        rn = restored.get_node("weather")
+
+        assert rn.multinomial_opinion is not None
+        _assert_multinomial_opinions_equal(
+            rn.multinomial_opinion, mop, "dict node multinomial"
+        )
+
+    def test_node_without_multinomial_opinion_dict_roundtrip(self) -> None:
+        """A node without multinomial_opinion stays None after roundtrip."""
+        node = SLNode(node_id="X", opinion=Opinion(0.5, 0.3, 0.2))
+        net = SLNetwork()
+        net.add_node(node)
+
+        restored = SLNetwork.from_dict(net.to_dict())
+        assert restored.get_node("X").multinomial_opinion is None
+
+    def test_mixed_nodes_dict_roundtrip(self) -> None:
+        """Network with both binomial-only and multinomial nodes."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        mop = MultinomialOpinion(
+            beliefs={"a": 0.3, "b": 0.3},
+            uncertainty=0.4,
+            base_rates={"a": 0.5, "b": 0.5},
+        )
+        net = SLNetwork()
+        net.add_node(SLNode("binary_only", Opinion(0.6, 0.2, 0.2)))
+        net.add_node(SLNode("with_multi", Opinion(0.3, 0.3, 0.4), multinomial_opinion=mop))
+
+        restored = SLNetwork.from_dict(net.to_dict())
+        assert restored.get_node("binary_only").multinomial_opinion is None
+        assert restored.get_node("with_multi").multinomial_opinion is not None
+        _assert_multinomial_opinions_equal(
+            restored.get_node("with_multi").multinomial_opinion, mop,
+        )
+
+
+class TestDictRoundtripMultinomialEdge:
+    """Gap 3b: MultinomialEdge must survive to_dict/from_dict."""
+
+    def test_multinomial_edge_dict_roundtrip(self) -> None:
+        """A simple multinomial edge survives dict roundtrip."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+        from jsonld_ex.sl_network.types import MultinomialEdge
+
+        mop_parent = MultinomialOpinion(
+            beliefs={"sunny": 0.5, "cloudy": 0.2, "rainy": 0.0},
+            uncertainty=0.3,
+            base_rates={"sunny": 1 / 3, "cloudy": 1 / 3, "rainy": 1 / 3},
+        )
+        cond_sunny = MultinomialOpinion(
+            beliefs={"H": 0.7, "L": 0.1}, uncertainty=0.2,
+            base_rates={"H": 0.5, "L": 0.5},
+        )
+        cond_cloudy = MultinomialOpinion(
+            beliefs={"H": 0.3, "L": 0.3}, uncertainty=0.4,
+            base_rates={"H": 0.5, "L": 0.5},
+        )
+        cond_rainy = MultinomialOpinion(
+            beliefs={"H": 0.1, "L": 0.6}, uncertainty=0.3,
+            base_rates={"H": 0.5, "L": 0.5},
+        )
+
+        net = SLNetwork()
+        net.add_node(SLNode("W", Opinion(0.5, 0.2, 0.3), multinomial_opinion=mop_parent))
+        net.add_node(SLNode("Y", Opinion(0.3, 0.3, 0.4)))
+        net.add_edge(MultinomialEdge(
+            source_id="W",
+            target_id="Y",
+            conditionals={"sunny": cond_sunny, "cloudy": cond_cloudy, "rainy": cond_rainy},
+        ))
+
+        d = net.to_dict()
+        assert "multinomial_edges" in d
+
+        restored = SLNetwork.from_dict(d)
+        assert restored.has_multinomial_edge("W", "Y")
+        re = restored.get_multinomial_edge("W", "Y")
+
+        _assert_multinomial_opinions_equal(
+            re.conditionals["sunny"], cond_sunny, "sunny conditional"
+        )
+        _assert_multinomial_opinions_equal(
+            re.conditionals["cloudy"], cond_cloudy, "cloudy conditional"
+        )
+        _assert_multinomial_opinions_equal(
+            re.conditionals["rainy"], cond_rainy, "rainy conditional"
+        )
+
+    def test_multinomial_edge_temporal_fields_dict_roundtrip(self) -> None:
+        """Temporal fields on MultinomialEdge survive dict roundtrip."""
+        from datetime import datetime, timezone
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+        from jsonld_ex.sl_network.types import MultinomialEdge
+
+        ts = datetime(2025, 6, 1, tzinfo=timezone.utc)
+        vf = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        vu = datetime(2025, 12, 31, tzinfo=timezone.utc)
+
+        cond_a = MultinomialOpinion(
+            beliefs={"y1": 0.5, "y2": 0.3}, uncertainty=0.2,
+            base_rates={"y1": 0.5, "y2": 0.5},
+        )
+        cond_b = MultinomialOpinion(
+            beliefs={"y1": 0.2, "y2": 0.4}, uncertainty=0.4,
+            base_rates={"y1": 0.5, "y2": 0.5},
+        )
+
+        net = SLNetwork()
+        net.add_node(SLNode("A", Opinion(0.5, 0.3, 0.2)))
+        net.add_node(SLNode("B", Opinion(0.3, 0.3, 0.4)))
+        net.add_edge(MultinomialEdge(
+            source_id="A", target_id="B",
+            conditionals={"a": cond_a, "b": cond_b},
+            timestamp=ts, half_life=86400.0,
+            valid_from=vf, valid_until=vu,
+        ))
+
+        restored = SLNetwork.from_dict(net.to_dict())
+        re = restored.get_multinomial_edge("A", "B")
+
+        assert re.timestamp == ts
+        assert re.half_life == 86400.0
+        assert re.valid_from == vf
+        assert re.valid_until == vu
+
+
+class TestDictRoundtripMultiParentMultinomialEdge:
+    """Gap 3c: MultiParentMultinomialEdge must survive to_dict/from_dict."""
+
+    def test_multi_parent_multinomial_edge_dict_roundtrip(self) -> None:
+        """A MultiParentMultinomialEdge survives dict roundtrip."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+        from jsonld_ex.sl_network.types import MultiParentMultinomialEdge
+
+        cond_aa = MultinomialOpinion(
+            beliefs={"y1": 0.7, "y2": 0.1}, uncertainty=0.2,
+            base_rates={"y1": 0.5, "y2": 0.5},
+        )
+        cond_ab = MultinomialOpinion(
+            beliefs={"y1": 0.4, "y2": 0.3}, uncertainty=0.3,
+            base_rates={"y1": 0.5, "y2": 0.5},
+        )
+        cond_ba = MultinomialOpinion(
+            beliefs={"y1": 0.2, "y2": 0.5}, uncertainty=0.3,
+            base_rates={"y1": 0.5, "y2": 0.5},
+        )
+        cond_bb = MultinomialOpinion(
+            beliefs={"y1": 0.1, "y2": 0.4}, uncertainty=0.5,
+            base_rates={"y1": 0.5, "y2": 0.5},
+        )
+
+        net = SLNetwork()
+        net.add_node(SLNode("P1", Opinion(0.5, 0.3, 0.2)))
+        net.add_node(SLNode("P2", Opinion(0.4, 0.3, 0.3)))
+        net.add_node(SLNode("C", Opinion(0.3, 0.3, 0.4)))
+        net.add_edge(MultiParentMultinomialEdge(
+            parent_ids=("P1", "P2"),
+            target_id="C",
+            conditionals={
+                ("a", "a"): cond_aa,
+                ("a", "b"): cond_ab,
+                ("b", "a"): cond_ba,
+                ("b", "b"): cond_bb,
+            },
+        ))
+
+        d = net.to_dict()
+        assert "multi_parent_multinomial_edges" in d
+
+        restored = SLNetwork.from_dict(d)
+        assert restored.has_multi_parent_multinomial_edge("C")
+        rmpe = restored.get_multi_parent_multinomial_edge("C")
+
+        assert rmpe.parent_ids == ("P1", "P2")
+        _assert_multinomial_opinions_equal(
+            rmpe.conditionals[("a", "a")], cond_aa, "cond (a,a)"
+        )
+        _assert_multinomial_opinions_equal(
+            rmpe.conditionals[("b", "b")], cond_bb, "cond (b,b)"
+        )
+
+    def test_multi_parent_multinomial_edge_temporal_fields(self) -> None:
+        """Temporal fields on MultiParentMultinomialEdge survive roundtrip."""
+        from datetime import datetime, timezone
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+        from jsonld_ex.sl_network.types import MultiParentMultinomialEdge
+
+        ts = datetime(2025, 7, 1, tzinfo=timezone.utc)
+
+        cond = MultinomialOpinion(
+            beliefs={"y1": 0.5, "y2": 0.3}, uncertainty=0.2,
+            base_rates={"y1": 0.5, "y2": 0.5},
+        )
+
+        net = SLNetwork()
+        net.add_node(SLNode("P", Opinion(0.5, 0.3, 0.2)))
+        net.add_node(SLNode("C", Opinion(0.3, 0.3, 0.4)))
+        net.add_edge(MultiParentMultinomialEdge(
+            parent_ids=("P",),
+            target_id="C",
+            conditionals={("a",): cond, ("b",): cond},
+            timestamp=ts, half_life=3600.0,
+        ))
+
+        restored = SLNetwork.from_dict(net.to_dict())
+        rmpe = restored.get_multi_parent_multinomial_edge("C")
+        assert rmpe.timestamp == ts
+        assert rmpe.half_life == 3600.0
+
+
+class TestJsonLdRoundtripMultinomialNode:
+    """Gap 3a: SLNode.multinomial_opinion must survive to_jsonld/from_jsonld."""
+
+    def test_node_with_multinomial_opinion_jsonld_roundtrip(self) -> None:
+        """A node carrying a multinomial_opinion survives JSON-LD roundtrip."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        mop = MultinomialOpinion(
+            beliefs={"H": 0.4, "M": 0.2, "L": 0.1},
+            uncertainty=0.3,
+            base_rates={"H": 1 / 3, "M": 1 / 3, "L": 1 / 3},
+        )
+        net = SLNetwork()
+        net.add_node(SLNode("weather", Opinion(0.4, 0.3, 0.3), multinomial_opinion=mop))
+
+        restored = SLNetwork.from_jsonld(net.to_jsonld())
+        rn = restored.get_node("weather")
+
+        assert rn.multinomial_opinion is not None
+        _assert_multinomial_opinions_equal(
+            rn.multinomial_opinion, mop, "jsonld node multinomial"
+        )
+
+    def test_node_without_multinomial_opinion_jsonld_roundtrip(self) -> None:
+        """A node without multinomial_opinion stays None after JSON-LD roundtrip."""
+        net = SLNetwork()
+        net.add_node(SLNode("X", Opinion(0.5, 0.3, 0.2)))
+
+        restored = SLNetwork.from_jsonld(net.to_jsonld())
+        assert restored.get_node("X").multinomial_opinion is None
+
+
+class TestJsonLdRoundtripMultinomialEdge:
+    """Gap 3b: MultinomialEdge must survive to_jsonld/from_jsonld."""
+
+    def test_multinomial_edge_jsonld_roundtrip(self) -> None:
+        """A MultinomialEdge survives JSON-LD roundtrip."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+        from jsonld_ex.sl_network.types import MultinomialEdge
+
+        cond_a = MultinomialOpinion(
+            beliefs={"y1": 0.6, "y2": 0.2}, uncertainty=0.2,
+            base_rates={"y1": 0.5, "y2": 0.5},
+        )
+        cond_b = MultinomialOpinion(
+            beliefs={"y1": 0.1, "y2": 0.5}, uncertainty=0.4,
+            base_rates={"y1": 0.5, "y2": 0.5},
+        )
+
+        net = SLNetwork()
+        net.add_node(SLNode("A", Opinion(0.5, 0.3, 0.2)))
+        net.add_node(SLNode("B", Opinion(0.3, 0.3, 0.4)))
+        net.add_edge(MultinomialEdge(
+            source_id="A", target_id="B",
+            conditionals={"a": cond_a, "b": cond_b},
+        ))
+
+        restored = SLNetwork.from_jsonld(net.to_jsonld())
+        assert restored.has_multinomial_edge("A", "B")
+        re = restored.get_multinomial_edge("A", "B")
+
+        _assert_multinomial_opinions_equal(
+            re.conditionals["a"], cond_a, "jsonld cond a"
+        )
+        _assert_multinomial_opinions_equal(
+            re.conditionals["b"], cond_b, "jsonld cond b"
+        )
+
+
+class TestJsonLdRoundtripMultiParentMultinomialEdge:
+    """Gap 3c: MultiParentMultinomialEdge must survive to_jsonld/from_jsonld."""
+
+    def test_multi_parent_multinomial_edge_jsonld_roundtrip(self) -> None:
+        """A MultiParentMultinomialEdge survives JSON-LD roundtrip."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+        from jsonld_ex.sl_network.types import MultiParentMultinomialEdge
+
+        cond_aa = MultinomialOpinion(
+            beliefs={"y1": 0.7, "y2": 0.1}, uncertainty=0.2,
+            base_rates={"y1": 0.5, "y2": 0.5},
+        )
+        cond_ab = MultinomialOpinion(
+            beliefs={"y1": 0.3, "y2": 0.4}, uncertainty=0.3,
+            base_rates={"y1": 0.5, "y2": 0.5},
+        )
+
+        net = SLNetwork()
+        net.add_node(SLNode("P1", Opinion(0.5, 0.3, 0.2)))
+        net.add_node(SLNode("P2", Opinion(0.4, 0.3, 0.3)))
+        net.add_node(SLNode("C", Opinion(0.3, 0.3, 0.4)))
+        net.add_edge(MultiParentMultinomialEdge(
+            parent_ids=("P1", "P2"),
+            target_id="C",
+            conditionals={
+                ("a", "a"): cond_aa,
+                ("a", "b"): cond_ab,
+            },
+        ))
+
+        restored = SLNetwork.from_jsonld(net.to_jsonld())
+        assert restored.has_multi_parent_multinomial_edge("C")
+        rmpe = restored.get_multi_parent_multinomial_edge("C")
+
+        assert rmpe.parent_ids == ("P1", "P2")
+        _assert_multinomial_opinions_equal(
+            rmpe.conditionals[("a", "a")], cond_aa, "jsonld cond (a,a)"
+        )
+        _assert_multinomial_opinions_equal(
+            rmpe.conditionals[("a", "b")], cond_ab, "jsonld cond (a,b)"
+        )
+
+
+class TestMixedBinaryMultinomialNetworkRoundtrip:
+    """Round-trip a network with both binary and multinomial components."""
+
+    def test_mixed_network_dict_roundtrip(self) -> None:
+        """Network with SLEdge + MultinomialEdge + binary nodes + multinomial nodes."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+        from jsonld_ex.sl_network.types import MultinomialEdge
+
+        mop = MultinomialOpinion(
+            beliefs={"H": 0.5, "M": 0.2, "L": 0.0},
+            uncertainty=0.3,
+            base_rates={"H": 1 / 3, "M": 1 / 3, "L": 1 / 3},
+        )
+
+        cond_h = MultinomialOpinion(
+            beliefs={"y1": 0.8, "y2": 0.1}, uncertainty=0.1,
+            base_rates={"y1": 0.5, "y2": 0.5},
+        )
+        cond_m = MultinomialOpinion(
+            beliefs={"y1": 0.4, "y2": 0.3}, uncertainty=0.3,
+            base_rates={"y1": 0.5, "y2": 0.5},
+        )
+        cond_l = MultinomialOpinion(
+            beliefs={"y1": 0.1, "y2": 0.6}, uncertainty=0.3,
+            base_rates={"y1": 0.5, "y2": 0.5},
+        )
+
+        net = SLNetwork(name="mixed")
+        # Binary-only node
+        net.add_node(SLNode("A", Opinion(0.6, 0.2, 0.2)))
+        # Multinomial node
+        net.add_node(SLNode("B", Opinion(0.5, 0.2, 0.3), multinomial_opinion=mop))
+        # Target node
+        net.add_node(SLNode("C", Opinion(0.3, 0.3, 0.4)))
+
+        # Binary edge A→C
+        net.add_edge(SLEdge("A", "C", conditional=Opinion(0.8, 0.1, 0.1)))
+        # Multinomial edge B→C
+        net.add_edge(MultinomialEdge(
+            source_id="B", target_id="C",
+            conditionals={"H": cond_h, "M": cond_m, "L": cond_l},
+        ))
+
+        restored = SLNetwork.from_dict(net.to_dict())
+
+        assert restored.name == "mixed"
+        assert len(restored) == 3
+        assert restored.get_node("A").multinomial_opinion is None
+        assert restored.get_node("B").multinomial_opinion is not None
+        assert restored.has_edge("A", "C")
+        assert restored.has_multinomial_edge("B", "C")
+
+    def test_mixed_network_jsonld_roundtrip(self) -> None:
+        """Same mixed network survives JSON-LD roundtrip."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+        from jsonld_ex.sl_network.types import MultinomialEdge
+
+        mop = MultinomialOpinion(
+            beliefs={"a": 0.3, "b": 0.3},
+            uncertainty=0.4,
+            base_rates={"a": 0.5, "b": 0.5},
+        )
+        cond_a = MultinomialOpinion(
+            beliefs={"y1": 0.6, "y2": 0.2}, uncertainty=0.2,
+            base_rates={"y1": 0.5, "y2": 0.5},
+        )
+        cond_b = MultinomialOpinion(
+            beliefs={"y1": 0.1, "y2": 0.5}, uncertainty=0.4,
+            base_rates={"y1": 0.5, "y2": 0.5},
+        )
+
+        net = SLNetwork(name="mixed_jsonld")
+        net.add_node(SLNode("X", Opinion(0.5, 0.3, 0.2)))
+        net.add_node(SLNode("Y", Opinion(0.4, 0.2, 0.4), multinomial_opinion=mop))
+        net.add_node(SLNode("Z", Opinion(0.3, 0.3, 0.4)))
+        net.add_edge(SLEdge("X", "Z", conditional=Opinion(0.7, 0.2, 0.1)))
+        net.add_edge(MultinomialEdge(
+            source_id="Y", target_id="Z",
+            conditionals={"a": cond_a, "b": cond_b},
+        ))
+
+        restored = SLNetwork.from_jsonld(net.to_jsonld())
+
+        assert restored.name == "mixed_jsonld"
+        assert restored.get_node("Y").multinomial_opinion is not None
+        assert restored.has_multinomial_edge("Y", "Z")

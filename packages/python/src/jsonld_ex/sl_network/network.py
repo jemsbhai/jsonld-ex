@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
 from jsonld_ex.confidence_algebra import Opinion
+from jsonld_ex.multinomial_algebra import MultinomialOpinion
 from jsonld_ex.sl_network.types import (
     AttestationEdge,
     InferenceResult,
@@ -129,6 +130,37 @@ def _parse_bool_tuple(key_str: str, expected_length: int) -> tuple[bool, ...]:
                 f"Expected 'True' or 'False', got {p!r} in {key_str!r}"
             )
     return tuple(result)
+
+
+def _parse_str_tuple(key_str: str, expected_length: int) -> tuple[str, ...]:
+    """Parse a stringified string-tuple back to a tuple of strings.
+
+    Handles the format produced by ``str(("a", "b"))`` which gives
+    ``"('a', 'b')"``.
+
+    Args:
+        key_str: String representation of a string tuple.
+        expected_length: Expected number of elements.
+
+    Returns:
+        Tuple of strings.
+
+    Raises:
+        ValueError: If parsing fails or length doesn't match.
+    """
+    # Strip outer parens and whitespace
+    cleaned = key_str.strip().strip("()")
+    parts = [p.strip().strip("'\"") for p in cleaned.split(",")]
+    # Handle trailing comma for single-element tuples: "('a',)" -> ["a", ""]
+    parts = [p for p in parts if p]
+
+    if len(parts) != expected_length:
+        raise ValueError(
+            f"Expected {expected_length} elements in str tuple, "
+            f"got {len(parts)} from {key_str!r}"
+        )
+
+    return tuple(parts)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1162,6 +1194,9 @@ class SLNetwork:
                     "metadata": n.metadata,
                     "timestamp": _dt_to_str(n.timestamp),
                     "half_life": n.half_life,
+                    **({
+                        "multinomial_opinion": n.multinomial_opinion.to_dict()
+                    } if n.multinomial_opinion is not None else {}),
                 }
                 for nid, n in self._nodes.items()
             },
@@ -1220,6 +1255,40 @@ class SLNetwork:
                 }
                 for (aid, cid), ae in self._attestation_edges.items()
             },
+            "multinomial_edges": {
+                f"{src}->{tgt}": {
+                    "source_id": me.source_id,
+                    "target_id": me.target_id,
+                    "conditionals": {
+                        state: mop.to_dict()
+                        for state, mop in me.conditionals.items()
+                    },
+                    "edge_type": me.edge_type,
+                    "metadata": me.metadata,
+                    "timestamp": _dt_to_str(me.timestamp),
+                    "half_life": me.half_life,
+                    "valid_from": _dt_to_str(me.valid_from),
+                    "valid_until": _dt_to_str(me.valid_until),
+                }
+                for (src, tgt), me in self._multinomial_edges.items()
+            },
+            "multi_parent_multinomial_edges": {
+                tgt: {
+                    "target_id": mpe.target_id,
+                    "parent_ids": list(mpe.parent_ids),
+                    "conditionals": {
+                        str(k): v.to_dict()
+                        for k, v in mpe.conditionals.items()
+                    },
+                    "edge_type": mpe.edge_type,
+                    "metadata": mpe.metadata,
+                    "timestamp": _dt_to_str(mpe.timestamp),
+                    "half_life": mpe.half_life,
+                    "valid_from": _dt_to_str(mpe.valid_from),
+                    "valid_until": _dt_to_str(mpe.valid_until),
+                }
+                for tgt, mpe in self._multi_parent_multinomial_edges.items()
+            },
         }
 
     @classmethod
@@ -1246,6 +1315,12 @@ class SLNetwork:
         for nid, ndata in sorted(data.get("nodes", {}).items()):
             op_data = ndata["opinion"]
             opinion = Opinion.from_jsonld(op_data)
+            mop_data = ndata.get("multinomial_opinion")
+            mop = (
+                MultinomialOpinion.from_dict(mop_data)
+                if mop_data is not None
+                else None
+            )
             node = SLNode(
                 node_id=ndata["node_id"],
                 opinion=opinion,
@@ -1254,6 +1329,7 @@ class SLNetwork:
                 metadata=ndata.get("metadata", {}),
                 timestamp=_str_to_dt(ndata.get("timestamp")),
                 half_life=ndata.get("half_life"),
+                multinomial_opinion=mop,
             )
             net.add_node(node)
 
@@ -1324,6 +1400,49 @@ class SLNetwork:
             )
             net.add_attestation(ae)
 
+        # ── Reconstruct multinomial edges ──
+        for _key, medata in data.get("multinomial_edges", {}).items():
+            conditionals: dict[str, MultinomialOpinion] = {}
+            for state, mop_data in medata["conditionals"].items():
+                conditionals[state] = MultinomialOpinion.from_dict(mop_data)
+            me = MultinomialEdge(
+                source_id=medata["source_id"],
+                target_id=medata["target_id"],
+                conditionals=conditionals,
+                edge_type=medata.get("edge_type", "deduction"),
+                metadata=medata.get("metadata", {}),
+                timestamp=_str_to_dt(medata.get("timestamp")),
+                half_life=medata.get("half_life"),
+                valid_from=_str_to_dt(medata.get("valid_from")),
+                valid_until=_str_to_dt(medata.get("valid_until")),
+            )
+            net.add_edge(me)
+
+        # ── Reconstruct multi-parent multinomial edges ──
+        for _tgt, mpe_data in data.get(
+            "multi_parent_multinomial_edges", {}
+        ).items():
+            parent_ids = tuple(mpe_data["parent_ids"])
+            conditionals_m: dict[tuple[str, ...], MultinomialOpinion] = {}
+            for key_str, mop_data in mpe_data["conditionals"].items():
+                # Parse stringified tuple key: "('a', 'b')" → ("a", "b")
+                str_key = _parse_str_tuple(key_str, len(parent_ids))
+                conditionals_m[str_key] = MultinomialOpinion.from_dict(
+                    mop_data
+                )
+            mpe = MultiParentMultinomialEdge(
+                parent_ids=parent_ids,
+                target_id=mpe_data["target_id"],
+                conditionals=conditionals_m,
+                edge_type=mpe_data.get("edge_type", "deduction"),
+                metadata=mpe_data.get("metadata", {}),
+                timestamp=_str_to_dt(mpe_data.get("timestamp")),
+                half_life=mpe_data.get("half_life"),
+                valid_from=_str_to_dt(mpe_data.get("valid_from")),
+                valid_until=_str_to_dt(mpe_data.get("valid_until")),
+            )
+            net.add_edge(mpe)
+
         return net
 
     def to_jsonld(self) -> dict[str, Any]:
@@ -1349,7 +1468,7 @@ class SLNetwork:
 
         graph_nodes = []
         for nid, n in self._nodes.items():
-            graph_nodes.append({
+            node_dict: dict[str, Any] = {
                 "@id": f"slnet:node/{nid}",
                 "@type": "SLNode",
                 "nodeId": n.node_id,
@@ -1359,7 +1478,12 @@ class SLNetwork:
                 "metadata": n.metadata if n.metadata else None,
                 "timestamp": _dt_to_str(n.timestamp),
                 "halfLife": n.half_life,
-            })
+            }
+            if n.multinomial_opinion is not None:
+                node_dict["multinomialOpinion"] = (
+                    n.multinomial_opinion.to_jsonld()
+                )
+            graph_nodes.append(node_dict)
 
         graph_edges = []
         for (src, tgt), e in self._edges.items():
@@ -1420,6 +1544,42 @@ class SLNetwork:
                 "halfLife": ae.half_life,
             })
 
+        graph_multinomial_edges = []
+        for (src, tgt), me in self._multinomial_edges.items():
+            graph_multinomial_edges.append({
+                "@type": "MultinomialEdge",
+                "sourceId": me.source_id,
+                "targetId": me.target_id,
+                "conditionals": {
+                    state: mop.to_jsonld()
+                    for state, mop in me.conditionals.items()
+                },
+                "edgeType": me.edge_type,
+                "metadata": me.metadata if me.metadata else None,
+                "timestamp": _dt_to_str(me.timestamp),
+                "halfLife": me.half_life,
+                "validFrom": _dt_to_str(me.valid_from),
+                "validUntil": _dt_to_str(me.valid_until),
+            })
+
+        graph_multi_parent_multinomial_edges = []
+        for tgt, mpe in self._multi_parent_multinomial_edges.items():
+            graph_multi_parent_multinomial_edges.append({
+                "@type": "MultiParentMultinomialEdge",
+                "targetId": mpe.target_id,
+                "parentIds": list(mpe.parent_ids),
+                "conditionals": {
+                    str(k): v.to_jsonld()
+                    for k, v in mpe.conditionals.items()
+                },
+                "edgeType": mpe.edge_type,
+                "metadata": mpe.metadata if mpe.metadata else None,
+                "timestamp": _dt_to_str(mpe.timestamp),
+                "halfLife": mpe.half_life,
+                "validFrom": _dt_to_str(mpe.valid_from),
+                "validUntil": _dt_to_str(mpe.valid_until),
+            })
+
         return {
             "@context": context,
             "@type": "SLNetwork",
@@ -1429,6 +1589,14 @@ class SLNetwork:
             "multiParentEdges": graph_mpes if graph_mpes else None,
             "trustEdges": graph_trust_edges if graph_trust_edges else None,
             "attestations": graph_attestations if graph_attestations else None,
+            "multinomialEdges": (
+                graph_multinomial_edges
+                if graph_multinomial_edges else None
+            ),
+            "multiParentMultinomialEdges": (
+                graph_multi_parent_multinomial_edges
+                if graph_multi_parent_multinomial_edges else None
+            ),
         }
 
     @classmethod
@@ -1449,6 +1617,12 @@ class SLNetwork:
         # ── Reconstruct nodes ──
         for ndata in data.get("nodes", []):
             opinion = Opinion.from_jsonld(ndata["opinion"])
+            mop_data = ndata.get("multinomialOpinion")
+            mop = (
+                MultinomialOpinion.from_jsonld(mop_data)
+                if mop_data is not None
+                else None
+            )
             node = SLNode(
                 node_id=ndata["nodeId"],
                 opinion=opinion,
@@ -1457,6 +1631,7 @@ class SLNetwork:
                 metadata=ndata.get("metadata") or {},
                 timestamp=_str_to_dt(ndata.get("timestamp")),
                 half_life=ndata.get("halfLife"),
+                multinomial_opinion=mop,
             )
             net.add_node(node)
 
@@ -1525,6 +1700,50 @@ class SLNetwork:
                 half_life=aedata.get("halfLife"),
             )
             net.add_attestation(ae)
+
+        # ── Reconstruct multinomial edges ──
+        for medata in data.get("multinomialEdges", []) or []:
+            conditionals_me: dict[str, MultinomialOpinion] = {}
+            for state, mop_data in medata["conditionals"].items():
+                conditionals_me[state] = MultinomialOpinion.from_jsonld(
+                    mop_data
+                )
+            me = MultinomialEdge(
+                source_id=medata["sourceId"],
+                target_id=medata["targetId"],
+                conditionals=conditionals_me,
+                edge_type=medata.get("edgeType", "deduction"),
+                metadata=medata.get("metadata") or {},
+                timestamp=_str_to_dt(medata.get("timestamp")),
+                half_life=medata.get("halfLife"),
+                valid_from=_str_to_dt(medata.get("validFrom")),
+                valid_until=_str_to_dt(medata.get("validUntil")),
+            )
+            net.add_edge(me)
+
+        # ── Reconstruct multi-parent multinomial edges ──
+        for mpe_data in data.get(
+            "multiParentMultinomialEdges", []
+        ) or []:
+            parent_ids = tuple(mpe_data["parentIds"])
+            conditionals_mpm: dict[tuple[str, ...], MultinomialOpinion] = {}
+            for key_str, mop_data in mpe_data["conditionals"].items():
+                str_key = _parse_str_tuple(key_str, len(parent_ids))
+                conditionals_mpm[str_key] = MultinomialOpinion.from_jsonld(
+                    mop_data
+                )
+            mpe = MultiParentMultinomialEdge(
+                parent_ids=parent_ids,
+                target_id=mpe_data["targetId"],
+                conditionals=conditionals_mpm,
+                edge_type=mpe_data.get("edgeType", "deduction"),
+                metadata=mpe_data.get("metadata") or {},
+                timestamp=_str_to_dt(mpe_data.get("timestamp")),
+                half_life=mpe_data.get("halfLife"),
+                valid_from=_str_to_dt(mpe_data.get("validFrom")),
+                valid_until=_str_to_dt(mpe_data.get("validUntil")),
+            )
+            net.add_edge(mpe)
 
         return net
 
