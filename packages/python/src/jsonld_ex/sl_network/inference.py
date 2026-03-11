@@ -47,6 +47,7 @@ from typing import Callable, Dict, List, Literal, Optional
 from jsonld_ex.confidence_algebra import Opinion, cumulative_fuse, deduce
 from jsonld_ex.multinomial_algebra import (
     MultinomialOpinion,
+    multinomial_cumulative_fuse,
     multinomial_deduce,
 )
 from jsonld_ex.sl_network.counterfactuals import (
@@ -59,6 +60,7 @@ from jsonld_ex.sl_network.types import (
     InferenceStep,
     MultinomialEdge,
     MultiParentEdge,
+    MultiParentMultinomialEdge,
     SLEdge,
 )
 
@@ -346,9 +348,21 @@ def _infer_dag_approximate(
                 )
 
         else:
+            # Warn if a MultiParentMultinomialEdge exists — approximate
+            # cannot use the full conditional table.
+            if network.has_multi_parent_multinomial_edge(nid):
+                warnings.warn(
+                    f"Node {nid!r} has a MultiParentMultinomialEdge but "
+                    f"method='approximate' cannot use the full conditional "
+                    f"table. Use method='enumerate' for correct multinomial "
+                    f"multi-parent inference.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
             # Multiple parents: deduce per-parent, then fuse
             _deduce_multi_parent_approximate(
-                network, nid, parents, intermediate, steps, cf_fn
+                network, nid, parents, intermediate, steps, cf_fn,
+                multinomial_intermediate=multinomial_intermediate,
             )
 
     query_opinion = intermediate.get(query_node)
@@ -444,6 +458,7 @@ def _deduce_multi_parent_approximate(
     intermediate: dict[str, Opinion],
     steps: list[InferenceStep],
     cf_fn: CounterfactualFn,
+    multinomial_intermediate: dict[str, MultinomialOpinion] | None = None,
 ) -> None:
     """Deduce per-parent, then fuse.
 
@@ -451,16 +466,36 @@ def _deduce_multi_parent_approximate(
         ω_{Y,via_i} = deduce(ω_{Xᵢ}, ω_{Y|Xᵢ}, cf_i)
     ω_Y = cumulative_fuse(ω_{Y,via_1}, ..., ω_{Y,via_k})
 
+    When parents connect via MultinomialEdge and have multinomial
+    opinions, the multinomial path is used:
+        m_{Y,via_i} = multinomial_deduce(m_{Xᵢ}, conditionals_i)
+        m_Y = multinomial_cumulative_fuse(m_{Y,via_1}, ..., m_{Y,via_k})
+
     Approximation: assumes per-parent deductions are independent.
     """
     per_parent_deductions: list[Opinion] = []
     per_parent_inputs: dict[str, Opinion] = {}
+    per_parent_multinomial: list[MultinomialOpinion] = []
 
     for parent_id in parents:
         parent_opinion = intermediate[parent_id]
 
-        # Try to get individual SLEdge for this parent
-        if network.has_edge(parent_id, nid):
+        # Try multinomial path first
+        if (
+            multinomial_intermediate is not None
+            and network.has_multinomial_edge(parent_id, nid)
+            and parent_id in multinomial_intermediate
+        ):
+            me = network.get_multinomial_edge(parent_id, nid)
+            parent_multi = multinomial_intermediate[parent_id]
+            deduced_multi = multinomial_deduce(
+                parent_multi, me.conditionals
+            )
+            per_parent_multinomial.append(deduced_multi)
+            # Still add to binomial for backward compat
+            deduced_via_parent = parent_opinion
+        elif network.has_edge(parent_id, nid):
+            # Standard binary path
             edge = network.get_edge(parent_id, nid)
             counterfactual = (
                 edge.counterfactual
@@ -479,7 +514,12 @@ def _deduce_multi_parent_approximate(
         per_parent_deductions.append(deduced_via_parent)
         per_parent_inputs[f"via_{parent_id}"] = deduced_via_parent
 
-    # Fuse all per-parent deduction results
+    # Fuse multinomial results if any were produced
+    if per_parent_multinomial and multinomial_intermediate is not None:
+        fused_multi = multinomial_cumulative_fuse(*per_parent_multinomial)
+        multinomial_intermediate[nid] = fused_multi
+
+    # Fuse all per-parent deduction results (binomial)
     fused = cumulative_fuse(*per_parent_deductions)
     intermediate[nid] = fused
 
@@ -548,17 +588,26 @@ def _infer_dag_enumerate(
                 )
 
         else:
-            # Check if a MultiParentEdge exists for this node
-            try:
-                mpe = network.get_multi_parent_edge(nid)
-                _deduce_enumerate(
-                    network, nid, mpe, intermediate, steps
+            # Check multinomial multi-parent edge first
+            if network.has_multi_parent_multinomial_edge(nid):
+                mpe_m = network.get_multi_parent_multinomial_edge(nid)
+                _deduce_enumerate_multinomial(
+                    network, nid, mpe_m,
+                    intermediate, multinomial_intermediate, steps,
                 )
-            except ValueError:
-                # No MultiParentEdge — fall back to approximate
-                _deduce_multi_parent_approximate(
-                    network, nid, parents, intermediate, steps, cf_fn
-                )
+            else:
+                # Check if a binary MultiParentEdge exists
+                try:
+                    mpe = network.get_multi_parent_edge(nid)
+                    _deduce_enumerate(
+                        network, nid, mpe, intermediate, steps
+                    )
+                except ValueError:
+                    # No MultiParentEdge — fall back to approximate
+                    _deduce_multi_parent_approximate(
+                        network, nid, parents, intermediate, steps, cf_fn,
+                        multinomial_intermediate=multinomial_intermediate,
+                    )
 
     query_opinion = intermediate.get(query_node)
     if query_opinion is None:
@@ -656,4 +705,92 @@ def _deduce_enumerate(
         operation="enumerate",
         inputs=parent_input_opinions,
         result=result,
+    ))
+
+
+def _deduce_enumerate_multinomial(
+    network: "SLNetwork",
+    nid: str,
+    mpe: MultiParentMultinomialEdge,
+    intermediate: dict[str, Opinion],
+    multinomial_intermediate: dict[str, MultinomialOpinion],
+    steps: list[InferenceStep],
+) -> None:
+    """Full enumeration over a MultiParentMultinomialEdge conditional table.
+
+    For each parent-state configuration (s_1, ..., s_k):
+        1. Compute configuration weight from projected parent
+           multinomial probabilities (assuming independence):
+              w(s_1,...,s_k) = ∏_i P_{parent_i}(s_i)
+        2. Look up the conditional MultinomialOpinion for this config
+        3. Accumulate weighted components:
+              b_Y(y) += w · b_{Y|config}(y)
+              u_Y    += w · u_{Y|config}
+              a_Y(y) += w · P_{Y|config}(y)
+
+    Produces a MultinomialOpinion stored in ``multinomial_intermediate``.
+    """
+    k = len(mpe.parent_ids)
+
+    if k > _ENUMERATE_MAX_PARENTS:
+        raise ValueError(
+            f"Enumeration for node {nid!r} requires too many "
+            f"configurations — exceeds maximum of "
+            f"2^{_ENUMERATE_MAX_PARENTS}. "
+            f"Use method='approximate' instead."
+        )
+
+    # Get projected probabilities for each parent
+    parent_pp: list[dict[str, float]] = []
+    parent_input_opinions: dict[str, Opinion] = {}
+    for pid in mpe.parent_ids:
+        if pid in multinomial_intermediate:
+            parent_pp.append(
+                multinomial_intermediate[pid].projected_probability()
+            )
+        else:
+            # Fallback: shouldn't normally happen in a well-constructed
+            # network, but handle gracefully
+            parent_pp.append({"0": 1.0})
+        parent_input_opinions[pid] = intermediate[pid]
+
+    # Determine child domain from the first conditional
+    first_cond = next(iter(mpe.conditionals.values()))
+    child_domain = first_cond.domain
+
+    # Enumerate all configurations
+    b_y: dict[str, float] = {y: 0.0 for y in child_domain}
+    u_y = 0.0
+    a_y: dict[str, float] = {y: 0.0 for y in child_domain}
+
+    for config, cond_opinion in mpe.conditionals.items():
+        # Compute configuration weight (product of marginals)
+        weight = 1.0
+        for i, state in enumerate(config):
+            weight *= parent_pp[i].get(state, 0.0)
+
+        for y in child_domain:
+            b_y[y] += weight * cond_opinion.beliefs[y]
+        u_y += weight * cond_opinion.uncertainty
+        pp_cond = cond_opinion.projected_probability()
+        for y in child_domain:
+            a_y[y] += weight * pp_cond[y]
+
+    # Construct the result MultinomialOpinion
+    result_multi = MultinomialOpinion(
+        beliefs=b_y,
+        uncertainty=u_y,
+        base_rates=a_y,
+    )
+    multinomial_intermediate[nid] = result_multi
+
+    # Also store a binomial passthrough for backward compat
+    node = network.get_node(nid)
+    intermediate[nid] = node.opinion
+
+    steps.append(InferenceStep(
+        node_id=nid,
+        operation="enumerate_multinomial",
+        inputs=parent_input_opinions,
+        result=node.opinion,
     ))
