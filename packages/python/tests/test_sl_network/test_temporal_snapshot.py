@@ -269,3 +269,56 @@ class TestNetworkAtTimeDAGInvariant:
         ))
         snapshot = network_at_time(net, T2)
         assert snapshot.is_dag()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Gap A: network_at_time must preserve multinomial edge types
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestNetworkAtTimeMultinomialEdges:
+    """network_at_time must copy MultinomialEdge and MultiParentMultinomialEdge."""
+
+    def test_multinomial_edge_preserved(self) -> None:
+        """MultinomialEdge survives point-in-time snapshot."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+        from jsonld_ex.sl_network.types import MultinomialEdge
+
+        br = {"H": 0.5, "L": 0.5}
+        net = SLNetwork()
+        net.add_node(SLNode("A", COND))
+        net.add_node(SLNode("B", COND))
+        net.add_edge(MultinomialEdge(
+            source_id="A", target_id="B",
+            conditionals={
+                "a": MultinomialOpinion(beliefs={"H": 0.7, "L": 0.1},
+                                        uncertainty=0.2, base_rates=br),
+                "b": MultinomialOpinion(beliefs={"H": 0.2, "L": 0.5},
+                                        uncertainty=0.3, base_rates=br),
+            },
+        ))
+
+        snapshot = network_at_time(net, T1)
+        assert snapshot.has_multinomial_edge("A", "B")
+
+    def test_multi_parent_multinomial_edge_preserved(self) -> None:
+        """MultiParentMultinomialEdge survives point-in-time snapshot."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+        from jsonld_ex.sl_network.types import MultiParentMultinomialEdge
+
+        br = {"H": 0.5, "L": 0.5}
+        cond = MultinomialOpinion(
+            beliefs={"H": 0.5, "L": 0.3}, uncertainty=0.2, base_rates=br,
+        )
+
+        net = SLNetwork()
+        net.add_node(SLNode("P1", COND))
+        net.add_node(SLNode("P2", COND))
+        net.add_node(SLNode("C", COND))
+        net.add_edge(MultiParentMultinomialEdge(
+            parent_ids=("P1", "P2"), target_id="C",
+            conditionals={("a", "x"): cond, ("b", "x"): cond},
+        ))
+
+        snapshot = network_at_time(net, T1)
+        assert snapshot.has_multi_parent_multinomial_edge("C")

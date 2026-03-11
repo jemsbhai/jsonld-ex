@@ -487,3 +487,181 @@ class TestDecayNetworkEdgesBDUInvariant:
             _approx_opinion(edge.conditional)
             if edge.counterfactual is not None:
                 _approx_opinion(edge.counterfactual)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Gap A: Temporal decay must preserve multinomial components
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestDecayNetworkNodesMultinomial:
+    """decay_network_nodes must preserve multinomial_opinion on nodes."""
+
+    def test_multinomial_opinion_preserved_on_decay(self) -> None:
+        """Node multinomial_opinion survives node decay."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+
+        mop = MultinomialOpinion(
+            beliefs={"H": 0.4, "M": 0.2, "L": 0.1},
+            uncertainty=0.3,
+            base_rates={"H": 1 / 3, "M": 1 / 3, "L": 1 / 3},
+        )
+        net = SLNetwork()
+        net.add_node(SLNode(
+            node_id="X", opinion=Opinion(0.7, 0.1, 0.2),
+            multinomial_opinion=mop,
+            timestamp=NOW - timedelta(hours=1),
+            half_life=3600.0,
+        ))
+
+        decayed = decay_network_nodes(net, NOW, default_half_life=3600.0)
+        rn = decayed.get_node("X")
+
+        assert rn.multinomial_opinion is not None
+        assert rn.multinomial_opinion.domain == ("H", "L", "M")
+        # Multinomial opinion is copied unchanged (decay only applies to binomial)
+        assert abs(rn.multinomial_opinion.uncertainty - mop.uncertainty) < 1e-9
+
+    def test_node_without_multinomial_stays_none(self) -> None:
+        """Node without multinomial_opinion stays None after decay."""
+        net = SLNetwork()
+        net.add_node(SLNode(
+            node_id="X", opinion=Opinion(0.7, 0.1, 0.2),
+            timestamp=NOW - timedelta(hours=1),
+        ))
+
+        decayed = decay_network_nodes(net, NOW, default_half_life=3600.0)
+        assert decayed.get_node("X").multinomial_opinion is None
+
+
+class TestDecayNetworkNodesPreservesMultinomialEdges:
+    """decay_network_nodes copies ALL edge types (via _copy_edges)."""
+
+    def test_multinomial_edge_preserved(self) -> None:
+        """MultinomialEdge survives node decay."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+        from jsonld_ex.sl_network.types import MultinomialEdge
+
+        br = {"H": 0.5, "L": 0.5}
+        cond_a = MultinomialOpinion(
+            beliefs={"H": 0.7, "L": 0.1}, uncertainty=0.2, base_rates=br,
+        )
+        cond_b = MultinomialOpinion(
+            beliefs={"H": 0.2, "L": 0.5}, uncertainty=0.3, base_rates=br,
+        )
+
+        net = SLNetwork()
+        net.add_node(SLNode("A", Opinion(0.5, 0.3, 0.2)))
+        net.add_node(SLNode("B", Opinion(0.3, 0.3, 0.4)))
+        net.add_edge(MultinomialEdge(
+            source_id="A", target_id="B",
+            conditionals={"a": cond_a, "b": cond_b},
+        ))
+
+        decayed = decay_network_nodes(net, NOW, default_half_life=3600.0)
+        assert decayed.has_multinomial_edge("A", "B")
+
+    def test_multi_parent_multinomial_edge_preserved(self) -> None:
+        """MultiParentMultinomialEdge survives node decay."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+        from jsonld_ex.sl_network.types import MultiParentMultinomialEdge
+
+        br = {"H": 0.5, "L": 0.5}
+        cond = MultinomialOpinion(
+            beliefs={"H": 0.5, "L": 0.3}, uncertainty=0.2, base_rates=br,
+        )
+
+        net = SLNetwork()
+        net.add_node(SLNode("P1", Opinion(0.5, 0.3, 0.2)))
+        net.add_node(SLNode("P2", Opinion(0.4, 0.3, 0.3)))
+        net.add_node(SLNode("C", Opinion(0.3, 0.3, 0.4)))
+        net.add_edge(MultiParentMultinomialEdge(
+            parent_ids=("P1", "P2"), target_id="C",
+            conditionals={("a", "x"): cond, ("a", "y"): cond,
+                          ("b", "x"): cond, ("b", "y"): cond},
+        ))
+
+        decayed = decay_network_nodes(net, NOW, default_half_life=3600.0)
+        assert decayed.has_multi_parent_multinomial_edge("C")
+
+
+class TestDecayNetworkEdgesMultinomial:
+    """decay_network_edges must copy MultinomialEdge and MultiParentMultinomialEdge."""
+
+    def test_multinomial_edge_copied(self) -> None:
+        """MultinomialEdge survives edge decay (copied unchanged)."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+        from jsonld_ex.sl_network.types import MultinomialEdge
+
+        br = {"H": 0.5, "L": 0.5}
+        cond_a = MultinomialOpinion(
+            beliefs={"H": 0.7, "L": 0.1}, uncertainty=0.2, base_rates=br,
+        )
+        cond_b = MultinomialOpinion(
+            beliefs={"H": 0.2, "L": 0.5}, uncertainty=0.3, base_rates=br,
+        )
+
+        net = SLNetwork()
+        net.add_node(SLNode("A", Opinion(0.5, 0.3, 0.2)))
+        net.add_node(SLNode("B", Opinion(0.3, 0.3, 0.4)))
+        net.add_edge(MultinomialEdge(
+            source_id="A", target_id="B",
+            conditionals={"a": cond_a, "b": cond_b},
+        ))
+
+        decayed = decay_network_edges(net, NOW, default_half_life=3600.0)
+        assert decayed.has_multinomial_edge("A", "B")
+        re = decayed.get_multinomial_edge("A", "B")
+        # Conditionals should be present
+        assert abs(re.conditionals["a"].beliefs["H"] - 0.7) < 1e-9
+
+    def test_multi_parent_multinomial_edge_copied(self) -> None:
+        """MultiParentMultinomialEdge survives edge decay (copied unchanged)."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+        from jsonld_ex.sl_network.types import MultiParentMultinomialEdge
+
+        br = {"H": 0.5, "L": 0.5}
+        cond = MultinomialOpinion(
+            beliefs={"H": 0.5, "L": 0.3}, uncertainty=0.2, base_rates=br,
+        )
+
+        net = SLNetwork()
+        net.add_node(SLNode("P1", Opinion(0.5, 0.3, 0.2)))
+        net.add_node(SLNode("P2", Opinion(0.4, 0.3, 0.3)))
+        net.add_node(SLNode("C", Opinion(0.3, 0.3, 0.4)))
+        net.add_edge(MultiParentMultinomialEdge(
+            parent_ids=("P1", "P2"), target_id="C",
+            conditionals={("a", "x"): cond, ("b", "x"): cond},
+        ))
+
+        decayed = decay_network_edges(net, NOW, default_half_life=3600.0)
+        assert decayed.has_multi_parent_multinomial_edge("C")
+
+    def test_mixed_edge_types_all_survive(self) -> None:
+        """Network with SLEdge + MultinomialEdge: both survive edge decay."""
+        from jsonld_ex.multinomial_algebra import MultinomialOpinion
+        from jsonld_ex.sl_network.types import MultinomialEdge
+
+        br = {"H": 0.5, "L": 0.5}
+        net = SLNetwork()
+        net.add_node(SLNode("A", Opinion(0.5, 0.3, 0.2)))
+        net.add_node(SLNode("B", Opinion(0.3, 0.3, 0.4)))
+        net.add_node(SLNode("C", Opinion(0.4, 0.2, 0.4)))
+
+        # Binary edge A→B
+        net.add_edge(SLEdge("A", "B", conditional=Opinion(0.8, 0.1, 0.1),
+                            timestamp=NOW - timedelta(hours=1)))
+        # Multinomial edge A→C
+        net.add_edge(MultinomialEdge(
+            source_id="A", target_id="C",
+            conditionals={
+                "a": MultinomialOpinion(beliefs={"H": 0.6, "L": 0.2},
+                                        uncertainty=0.2, base_rates=br),
+                "b": MultinomialOpinion(beliefs={"H": 0.1, "L": 0.5},
+                                        uncertainty=0.4, base_rates=br),
+            },
+        ))
+
+        decayed = decay_network_edges(net, NOW, default_half_life=3600.0)
+        assert decayed.has_edge("A", "B")
+        assert decayed.has_multinomial_edge("A", "C")

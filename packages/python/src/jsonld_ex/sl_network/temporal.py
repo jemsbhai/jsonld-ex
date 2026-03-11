@@ -123,6 +123,7 @@ def decay_network_nodes(
             metadata=node.metadata,
             timestamp=node.timestamp,
             half_life=node.half_life,
+            multinomial_opinion=node.multinomial_opinion,
         )
         new_net.add_node(new_node)
 
@@ -210,13 +211,28 @@ def decay_network_edges(
             )
             new_net.add_edge(new_edge)
 
+    # Copy multinomial edges unchanged (temporal decay on MultinomialOpinion is future work)
+    for node_id in network.topological_sort():
+        for parent_id in network.get_parents(node_id):
+            if network.has_multinomial_edge(parent_id, node_id):
+                new_net.add_edge(
+                    network.get_multinomial_edge(parent_id, node_id)
+                )
+
     # Copy multi-parent edges unchanged (temporal decay on MPEs is future work)
     for node_id in network.topological_sort():
         try:
             mpe = network.get_multi_parent_edge(node_id)
             new_net.add_edge(mpe)
         except ValueError:
-            pass  # No multi-parent edge for this node
+            pass  # No binary multi-parent edge for this node
+
+    # Copy multi-parent multinomial edges unchanged
+    for node_id in network.topological_sort():
+        if network.has_multi_parent_multinomial_edge(node_id):
+            new_net.add_edge(
+                network.get_multi_parent_multinomial_edge(node_id)
+            )
 
     # Copy trust and attestation edges unchanged
     _copy_trust_and_attestation_edges(network, new_net)
@@ -262,6 +278,14 @@ def network_at_time(
             if _edge_valid_at(edge, timestamp):
                 new_net.add_edge(edge)
 
+    # Copy multinomial edges (no validity filtering yet — always included)
+    for node_id in network.topological_sort():
+        for parent_id in network.get_parents(node_id):
+            if network.has_multinomial_edge(parent_id, node_id):
+                new_net.add_edge(
+                    network.get_multinomial_edge(parent_id, node_id)
+                )
+
     # Multi-parent edges: include if all validity bounds pass
     # (MultiParentEdge does not currently have temporal fields,
     # so they are always included.)
@@ -271,6 +295,13 @@ def network_at_time(
             new_net.add_edge(mpe)
         except ValueError:
             pass
+
+    # Multi-parent multinomial edges: always included
+    for node_id in network.topological_sort():
+        if network.has_multi_parent_multinomial_edge(node_id):
+            new_net.add_edge(
+                network.get_multi_parent_multinomial_edge(node_id)
+            )
 
     # Copy trust and attestation edges
     _copy_trust_and_attestation_edges(network, new_net)
@@ -297,18 +328,24 @@ def _edge_valid_at(edge: SLEdge, timestamp: datetime) -> bool:
 
 
 def _copy_edges(source: SLNetwork, dest: SLNetwork) -> None:
-    """Copy all deduction edges (simple and multi-parent) from source to dest."""
+    """Copy all deduction edges (simple, multi-parent, multinomial) from source to dest."""
     for node_id in source.topological_sort():
         for parent_id in source.get_parents(node_id):
             if source.has_edge(parent_id, node_id):
                 dest.add_edge(source.get_edge(parent_id, node_id))
-    # Multi-parent edges: check each node
+            elif source.has_multinomial_edge(parent_id, node_id):
+                dest.add_edge(source.get_multinomial_edge(parent_id, node_id))
+    # Multi-parent edges (binary): check each node
     for node_id in source.topological_sort():
         try:
             mpe = source.get_multi_parent_edge(node_id)
             dest.add_edge(mpe)
         except ValueError:
-            pass  # No multi-parent edge for this node
+            pass  # No binary multi-parent edge for this node
+    # Multi-parent multinomial edges: check each node
+    for node_id in source.topological_sort():
+        if source.has_multi_parent_multinomial_edge(node_id):
+            dest.add_edge(source.get_multi_parent_multinomial_edge(node_id))
 
     _copy_trust_and_attestation_edges(source, dest)
 
