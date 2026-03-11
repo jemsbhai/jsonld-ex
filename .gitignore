@@ -31,11 +31,9 @@ DOCS_PLAN.md
 # Pre-publication mathematical analysis (publish after paper submission)
 packages/python/src/jsonld_ex/sl_network/UNCERTAINTY_INVARIANCE.md
 
-# Experiment artifacts (notebooks tracked selectively, not outputs)
-experiments/**/*.csv
-experiments/**/*.png
-experiments/**/*.pdf
-experiments/**/output/
+# Experiment infrastructure and artifacts (not published until paper submission)
+# Track selectively when ready; for now, keep all experiment code local.
+experiments/
 *.ipynb_checkpoints/
 .ipynb_checkpoints/
 
