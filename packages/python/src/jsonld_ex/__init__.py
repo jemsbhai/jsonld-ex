@@ -239,6 +239,45 @@ from jsonld_ex.http_headers import (
 )
 
 try:
+    from jsonld_ex.amqp import (
+        to_amqp_payload, from_amqp_payload,
+        derive_amqp_properties, derive_routing_key, derive_amqp_priority,
+        derive_amqp_headers,
+        DELIVERY_MODE_TRANSIENT, DELIVERY_MODE_PERSISTENT,
+    )
+except ImportError:
+    pass
+
+try:
+    from jsonld_ex.kafka import (
+        to_kafka_value, from_kafka_value,
+        derive_kafka_record, derive_kafka_key, derive_kafka_headers,
+        derive_kafka_timestamp, derive_kafka_topic,
+    )
+except ImportError:
+    pass
+
+from jsonld_ex.websocket import (
+    to_ws_message, from_ws_message,
+    derive_ws_metadata, derive_ws_subprotocols,
+    SUBPROTOCOL_JSONLD, SUBPROTOCOL_CBOR,
+    WS_OPCODE_TEXT, WS_OPCODE_BINARY,
+)
+
+from jsonld_ex.grpc import (
+    derive_grpc_metadata, suggest_proto_schema,
+    to_grpc_json, from_grpc_json,
+    METADATA_KEY_TYPE, METADATA_KEY_CONFIDENCE,
+    METADATA_KEY_SOURCE, METADATA_KEY_ID, METADATA_KEY_CONTENT_TYPE,
+)
+
+from jsonld_ex.lwm2m import (
+    derive_lwm2m_objects, derive_lwm2m_registration, derive_lwm2m_links,
+    extract_lwm2m_resources, IPSO_OBJECT_REGISTRY,
+    BINDING_MODE_UDP, BINDING_MODE_TCP,
+)
+
+try:
     from jsonld_ex.fhir_interop import (
         # Core conversion
         scalar_to_opinion,
@@ -432,6 +471,50 @@ __all__ = [
     "MEDIA_TYPE_JSONLD",
     "MEDIA_TYPE_CBOR",
     "MEDIA_TYPE_JSON",
+    # AMQP transport (requires cbor2)
+    "to_amqp_payload",
+    "from_amqp_payload",
+    "derive_amqp_properties",
+    "derive_routing_key",
+    "derive_amqp_priority",
+    "derive_amqp_headers",
+    "DELIVERY_MODE_TRANSIENT",
+    "DELIVERY_MODE_PERSISTENT",
+    # Kafka transport (requires cbor2)
+    "to_kafka_value",
+    "from_kafka_value",
+    "derive_kafka_record",
+    "derive_kafka_key",
+    "derive_kafka_headers",
+    "derive_kafka_timestamp",
+    "derive_kafka_topic",
+    # WebSocket transport
+    "to_ws_message",
+    "from_ws_message",
+    "derive_ws_metadata",
+    "derive_ws_subprotocols",
+    "SUBPROTOCOL_JSONLD",
+    "SUBPROTOCOL_CBOR",
+    "WS_OPCODE_TEXT",
+    "WS_OPCODE_BINARY",
+    # gRPC transport
+    "derive_grpc_metadata",
+    "suggest_proto_schema",
+    "to_grpc_json",
+    "from_grpc_json",
+    "METADATA_KEY_TYPE",
+    "METADATA_KEY_CONFIDENCE",
+    "METADATA_KEY_SOURCE",
+    "METADATA_KEY_ID",
+    "METADATA_KEY_CONTENT_TYPE",
+    # LwM2M transport
+    "derive_lwm2m_objects",
+    "derive_lwm2m_registration",
+    "derive_lwm2m_links",
+    "extract_lwm2m_resources",
+    "IPSO_OBJECT_REGISTRY",
+    "BINDING_MODE_UDP",
+    "BINDING_MODE_TCP",
     # Context versioning
     "context_diff",
     "check_compatibility",

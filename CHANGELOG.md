@@ -28,6 +28,44 @@ All notable changes to this project will be documented in this file.
 - `derive_content_type`: `application/ld+json` or `application/cbor`
 - Constants: `MEDIA_TYPE_JSONLD`, `MEDIA_TYPE_CBOR`, `MEDIA_TYPE_JSON`
 
+**AMQP Transport Module** — `amqp` module
+
+- `to_amqp_payload` / `from_amqp_payload`: CBOR/JSON serialization
+- `derive_amqp_properties`: content_type, routing_key, priority (0-9), delivery_mode, expiration, message_id, timestamp, headers
+- `derive_routing_key`: dot-separated `prefix.type.id_fragment` for topic exchanges
+- `derive_amqp_priority`: linear map `@confidence` → 0-9
+- `derive_amqp_headers`: `x-jsonld-*` headers for header exchange routing
+- Delivery mode: persistent for high-confidence/verified, transient for low-confidence
+
+**Kafka Transport Module** — `kafka` module
+
+- `to_kafka_value` / `from_kafka_value`: CBOR/JSON serialization
+- `derive_kafka_record`: full producer record (topic, key, value, headers, timestamp)
+- `derive_kafka_topic`: `prefix.type_local` from `@type`
+- `derive_kafka_key`: `@id` as bytes for partition assignment
+- `derive_kafka_headers`: list of `(str, bytes)` tuples for consumer filtering
+- `derive_kafka_timestamp`: epoch milliseconds from `@extractedAt`
+
+**WebSocket Transport Module** — `websocket` module
+
+- `to_ws_message` / `from_ws_message`: str (text frame) for JSON, bytes (binary frame) for CBOR
+- `derive_ws_subprotocols`: `jsonld-ex.cbor` / `jsonld-ex.jsonld` for handshake negotiation
+- `derive_ws_metadata`: per-message metadata dict (opcode, content_type, jsonld_type/id/confidence/source, ttl_seconds)
+
+**gRPC Transport Module** — `grpc` module
+
+- `derive_grpc_metadata`: list of `(str, str)` tuples for gRPC initial/trailing metadata
+- `to_grpc_json` / `from_grpc_json`: compact JSON for gRPC transcoding (grpc-gateway)
+- `suggest_proto_schema`: heuristic `.proto` file generation from JSON-LD document structure
+
+**LwM2M Transport Module** — `lwm2m` module
+
+- `derive_lwm2m_objects`: map `@type` to IPSO Smart Object IDs (8 sensor types registered)
+- `extract_lwm2m_resources`: property values to numbered resources (5700=value, 5701=units, etc.)
+- `derive_lwm2m_registration`: endpoint from `@id`, lifetime from `@validUntil`
+- `derive_lwm2m_links`: RFC 6690 CoRE Link Format for discovery
+- `IPSO_OBJECT_REGISTRY`: TemperatureSensor, HumiditySensor, Barometer, Accelerometer, Illuminance, DigitalOutput, AnalogInput, GenericSensor
+
 **Shared Transport Helpers** — `_transport_common` internal module
 
 - Extracted shared logic from `mqtt.py`, `coap.py`, `http_headers.py`

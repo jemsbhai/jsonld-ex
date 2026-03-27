@@ -566,6 +566,195 @@ The `X-JsonLD-*` headers enable proxy and CDN routing decisions based on JSON-LD
 
 ---
 
+### AMQP Module (`jsonld_ex.amqp`)
+
+| Function | Spec Section |
+|----------|-------------|
+| `to_amqp_payload(doc, compress, context_registry)` | §12.1 |
+| `from_amqp_payload(payload, compressed, context, context_registry)` | §12.1 |
+| `derive_amqp_properties(doc, compress, prefix)` | §12.1 |
+| `derive_routing_key(doc, prefix)` | §12.1 |
+| `derive_amqp_priority(doc)` | §12.1 |
+| `derive_amqp_headers(doc)` | §12.1 |
+
+### Kafka Module (`jsonld_ex.kafka`)
+
+| Function | Spec Section |
+|----------|-------------|
+| `to_kafka_value(doc, compress, context_registry)` | §13.1 |
+| `from_kafka_value(value, compressed, context, context_registry)` | §13.1 |
+| `derive_kafka_record(doc, compress, prefix, context_registry)` | §13.1 |
+| `derive_kafka_topic(doc, prefix)` | §13.1 |
+| `derive_kafka_key(doc)` | §13.1 |
+| `derive_kafka_headers(doc, compress)` | §13.1 |
+| `derive_kafka_timestamp(doc)` | §13.1 |
+
+### WebSocket Module (`jsonld_ex.websocket`)
+
+| Function | Spec Section |
+|----------|-------------|
+| `to_ws_message(doc, compress, context_registry)` | §14.1 |
+| `from_ws_message(message, compressed, context, context_registry)` | §14.1 |
+| `derive_ws_subprotocols(compress)` | §14.2 |
+| `derive_ws_metadata(doc, compress)` | §14.3 |
+
+### gRPC Module (`jsonld_ex.grpc`)
+
+| Function | Spec Section |
+|----------|-------------|
+| `derive_grpc_metadata(doc)` | §15.1 |
+| `suggest_proto_schema(doc)` | §15.2 |
+| `to_grpc_json(doc)` | §15.3 |
+| `from_grpc_json(payload, context)` | §15.3 |
+
+### LwM2M Module (`jsonld_ex.lwm2m`)
+
+| Function | Spec Section |
+|----------|-------------|
+| `derive_lwm2m_objects(doc)` | §16.1 |
+| `extract_lwm2m_resources(doc, resource_map)` | §16.1 |
+| `derive_lwm2m_registration(doc, binding)` | §16.2 |
+| `derive_lwm2m_links(doc)` | §16.3 |
+
+---
+
+## 12. AMQP Transport
+
+The AMQP transport module derives AMQP 0-9-1 message properties from JSON-LD metadata for enterprise messaging (RabbitMQ, Azure Service Bus).
+
+### 12.1 Property Derivation
+
+| AMQP Property | jsonld-ex Source | Value |
+|--------------|-----------------|-------|
+| Content-Type | Compression flag | `application/cbor` or `application/ld+json` |
+| Routing Key | `@type`, `@id` | `prefix.type_local.id_fragment` (dot-separated for topic exchanges) |
+| Priority | `@confidence` | Linear map: `round(confidence * 9)` → 0-9 |
+| Delivery Mode | `@confidence`, `@humanVerified` | 2 (persistent) for ≥0.5 or verified; 1 (transient) for <0.5 |
+| Expiration | `@validUntil` | Milliseconds remaining (string, AMQP 0-9-1 convention) |
+| Message ID | `@id` | Document identifier |
+| Timestamp | Current time | Epoch seconds |
+| Headers | Metadata | `x-jsonld-type`, `x-jsonld-confidence`, `x-jsonld-source`, `x-jsonld-id` |
+
+---
+
+## 13. Kafka Transport
+
+The Kafka transport module derives Apache Kafka producer record fields from JSON-LD metadata for ML data pipelines and event streaming.
+
+### 13.1 Record Derivation
+
+| Kafka Field | jsonld-ex Source | Value |
+|------------|-----------------|-------|
+| Topic | `@type` | `prefix.type_local` (type-per-topic pattern) |
+| Key | `@id` | UTF-8 bytes (determines partition assignment) |
+| Headers | Metadata | List of `(str, bytes)`: `content-type`, `x-jsonld-type`, `x-jsonld-confidence`, `x-jsonld-source`, `x-jsonld-id` |
+| Timestamp | `@extractedAt` | Epoch milliseconds (aligns log timestamp with extraction time) |
+| Value | Document | CBOR or JSON bytes |
+
+### 13.2 Design Rationale
+
+Unlike MQTT and CoAP (which include `@id` in the routing path), Kafka uses topics for broad categories and keys for entity-level ordering. Including `@id` in the topic would cause excessive topic proliferation. The `@extractedAt` timestamp enables accurate time-windowed processing even when ingestion is delayed.
+
+---
+
+## 14. WebSocket Transport
+
+The WebSocket transport module derives framing metadata and subprotocol negotiation from JSON-LD annotations for real-time streaming.
+
+### 14.1 Message Serialization
+
+| Mode | Python Type | Frame Type | Content |
+|------|-----------|------------|---------|
+| JSON | `str` | Text (opcode 0x1) | Compact JSON |
+| CBOR | `bytes` | Binary (opcode 0x2) | CBOR-LD |
+
+### 14.2 Subprotocol Negotiation
+
+Subprotocol identifiers for `Sec-WebSocket-Protocol` handshake:
+
+| Subprotocol | Description |
+|------------|-------------|
+| `jsonld-ex.cbor` | CBOR binary frames |
+| `jsonld-ex.jsonld` | JSON-LD text frames |
+
+### 14.3 Per-Message Metadata
+
+WebSocket (RFC 6455) has no native per-message header mechanism. The metadata dict is provided for application-level framing protocols:
+
+| Field | Source | Type |
+|-------|--------|------|
+| `opcode` | Compression flag | int (0x1 or 0x2) |
+| `content_type` | Compression flag | str |
+| `jsonld_type` | `@type` | str |
+| `jsonld_id` | `@id` | str |
+| `jsonld_confidence` | `@confidence` | float |
+| `jsonld_source` | `@source` | str |
+| `ttl_seconds` | `@validUntil` | int |
+
+---
+
+## 15. gRPC Transport
+
+The gRPC transport module bridges JSON-LD's property-based model and gRPC's compiled Protobuf schema model via metadata derivation and proto schema suggestion.
+
+### 15.1 Metadata Derivation
+
+gRPC metadata keys must be lowercase ASCII (gRPC specification):
+
+| Metadata Key | Source |
+|-------------|--------|
+| `x-jsonld-content-type` | Always `application/ld+json` |
+| `x-jsonld-type` | `@type` |
+| `x-jsonld-confidence` | `@confidence` |
+| `x-jsonld-source` | `@source` |
+| `x-jsonld-id` | `@id` |
+
+### 15.2 Proto Schema Suggestion
+
+The `suggest_proto_schema()` function generates a `.proto` file skeleton from a JSON-LD document's structure. This is a *heuristic suggestion* — it infers types from a single document instance.
+
+Limitations (documented honestly): cannot discover optional fields absent from the sample, cannot infer enum types or oneof variants, nested objects become sub-messages only one level deep.
+
+### 15.3 JSON Transcoding
+
+`to_grpc_json` / `from_grpc_json` provide compact JSON serialization for gRPC JSON transcoding (grpc-gateway, Envoy).
+
+---
+
+## 16. LwM2M Transport
+
+The LwM2M (Lightweight Machine to Machine) transport module maps JSON-LD documents to the OMA LwM2M object/resource model for constrained IoT device management.
+
+### 16.1 IPSO Smart Object Mapping
+
+| JSON-LD `@type` | IPSO Object ID | Primary Resource |
+|-----------------|---------------|-----------------|
+| TemperatureSensor | 3303 | 5700 (Sensor Value) |
+| HumiditySensor | 3304 | 5700 |
+| Barometer | 3315 | 5700 |
+| Accelerometer | 3313 | 5702/5703/5704 (X/Y/Z) |
+| Illuminance | 3301 | 5700 |
+| GenericSensor | 3300 | 5700 |
+| DigitalOutput | 3201 | 5550 |
+| AnalogInput | 3202 | 5600 |
+
+Unknown `@type` values are assigned custom object IDs in the 26241+ range (OMA reserved for custom objects).
+
+### 16.2 Registration Parameters
+
+| Parameter | Source | Default |
+|-----------|--------|---------|
+| Endpoint | `@id` | `"unknown"` |
+| Lifetime | `@validUntil` | 86400 s (24 hours) |
+| Binding | Caller-specified | `"U"` (UDP) |
+| Objects | Derived from document | IPSO or custom objects |
+
+### 16.3 CoRE Link Format
+
+`derive_lwm2m_links()` generates RFC 6690 link-format strings for LwM2M registration and `.well-known/core` discovery (e.g. `</3303/0>,</3304/0>`).
+
+---
+
 ## References
 
 - Bormann, C., and Hoffman, P. (2020). RFC 8949: Concise Binary Object Representation (CBOR). IETF. https://www.rfc-editor.org/rfc/rfc8949
