@@ -1192,6 +1192,181 @@ The algebra is strictly more expressive: it distinguishes epistemic states that 
 
 The bridge theorems show that scalar methods are recoverable as special cases: multiply is trust discount with dogmatic trust, average is averaging fusion of dogmatic opinions. This ensures backward compatibility — existing scalar-based systems produce identical results when opinions have u = 0.
 
+### 13.6 Quantization Distortion Bridge
+
+This subsection defines a mapping from vector quantization distortion to Subjective Logic uncertainty. Unlike the preceding bridge theorems (§13.1–§13.4) which establish exact algebraic equivalences between scalar methods and SL operators, this bridge is a **proposed mapping** grounded in rate-distortion theory. We clearly distinguish between proven mathematical facts and design choices throughout.
+
+#### 13.6.1 Background: Rate-Distortion Theory
+
+The following results are well-established in information theory and are NOT contributions of this specification.
+
+**Fact 13.6.1 (Shannon Rate-Distortion, Shannon 1959; Cover & Thomas 2006).** For an i.i.d. source with variance σ², the minimum achievable mean-squared error (MSE) at b bits per sample is:
+
+$$D^*(b) = \sigma^2 \cdot 2^{-2b} = \sigma^2 \cdot 4^{-b}$$
+
+This is the rate-distortion function for Gaussian sources and provides a lower bound for all other source distributions with the same variance.
+
+**Fact 13.6.2 (TurboQuant near-optimality, Zandieh et al. 2025).** For unit vectors in ℝ^d, random rotation (PolarQuant) induces approximately i.i.d. coordinates with per-coordinate variance ≈ 1/d. Applying optimal scalar quantizers per coordinate, TurboQuant achieves MSE within a constant factor (≈ 2.7) of the information-theoretic lower bound across all bit-widths and dimensions.
+
+**Fact 13.6.3 (Inner product distortion).** For unit vectors x, y ∈ ℝ^d, where x is quantized to q(x), the expected squared error of the inner product estimate is:
+
+$$\mathbb{E}\left[\left(\langle q(x), y \rangle - \langle x, y \rangle\right)^2\right] = \sum_{i=1}^{d} \mathbb{E}\left[(q(x_i) - x_i)^2\right] \cdot y_i^2 \approx D_{\text{coord}} \cdot \|y\|^2$$
+
+For unit y, this equals D_coord ≈ k · 4^{-b} / d, where k is a method-dependent constant. The inner product distortion **decreases** with dimension d.
+
+#### 13.6.2 Distortion Model
+
+**Definition 13.6.1 (Per-coordinate distortion rate).** Given b bits per coordinate and a quantization method with efficiency constant k > 0, the per-coordinate distortion rate is:
+
+$$D(b, k) = k \cdot 4^{-b}$$
+
+This represents the per-coordinate MSE for a unit-variance source. The constant k characterizes the quantizer's efficiency: k = 1.0 for an optimal scalar quantizer, with smaller values indicating more efficient methods.
+
+The reference implementation provides the following constants, ordered by decreasing efficiency:
+
+| Method | Constant k | Rationale |
+|--------|-----------|-----------|
+| `turboquant` | 0.4 | Near-optimal (≈ 2.7× of lower bound); random rotation + scalar quantizer + QJL residual. |
+| `polarquant` | 0.5 | Random rotation + per-coordinate scalar quantizer, without QJL residual correction. |
+| `product_quantization` | 0.7 | Codebook-based; subvector independence assumption. |
+| `scalar` | 1.0 | Baseline: direct per-coordinate uniform quantization without rotation. |
+| `qjl` | 1.0 | 1-bit only; designed for bias correction, not standalone compression. |
+
+**⚠ Caveat on constants.** These values are approximate relative orderings based on the qualitative efficiency claims of the cited papers. They are NOT precisely measured values for specific dimensions or data distributions. In production systems, these constants SHOULD be calibrated empirically for the specific vector distribution and dimension. The relative ordering (turboquant < polarquant < scalar) is robust; the exact ratios may vary.
+
+**⚠ Caveat on dimension independence.** Definition 13.6.1 gives the per-coordinate MSE for a unit-variance source. For d-dimensional unit vectors, the actual inner product distortion is D(b, k)/d (Fact 13.6.3). The dimension-independent formula therefore **overestimates** the inner product error by a factor of d. See §13.6.5 for the implications of this conservatism.
+
+#### 13.6.3 Uncertainty Mapping
+
+**Definition 13.6.2 (Distortion-to-uncertainty mapping).** Given a distortion value D ≥ 0, the epistemic uncertainty mass is:
+
+$$u = \min\left(1, \; \sqrt{\max(0, D)}\right)$$
+
+**This is a design choice, not a theorem.** The rationale for the square root mapping is:
+
+1. **Scale matching:** The square root maps MSE to RMSE, which has the same units and scale as the quantities being estimated (inner products in [−1, 1] for unit vectors). RMSE directly quantifies "how far off" the estimate might be in expectation.
+2. **Monotonicity:** √· is monotonically increasing on [0, ∞), preserving the ordering of distortion values in the uncertainty space.
+3. **Boundedness:** The min(1, ·) clamp ensures u ∈ [0, 1], satisfying the SL constraint.
+4. **Conservatism:** Since the dimension-independent formula overestimates D (§13.6.2), the resulting u is an **upper bound** on the uncertainty that would be assigned by a dimension-aware model.
+
+**Alternative mappings.** The following alternatives would also be defensible and would satisfy the same formal properties (Theorems 13.6.1–13.6.4 below):
+
+- u = min(1, D) — linear; penalizes distortion less aggressively than √.
+- u = 1 − exp(−D) — exponential saturation; smoother transition near D = 0.
+- u = min(1, c · √(D/d)) — dimension-aware; uses the actual inner product distortion.
+
+The specification does not mandate a specific mapping. The square root mapping is the DEFAULT in the reference implementation. Conforming processors MAY implement alternative mappings, provided they satisfy: (a) u ∈ [0, 1], (b) u = 0 when D = 0, and (c) u is non-decreasing in D.
+
+#### 13.6.4 Opinion Construction
+
+**Definition 13.6.3 (Quantization-aware opinion).** Given a similarity score s, a quantization bit-width b, a method with constant k, a similarity range [s_min, s_max], and a base rate a:
+
+1. Compute distortion: D = k · 4^{-b}
+2. Compute uncertainty: u = min(1, √D)
+3. Normalize similarity to confidence: c = clamp((s − s_min) / (s_max − s_min), 0, 1)
+4. Construct opinion via from_confidence(c, u, a):
+   - b_ω = c · (1 − u)
+   - d_ω = (1 − c) · (1 − u)
+
+The resulting opinion ω = (b_ω, d_ω, u, a) encodes both the similarity judgment (via the belief/disbelief ratio) and the quantization-induced epistemic uncertainty (via u).
+
+#### 13.6.5 Formal Properties
+
+The following properties are provable for any mapping satisfying u ∈ [0, 1], u(0) = 0, and u non-decreasing.
+
+**Theorem 13.6.1 (Additivity preservation).** The opinion constructed in Definition 13.6.3 satisfies b_ω + d_ω + u = 1.
+
+*Proof:* b_ω + d_ω + u = c(1 − u) + (1 − c)(1 − u) + u = (1 − u)(c + 1 − c) + u = (1 − u) + u = 1. ∎
+
+**Theorem 13.6.2 (Monotonic uncertainty reduction).** For fixed method k and similarity s, uncertainty u is strictly decreasing in bit-width b for b ≥ 1 (whenever D(b, k) < 1).
+
+*Proof:* D(b, k) = k · 4^{-b} is strictly decreasing in b. The square root function is strictly increasing on (0, ∞). Therefore u(b) = √(k · 4^{-b}) is strictly decreasing in b whenever D < 1 (i.e., when the min(1, ·) clamp is not active). ∎
+
+**Theorem 13.6.3 (Convergence to dogmatic opinion).** As b → ∞, the quantization-aware opinion converges to the dogmatic opinion (c, 1 − c, 0, a).
+
+*Proof:* As b → ∞, D = k · 4^{-b} → 0, so u → 0. Then b_ω = c · (1 − 0) = c and d_ω = (1 − c) · (1 − 0) = 1 − c. The opinion (c, 1 − c, 0, a) is dogmatic with P(ω) = c. ∎
+
+*Interpretation:* With infinite precision (no quantization), the similarity score carries no quantization uncertainty. The opinion degenerates to the scalar case, consistent with the backward compatibility guarantee (§14.5).
+
+**Theorem 13.6.4 (Reversion to vacuous opinion).** When D ≥ 1 (i.e., k · 4^{-b} ≥ 1, which occurs at very low bit-widths for methods with large k), the opinion is vacuous: ω = (0, 0, 1, a).
+
+*Proof:* When D ≥ 1, u = min(1, √D) = 1. Then b_ω = c · 0 = 0, d_ω = (1 − c) · 0 = 0. The opinion (0, 0, 1, a) has P(ω) = a. ∎
+
+*Interpretation:* When quantization distortion is so severe that the RMSE equals or exceeds the full scale of the quantity being measured, the opinion correctly reports total ignorance. The projected probability reverts to the base rate — consistent with Theorem 12.4 (temporal decay reversion to prior).
+
+**Proposition 13.6.5 (Conservatism for high-dimensional vectors).** For d-dimensional unit vectors (d > 1), the dimension-independent distortion formula D(b, k) = k · 4^{-b} overestimates the actual inner product distortion D_IP(b, k, d) = k · 4^{-b}/d by a factor of d. Consequently, the assigned uncertainty u_assigned = √D is strictly greater than the dimension-aware uncertainty u_aware = √(D/d) by a factor of √d.
+
+*Proof:* u_assigned = √(k · 4^{-b}) = √d · √(k · 4^{-b}/d) = √d · u_aware. Since d > 1, √d > 1, so u_assigned > u_aware. ∎
+
+*Interpretation:* The dimension-independent model is **conservative** — it never understates quantization uncertainty. For high-dimensional embeddings (e.g., d = 768), the overestimation factor is √768 ≈ 27.7×. This is a deliberate safety margin: in the absence of dimension metadata, the system errs toward reporting more uncertainty rather than less. When `@dimensions` is available, implementations MAY use the dimension-aware formula u = min(1, √(D/d)) for tighter uncertainty estimates.
+
+#### 13.6.6 Interaction with Other Operators
+
+Quantization-aware opinions are standard Opinion objects and compose with all algebra operators:
+
+- **Cumulative fusion (§5):** Fusing similarity opinions from two different quantization levels (e.g., 4-bit and 8-bit) correctly yields lower uncertainty than either input alone, because each contributes independent evidence.
+- **Trust discount (§7):** If the quantization source is itself of uncertain trustworthiness, trust discount further increases uncertainty — modeling both "the compression may have introduced error" and "we don't fully trust this source."
+- **Temporal decay (§12):** A quantized similarity that ages receives both quantization uncertainty and temporal uncertainty, compounding conservatively.
+- **Robust fusion (§11):** Multiple quantized similarity scores from different methods can be fused with Byzantine resistance, automatically detecting outliers among quantization methods.
+
+No special rules are needed. The algebra's existing operators handle quantization-derived opinions identically to any other opinion.
+
+#### 13.6.7 Worked Example
+
+**Scenario:** A product search system stores 768-dimensional embeddings quantized to 4 bits using TurboQuant. A query returns cosine similarity 0.85 for a product.
+
+**Step 1 — Distortion:**
+
+$$D = k_{\text{turboquant}} \cdot 4^{-4} = 0.4 \cdot \frac{1}{256} = 0.0015625$$
+
+**Step 2 — Uncertainty:**
+
+$$u = \sqrt{0.0015625} = 0.0395$$
+
+**Step 3 — Similarity to confidence:**
+
+$$c = \frac{0.85 - (-1)}{1 - (-1)} = \frac{1.85}{2} = 0.925$$
+
+**Step 4 — Opinion construction** (base rate a = 0.5):
+
+$$b = 0.925 \times (1 - 0.0395) = 0.8884$$
+
+$$d = (1 - 0.925) \times (1 - 0.0395) = 0.0720$$
+
+$$u = 0.0395$$
+
+**Result:** ω = (0.8884, 0.0720, 0.0395, 0.50). P(ω) = 0.8884 + 0.50 × 0.0395 = 0.908.
+
+The opinion indicates high confidence in the match (belief ≈ 0.89) with a small but non-zero uncertainty of ≈ 4% attributable to quantization. This uncertainty is provably bounded by rate-distortion theory — it is not a heuristic estimate.
+
+**Comparison:** If the same embedding were stored at 2 bits (scalar method):
+
+$$D = 1.0 \cdot 4^{-2} = 0.0625, \quad u = \sqrt{0.0625} = 0.25$$
+
+$$b = 0.925 \times 0.75 = 0.694, \quad d = 0.075 \times 0.75 = 0.056$$
+
+$$\omega = (0.694, 0.056, 0.25, 0.50). \quad P(\omega) = 0.694 + 0.5 \times 0.25 = 0.819.$$
+
+The 2-bit scalar opinion carries 25% uncertainty — substantially more than the 4-bit TurboQuant opinion (4%). The uncertainty difference is entirely attributable to the difference in quantization fidelity and is information-theoretically grounded.
+
+**Dimension-aware refinement:** If the system uses the dimension-aware formula for d = 768:
+
+$$u_{\text{aware}} = \sqrt{0.0015625 / 768} = \sqrt{2.03 \times 10^{-6}} = 0.00143$$
+
+This gives u ≈ 0.14% — essentially zero uncertainty. This illustrates why the dimension-independent formula is conservative and why dimension metadata is valuable.
+
+#### 13.6.8 Limitations and Honest Caveats
+
+1. **Constants are approximate.** The distortion constants in the reference implementation are relative orderings, not precise empirical measurements. Production systems should calibrate k values against their specific data distributions and embedding dimensions.
+
+2. **Dimension independence is a deliberate simplification.** The per-coordinate formula overestimates inner product distortion for high-dimensional vectors (Proposition 13.6.5). This is the safe direction (conservative), but may lead to unnecessarily high uncertainty estimates. Dimension-aware refinement is available when `@dimensions` is known.
+
+3. **The √D mapping is a design choice.** No theorem establishes that √D is the uniquely correct mapping from distortion to uncertainty. It is a reasonable and well-motivated choice (§13.6.3), but alternatives exist.
+
+4. **Assumes well-behaved data.** The rate-distortion bounds assume approximately i.i.d. coordinates after rotation (satisfied by TurboQuant's design). For pathological vector distributions (e.g., highly sparse or adversarially structured), actual distortion may differ from the model.
+
+5. **Does not capture systematic bias.** The mapping models distortion magnitude (RMSE) but not bias direction. TurboQuant's QJL stage eliminates bias for inner products, but scalar quantizers without QJL correction may introduce systematic bias that this model does not capture. The `hasResidualQJL` flag in the `@quantization` descriptor (see [AI/ML Extensions](ai-ml-extensions.md) §4.4) documents whether bias correction was applied.
+
 ---
 
 ## 14. JSON-LD Serialization
@@ -1346,10 +1521,15 @@ This section documents the scalar confidence methods provided by the reference i
 
 ## 18. References
 
+- Cover, T. M. & Thomas, J. A. (2006). *Elements of Information Theory.* 2nd ed. Wiley. ISBN 978-0-471-24195-9.
 - Jøsang, A. (2016). *Subjective Logic: A Formalism for Reasoning Under Uncertainty.* Springer. ISBN 978-3-319-42335-7.
+- Kacham, P., Zandieh, A., & Mirrokni, V. (2024). QJL: 1-Bit Quantized JL Transform for KV Cache Quantization with Zero Overhead. *AAAI 2025.* arXiv:2406.03482.
 - Pearl, J. (1988). *Probabilistic Reasoning in Intelligent Systems.* Morgan Kaufmann.
 - Shafer, G. (1976). *A Mathematical Theory of Evidence.* Princeton University Press.
 - Walley, P. (1991). *Statistical Reasoning with Imprecise Probabilities.* Chapman and Hall.
+- Shannon, C. E. (1959). Coding theorems for a discrete source with a fidelity criterion. *IRE National Convention Record*, 7(4), 142–163.
 - Zadeh, L. A. (1965). Fuzzy sets. *Information and Control*, 8(3), 338–353.
+- Zandieh, A., Daliri, M., Hadian, M., & Mirrokni, V. (2025). TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate. *ICLR 2026.* arXiv:2504.19874.
+- Zandieh, A., Han, I., & Mirrokni, V. (2025). PolarQuant: Quantization with Polar Coordinate Transforms. *AISTATS 2026.* arXiv:2502.02617.
 - W3C. (2020). JSON-LD 1.1. W3C Recommendation. https://www.w3.org/TR/json-ld11/
 - IETF. (1997). RFC 2119: Key words for use in RFCs to Indicate Requirement Levels. https://www.rfc-editor.org/rfc/rfc2119
