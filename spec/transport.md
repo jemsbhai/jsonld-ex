@@ -441,6 +441,131 @@ The reference implementation spans two modules in the [jsonld-ex Python package]
 
 ---
 
+### CoAP Module (`jsonld_ex.coap`)
+
+| Function | Spec Section |
+|----------|-------------|
+| `to_coap_payload(doc, compress, max_payload, context_registry)` | §10.1 |
+| `from_coap_payload(payload, compressed, context, context_registry)` | §10.1 |
+| `derive_coap_options(doc, compress, prefix, context_registry)` | §10.2 |
+| `derive_coap_uri_path(doc, prefix)` | §10.2 |
+| `derive_coap_message_type(doc)` | §10.3 |
+
+### HTTP Module (`jsonld_ex.http_headers`)
+
+| Function | Spec Section |
+|----------|-------------|
+| `derive_response_headers(doc, compress)` | §11.1 |
+| `derive_request_headers(compress, etag)` | §11.5 |
+| `derive_etag(doc)` | §11.2 |
+| `derive_cache_control(doc)` | §11.3 |
+| `derive_link_header(doc)` | §11.4 |
+| `derive_content_type(compress)` | §11.1 |
+
+---
+
+## 10. CoAP Transport
+
+The Constrained Application Protocol (RFC 7252) is a RESTful protocol for constrained IoT devices. The CoAP transport module derives CoAP options from JSON-LD metadata, enabling semantic-aware caching, conditional requests, and resource observation on constrained networks.
+
+### 10.1 Payload Serialization
+
+CoAP payloads use the same CBOR-LD (§2) or JSON serialization as MQTT (§3). The default maximum payload is 1024 bytes (single UDP datagram for constrained networks). Block-wise transfer (RFC 7959) is recommended for larger payloads.
+
+### 10.2 Option Derivation
+
+CoAP options are derived from JSON-LD metadata as follows:
+
+| CoAP Option | RFC 7252 Section | jsonld-ex Source | Mapping |
+|-------------|-----------------|-----------------|---------|
+| Content-Format (12) | §5.10.3 | Compression flag | `60` (CBOR) or `11100` (JSON-LD, placeholder — see §10.6) |
+| ETag (4) | §5.10.6 | `@integrity` | SHA-256 of integrity string, truncated to 8 bytes |
+| Max-Age (14) | §5.10.5 | `@validUntil` | Seconds remaining until expiry |
+| Uri-Path (11) | §5.10.1 | `@type`, `@id` | Path segments: `[prefix, type_local, id_fragment]` |
+| Size1 (60) | §5.10.9 | Payload | Byte length of serialized payload |
+
+### 10.3 Message Type Derivation
+
+CoAP message types (CON vs NON) are derived from confidence metadata:
+
+| Condition | Message Type | Semantics |
+|-----------|-------------|-----------|
+| `@humanVerified = true` | CON | Confirmable (requires ACK) |
+| `@confidence >= 0.5` | CON | Reliable delivery |
+| `@confidence < 0.5` | NON | Non-confirmable (fire-and-forget) |
+| No confidence metadata | CON | Safe default |
+
+Unlike MQTT's three QoS levels, CoAP has only CON vs NON. The mapping is conservative: only clearly low-confidence telemetry gets NON.
+
+### 10.4 Block-Wise Transfer
+
+When the serialized payload exceeds 1024 bytes (e.g., documents with large vector embeddings), the module recommends block-wise transfer (RFC 7959) with `block_szx = 6` (1024-byte blocks).
+
+### 10.5 Observe
+
+Resources with `@validUntil` annotations are flagged as observable (RFC 7641), indicating temporal semantics suitable for the CoAP Observe pattern.
+
+### 10.6 Content-Format Registration
+
+As of 2026, `application/ld+json` does not have an official IANA CoAP Content-Format assignment. The value `11100` is used as an illustrative placeholder from the unassigned range 11061–11541, avoiding collision with existing assignments (notably 11050 = `application/json` with `deflate` encoding; 11542–11544 = OMA LwM2M formats). Implementers MUST NOT use this value in production without registering an official Content-Format ID with IANA per RFC 7252 §12.3 and RFC 9876. Until registration, using Content-Format `50` (`application/json`) is the safest interoperable choice.
+
+---
+
+## 11. HTTP Header Derivation
+
+The HTTP header derivation module bridges JSON-LD metadata and standard HTTP caching, content negotiation, and conditional request mechanisms (RFC 9110).
+
+### 11.1 Response Headers
+
+HTTP response headers are derived from document metadata:
+
+| HTTP Header | RFC Section | jsonld-ex Source | Value |
+|------------|-------------|-----------------|-------|
+| Content-Type | RFC 9110 §8.3 | Compression flag | `application/ld+json` or `application/cbor` |
+| ETag | RFC 9110 §8.8.3 | `@integrity` | Quoted SHA-256 hash (first 32 hex chars) |
+| Cache-Control | RFC 9110 §5.2 | `@validUntil` | `max-age=N` (seconds remaining) or `no-cache` (expired) |
+| Link | RFC 8288 | `@context` | `<url>; rel="http://www.w3.org/ns/json-ld#context"` |
+| X-JsonLD-Confidence | Custom | `@confidence` | Confidence score as string |
+| X-JsonLD-Source | Custom | `@source` | Source/model IRI |
+| X-JsonLD-Type | Custom | `@type` | Document type (first element if array) |
+
+### 11.2 ETag Derivation
+
+The ETag is derived from `@integrity` by hashing the integrity string with SHA-256 and taking the first 32 hex characters. The result is returned as a quoted string per RFC 9110 §8.8.3, enabling conditional requests (`If-None-Match` → `304 Not Modified`).
+
+### 11.3 Cache-Control Derivation
+
+Cache-Control is derived from `@validUntil`:
+
+| Condition | Cache-Control Value |
+|-----------|-------------------|
+| `@validUntil` in future | `max-age=N` (seconds remaining) |
+| `@validUntil` in past | `no-cache` |
+| No `@validUntil` | Not included |
+
+### 11.4 Link Header for Context Discovery
+
+Per W3C JSON-LD 1.1 §4.1, a JSON document can be interpreted as JSON-LD if a Link header provides the context URL. The module generates Link headers from `@context`:
+
+- String context → single Link entry
+- Array context → one Link entry per URL (inline context objects excluded)
+- No context → no Link header
+
+### 11.5 Request Headers
+
+Request headers support content negotiation and conditional requests:
+
+| HTTP Header | Source | Value |
+|------------|--------|-------|
+| Accept | Compression preference | `application/ld+json` or `application/cbor` |
+| If-None-Match | Previously received ETag | Quoted ETag string |
+
+### 11.6 Custom Headers
+
+The `X-JsonLD-*` headers enable proxy and CDN routing decisions based on JSON-LD metadata without deserializing the payload. These use the `X-` prefix per convention. While RFC 6648 deprecated creating new `X-` headers, these are explicitly jsonld-ex-specific and unlikely to become standard HTTP headers.
+
+---
+
 ## References
 
 - Bormann, C., and Hoffman, P. (2020). RFC 8949: Concise Binary Object Representation (CBOR). IETF. https://www.rfc-editor.org/rfc/rfc8949
@@ -449,3 +574,8 @@ The reference implementation spans two modules in the [jsonld-ex Python package]
 - W3C. (2020). JSON-LD 1.1. W3C Recommendation. https://www.w3.org/TR/json-ld11/
 - W3C. CBOR-LD. Draft Specification. https://json-ld.github.io/cbor-ld-spec/
 - Bradner, S. (1997). RFC 2119: Key words for use in RFCs to Indicate Requirement Levels. IETF. https://www.rfc-editor.org/rfc/rfc2119
+- Shelby, Z., Hartke, K., and Bormann, C. (2014). RFC 7252: The Constrained Application Protocol (CoAP). IETF. https://www.rfc-editor.org/rfc/rfc7252
+- Hartke, K. (2015). RFC 7641: Observing Resources in the Constrained Application Protocol (CoAP). IETF. https://www.rfc-editor.org/rfc/rfc7641
+- Bormann, C., and Shelby, Z. (2016). RFC 7959: Block-Wise Transfers in the Constrained Application Protocol (CoAP). IETF. https://www.rfc-editor.org/rfc/rfc7959
+- Fielding, R., et al. (2022). RFC 9110: HTTP Semantics. IETF. https://www.rfc-editor.org/rfc/rfc9110
+- Nottingham, M. (2017). RFC 8288: Web Linking. IETF. https://www.rfc-editor.org/rfc/rfc8288

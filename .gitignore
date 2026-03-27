@@ -44,3 +44,6 @@ data/
 packages/js/debug-*.ts
 packages/js/*_output.txt
 packages/js/test_result.json
+
+# Local improvement plans (not for public repo)
+improvements/

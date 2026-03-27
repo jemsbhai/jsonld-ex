@@ -97,12 +97,15 @@ def find_valid_until(doc: dict[str, Any]) -> Optional[str]:
     return None
 
 
-def seconds_remaining(valid_until_str: str) -> Optional[float]:
+def seconds_remaining(valid_until_str: Any) -> Optional[float]:
     """Parse ISO 8601 datetime and return seconds from now.
 
-    Returns None if parsing fails.  Returns negative values for
-    past datetimes (caller decides how to handle).
+    Returns None if *valid_until_str* is not a string or if parsing
+    fails.  Returns negative values for past datetimes (caller
+    decides how to handle).
     """
+    if not isinstance(valid_until_str, str):
+        return None
     try:
         dt_str = valid_until_str.replace("Z", "+00:00")
         expiry_dt = datetime.fromisoformat(dt_str)

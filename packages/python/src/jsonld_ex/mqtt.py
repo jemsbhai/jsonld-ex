@@ -25,6 +25,14 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from jsonld_ex.ai_ml import get_confidence
+from jsonld_ex._transport_common import (
+    local_name,
+    sanitise_segment,
+    extract_type_local,
+    extract_id_fragment,
+    derive_expiry_seconds,
+    scan_confidence,
+)
 
 try:
     from jsonld_ex.cbor_ld import to_cbor, from_cbor
@@ -168,20 +176,8 @@ def derive_mqtt_topic(
         >>> derive_mqtt_topic({"@type": "SensorReading", "@id": "urn:sensor:imu-001"})
         'ld/SensorReading/imu-001'
     """
-    # Extract type
-    type_val = doc.get("@type", "unknown")
-    if isinstance(type_val, list):
-        type_val = type_val[0] if type_val else "unknown"
-    # Strip namespace prefix
-    type_str = _local_name(str(type_val))
-
-    # Extract id fragment
-    id_val = doc.get("@id", "unknown")
-    id_str = _local_name(str(id_val))
-
-    # Sanitise for MQTT topic (no #, +, null, or leading $)
-    type_str = _sanitise_topic_segment(type_str)
-    id_str = _sanitise_topic_segment(id_str)
+    type_str = extract_type_local(doc)
+    id_str = extract_id_fragment(doc)
 
     topic = f"{prefix}/{type_str}/{id_str}"
 
@@ -360,7 +356,7 @@ def derive_mqtt5_properties(
     )
 
     # --- Message Expiry Interval (§3.3.2.3.3) ---
-    expiry = _derive_expiry_seconds(doc)
+    expiry = derive_expiry_seconds(doc)
     if expiry is not None:
         props["message_expiry_interval"] = expiry
 
@@ -397,82 +393,9 @@ def derive_mqtt5_properties(
 # ═══════════════════════════════════════════════════════════════════
 
 
-def _local_name(iri: str) -> str:
-    """Extract the local/fragment part of an IRI or URN."""
-    # Try fragment first
-    if "#" in iri:
-        return iri.rsplit("#", 1)[-1]
-    # Try last path segment
-    if "/" in iri:
-        return iri.rsplit("/", 1)[-1]
-    # Try URN
-    if ":" in iri:
-        return iri.rsplit(":", 1)[-1]
-    return iri
-
-
-def _sanitise_topic_segment(segment: str) -> str:
-    """Remove MQTT-illegal characters from a topic segment.
-
-    Per MQTT spec (v3.1.1 §4.7, v5.0 §4.7):
-
-    - ``#`` and ``+`` are wildcard characters, forbidden in PUBLISH
-      topic names.
-    - Null character (``\\x00``) is forbidden.
-    - ``$`` as a leading character is reserved for broker system
-      topics (e.g. ``$SYS/``); stripped only when leading.
-    """
-    # MQTT wildcards # and + are not allowed in published topics
-    sanitised = re.sub(r"[#+\x00]", "_", segment)
-    # Strip leading $ (reserved for broker system topics like $SYS/)
-    sanitised = sanitised.lstrip("$")
-    # If stripping left us empty, fall back to "unknown"
-    return sanitised or "unknown"
-
-
-def _derive_expiry_seconds(doc: dict[str, Any]) -> Optional[int]:
-    """Compute Message Expiry Interval from ``@validUntil``.
-
-    Scans the document for ``@validUntil`` (ISO 8601 datetime) and
-    returns the number of seconds remaining until that time.  Returns
-    ``None`` if no ``@validUntil`` is found or if it has already
-    passed.
-
-    Also checks property-level ``@validUntil`` on the first annotated
-    property value.
-    """
-    valid_until = doc.get("@validUntil")
-
-    # Fall back to property-level search
-    if valid_until is None:
-        for key, val in doc.items():
-            if key.startswith("@"):
-                continue
-            if isinstance(val, dict) and "@validUntil" in val:
-                valid_until = val["@validUntil"]
-                break
-
-    if valid_until is None:
-        return None
-
-    try:
-        if isinstance(valid_until, str):
-            # Parse ISO 8601 — handle both timezone-aware and naive
-            dt_str = valid_until.replace("Z", "+00:00")
-            expiry_dt = datetime.fromisoformat(dt_str)
-            if expiry_dt.tzinfo is None:
-                expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
-        else:
-            return None
-
-        now = datetime.now(timezone.utc)
-        remaining = (expiry_dt - now).total_seconds()
-
-        if remaining <= 0:
-            return None
-
-        # MQTT Message Expiry Interval is a uint32 (max ~136 years)
-        return min(int(math.ceil(remaining)), 0xFFFFFFFF)
-
-    except (ValueError, TypeError, OverflowError):
-        return None
+# Backward-compatible aliases for private helpers that were
+# extracted to _transport_common.  Preserves imports in existing
+# test code and any downstream users of these private names.
+_local_name = local_name
+_sanitise_topic_segment = sanitise_segment
+_derive_expiry_seconds = derive_expiry_seconds

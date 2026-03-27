@@ -2,6 +2,51 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+**CoAP Transport Module** — `coap` module
+
+- `to_coap_payload` / `from_coap_payload`: CBOR/JSON serialization for CoAP (RFC 7252)
+- `derive_coap_options`: full option derivation from JSON-LD metadata (Content-Format, ETag, Max-Age, Uri-Path, Size1, Block SZX, Observable)
+- `derive_coap_uri_path`: URI path segments from `@type` and `@id`
+- `derive_coap_message_type`: CON/NON from `@confidence` metadata
+- Constants: `CONTENT_FORMAT_CBOR`, `CONTENT_FORMAT_JSON`, `CONTENT_FORMAT_JSONLD`, `MESSAGE_TYPE_CON`, `MESSAGE_TYPE_NON`
+- ETag derived from `@integrity` (SHA-256, truncated to 8 bytes per RFC 7252 §5.10.6)
+- Max-Age derived from `@validUntil` (seconds remaining)
+- Observable flag for resources with temporal annotations (RFC 7641)
+- Block-wise transfer recommendation for payloads > 1024 bytes (RFC 7959)
+
+**HTTP Header Derivation Module** — `http_headers` module
+
+- `derive_response_headers`: Content-Type, ETag, Cache-Control, Link, X-JsonLD-Confidence/Source/Type
+- `derive_request_headers`: Accept content negotiation, If-None-Match conditional GET
+- `derive_etag`: quoted ETag from `@integrity` (SHA-256, first 32 hex chars)
+- `derive_cache_control`: `max-age=N` from `@validUntil`, `no-cache` for expired
+- `derive_link_header`: JSON-LD context discovery per W3C JSON-LD 1.1 §4.1
+- `derive_content_type`: `application/ld+json` or `application/cbor`
+- Constants: `MEDIA_TYPE_JSONLD`, `MEDIA_TYPE_CBOR`, `MEDIA_TYPE_JSON`
+
+**Shared Transport Helpers** — `_transport_common` internal module
+
+- Extracted shared logic from `mqtt.py`, `coap.py`, `http_headers.py`
+- `local_name`, `sanitise_segment`, `extract_type_local`, `extract_id_fragment`
+- `find_valid_until`, `seconds_remaining`, `derive_expiry_seconds`
+- `scan_confidence`: unified confidence/humanVerified scanning
+
+**EN8.5 Experiment** — CBOR-LD compact transport with TurboQuant enhancement
+
+- 5 document variants × 6 serialization formats
+- Payload bytes, compression ratio, throughput, round-trip fidelity
+- Quantization byte savings analysis (128-dim and 768-dim)
+
+### Changed
+- `mqtt.py` refactored to use `_transport_common` shared helpers (backward-compatible aliases preserved)
+
+### Fixed
+- CoAP `CONTENT_FORMAT_JSONLD` corrected from 11050 (collides with `application/json` deflate) to 11100 (unassigned range)
+
 ## [0.7.0] — 2026-03-03
 
 ### Added

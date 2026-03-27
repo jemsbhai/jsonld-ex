@@ -223,6 +223,22 @@ except ImportError:
     pass
 
 try:
+    from jsonld_ex.coap import (
+        to_coap_payload, from_coap_payload,
+        derive_coap_options, derive_coap_uri_path, derive_coap_message_type,
+        CONTENT_FORMAT_CBOR, CONTENT_FORMAT_JSON, CONTENT_FORMAT_JSONLD,
+        MESSAGE_TYPE_CON, MESSAGE_TYPE_NON,
+    )
+except ImportError:
+    pass
+
+from jsonld_ex.http_headers import (
+    derive_response_headers, derive_request_headers,
+    derive_etag, derive_cache_control, derive_link_header, derive_content_type,
+    MEDIA_TYPE_JSONLD, MEDIA_TYPE_CBOR, MEDIA_TYPE_JSON,
+)
+
+try:
     from jsonld_ex.fhir_interop import (
         # Core conversion
         scalar_to_opinion,
@@ -395,6 +411,27 @@ __all__ = [
     "derive_mqtt_topic",
     "derive_mqtt_qos",
     "derive_mqtt_qos_detailed",
+    # CoAP transport (requires cbor2)
+    "to_coap_payload",
+    "from_coap_payload",
+    "derive_coap_options",
+    "derive_coap_uri_path",
+    "derive_coap_message_type",
+    "CONTENT_FORMAT_CBOR",
+    "CONTENT_FORMAT_JSON",
+    "CONTENT_FORMAT_JSONLD",
+    "MESSAGE_TYPE_CON",
+    "MESSAGE_TYPE_NON",
+    # HTTP header derivation
+    "derive_response_headers",
+    "derive_request_headers",
+    "derive_etag",
+    "derive_cache_control",
+    "derive_link_header",
+    "derive_content_type",
+    "MEDIA_TYPE_JSONLD",
+    "MEDIA_TYPE_CBOR",
+    "MEDIA_TYPE_JSON",
     # Context versioning
     "context_diff",
     "check_compatibility",

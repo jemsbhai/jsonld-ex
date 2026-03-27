@@ -7,25 +7,46 @@ about the fidelity of quantized similarity scores.
 Mathematical foundation
 -----------------------
 For *b*-bit quantization of unit vectors, the normalized inner-product
-distortion rate follows:
+distortion rate follows the standard rate-distortion scaling:
 
     D(b) = k_method · 4^{-b}
 
 where ``k_method`` is a method-dependent constant characterizing the
-quantizer's efficiency relative to the information-theoretic optimum.
+quantizer's efficiency.  The 4^{-b} = 2^{-2b} scaling is a classical
+result from Shannon's source coding theory (Shannon, 1959).
 
-The SL uncertainty is derived as:
+The SL uncertainty is defined (as a modeling choice) as:
 
     u = min(1, √D(b))
 
-This maps the root-mean-square error (same scale as inner products in
-[-1, 1]) to uncertainty mass.  The key insight is that quantization
-distortion is a *provable, bounded* source of uncertainty — unlike
-typical ML confidence which is heuristic — so the resulting SL
-opinions have rigorous information-theoretic backing.
+This maps root-mean-square distortion (same scale as inner products
+in [-1, 1]) to uncertainty mass.  The motivation is that from the
+perspective of a *consumer* who receives quantized vectors without
+access to the originals, the distortion constitutes epistemic
+uncertainty — they do not know the true inner product.
+
+Important caveats
+-----------------
+- The distortion rate D(b) has rigorous information-theoretic bounds
+  (TurboQuant proves near-optimality within ~2.7× of the Shannon
+  lower bound).  However, the mapping u = √D is a *modeling choice*,
+  not a uniquely determined result.  Alternative mappings (u = D,
+  u = 1 − exp(−D), etc.) are equally defensible mathematically.
+
+- The ``DISTORTION_CONSTANTS`` are *illustrative defaults* reflecting
+  the relative efficiency ordering from the literature, not exact
+  values from any specific paper.  Actual distortion constants
+  depend on vector dimensionality, distribution, and implementation.
+  Implementers SHOULD empirically calibrate k for their use case.
+
+- Quantization error is aleatory (systematic, bounded noise) at the
+  *quantizer*, but epistemic (unknown) at the *consumer*.  This
+  bridge adopts the consumer's epistemic perspective.
 
 References
 ----------
+- Shannon, C.E. (1959). Coding theorems for a discrete source with
+  a fidelity criterion. IRE Nat. Conv. Rec., 4, 142-163.
 - Zandieh et al. (2025). TurboQuant: Online Vector Quantization with
   Near-optimal Distortion Rate. ICLR 2026. arXiv:2504.19874.
 - Zandieh et al. (2025). PolarQuant. AISTATS 2026. arXiv:2502.02617.
@@ -61,12 +82,18 @@ DISTORTION_CONSTANTS: dict[str, float] = {
     "qjl": 1.0,
     "product_quantization": 0.7,
 }
-"""Method-dependent distortion coefficients.
+"""Illustrative distortion coefficients for known quantization methods.
 
 ``scalar`` is the baseline (k = 1.0); other methods are expressed
-relative to it.  ``turboquant`` is the most efficient due to random
-rotation + optimal per-coordinate scalar quantizers + 1-bit QJL
-residual correction.
+relative to it.  The relative ordering (turboquant < polarquant <
+scalar) reflects the efficiency hierarchy established in the
+literature, but the absolute values are *illustrative defaults*,
+not exact empirical measurements.
+
+Implementers SHOULD replace these with empirically calibrated
+constants for their specific vector distribution and dimensionality.
+The default values are suitable for order-of-magnitude reasoning
+and for demonstrating the modeling framework.
 """
 
 

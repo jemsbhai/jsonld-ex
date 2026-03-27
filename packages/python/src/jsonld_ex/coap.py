@@ -76,14 +76,25 @@ CONTENT_FORMAT_CBOR: int = 60
 CONTENT_FORMAT_JSON: int = 50
 """Content-Format ID for ``application/json`` (RFC 7159)."""
 
-CONTENT_FORMAT_JSONLD: int = 11050
-"""Content-Format ID for ``application/ld+json``.
+CONTENT_FORMAT_JSONLD: int = 11100
+"""Content-Format ID placeholder for ``application/ld+json``.
 
-Note: As of 2026, ``application/ld+json`` does not have an official
-IANA CoAP Content-Format assignment.  The value 11050 is in the
-First Come First Served range (10000–64999) and is used here as
-an illustrative placeholder.  Implementers SHOULD register an
-official Content-Format ID with IANA for production use.
+As of 2026, ``application/ld+json`` does not have an official
+IANA CoAP Content-Format assignment.  The value 11100 is chosen
+from the unassigned range 11061-11541 to avoid collision with
+existing assignments (notably 11050 = ``application/json`` with
+``deflate``; 11542-11544 = OMA LwM2M formats).  This value is
+in the First Come First Served range (10000-64999).
+
+.. warning::
+
+    This is an **illustrative placeholder**, not an IANA-registered
+    value.  Implementers MUST NOT use this in production without
+    first registering an official Content-Format ID with IANA per
+    RFC 7252 §12.3 and RFC 9876.
+
+    Until registration, using ``CONTENT_FORMAT_JSON`` (50) is the
+    safest interoperable choice, since JSON-LD is valid JSON.
 """
 
 # ── CoAP message types (RFC 7252 §4.2–4.3) ────────────────────────
