@@ -773,6 +773,87 @@ Specifies the expected dimensionality of a vector property. Processors SHOULD va
 }
 ```
 
+### 14.3 @similarity
+
+| Property | Value |
+|----------|-------|
+| **Keyword** | `@similarity` |
+| **IRI** | `https://w3id.org/jsonld-ex/similarity` |
+| **Used in** | Context term definitions (alongside `@container: @vector`) |
+| **Type** | `xsd:string` |
+
+Declarative metadata naming the recommended similarity metric for this vector property (e.g. `"cosine"`, `"euclidean"`, `"dot_product"`). Any non-empty string is accepted; validation against the similarity metric registry happens at use-time, not at definition-time.
+
+**Example:**
+
+```json
+{
+  "@context": {
+    "embedding": {
+      "@id": "https://w3id.org/jsonld-ex/embedding",
+      "@container": "@vector",
+      "@dimensions": 768,
+      "@similarity": "cosine"
+    }
+  }
+}
+```
+
+### 14.4 @quantization
+
+| Property | Value |
+|----------|-------|
+| **Keyword** | `@quantization` |
+| **IRI** | `https://w3id.org/jsonld-ex/quantization` |
+| **Used in** | Context term definitions (alongside `@container: @vector`) |
+| **Type** | Object |
+
+Metadata describing how vector embeddings are quantized (compressed). Enables downstream consumers to understand compression fidelity, reconstruct or dequantize vectors, and model quantization distortion as measurement uncertainty.
+
+The descriptor object contains the following fields:
+
+| Field | IRI | Type | Required | Description |
+|-------|-----|------|----------|-------------|
+| `method` | `jex:quantizationMethod` | `xsd:string` | REQUIRED | Quantization algorithm name (e.g. `"turboquant"`, `"polarquant"`, `"qjl"`, `"scalar"`, `"product_quantization"`). |
+| `bitWidth` | `jex:bitWidth` | `xsd:integer` | REQUIRED | Bits per coordinate. Range: `[1, 32]`. |
+| `rotationSeed` | `jex:rotationSeed` | `xsd:integer` | OPTIONAL | RNG seed for random rotation preprocessing. Non-negative. |
+| `hasResidualQJL` | `jex:hasResidualQJL` | `xsd:boolean` | OPTIONAL | Whether a 1-bit QJL residual correction stage is applied. |
+| `codebookSize` | `jex:codebookSize` | `xsd:integer` | OPTIONAL | Number of codewords (codebook-based methods). Positive. |
+| `subvectorCount` | `jex:subvectorCount` | `xsd:integer` | OPTIONAL | Number of subvector partitions. Positive. |
+
+Additional fields MAY be included for algorithm-specific parameters; processors MUST ignore unrecognized fields.
+
+**Processing rules:**
+
+- The `@quantization` descriptor is metadata on the term definition, not on individual vector values.
+- During RDF conversion, `@quantization` is NOT converted to RDF triples (it is annotation-only, like `@vector` itself).
+- During CBOR-LD encoding, the descriptor is preserved as a CBOR map.
+- Processors SHOULD validate the descriptor against the schema above when present.
+
+**Example — TurboQuant 4-bit with QJL residual:**
+
+```json
+{
+  "@context": {
+    "embedding": {
+      "@id": "https://w3id.org/jsonld-ex/embedding",
+      "@container": "@vector",
+      "@dimensions": 768,
+      "@similarity": "cosine",
+      "@quantization": {
+        "method": "turboquant",
+        "bitWidth": 4,
+        "rotationSeed": 42,
+        "hasResidualQJL": true
+      }
+    }
+  },
+  "@type": "Product",
+  "name": "Widget",
+  "embedding": [0.123, -0.456, 0.789]
+}
+```
+
 ---
 
 ## 15. Security Properties
@@ -1121,27 +1202,29 @@ Cross-property constraint: the value MUST differ from the value of the named sib
 | 30 | `jex:Opinion` | `Opinion` | Class | Opinion |
 | 31 | `@vector` | `@vector` | Container type | Vector |
 | 32 | `@dimensions` | `@dimensions` | `xsd:integer` | Vector |
-| 33 | `@integrity` | `@integrity` | `xsd:string` | Security |
-| 34 | `@shape` | `@shape` | Object | Validation |
-| 35 | `@required` | `@required` | `xsd:boolean` | Validation |
-| 36 | `@extends` | `@extends` | String / Object | Validation |
-| 37 | `@minimum` | `@minimum` | Numeric | Validation |
-| 38 | `@maximum` | `@maximum` | Numeric | Validation |
-| 39 | `@minLength` | `@minLength` | `xsd:integer` | Validation |
-| 40 | `@maxLength` | `@maxLength` | `xsd:integer` | Validation |
-| 41 | `@pattern` | `@pattern` | `xsd:string` | Validation |
-| 42 | `@in` | `@in` | Array | Validation |
-| 43 | `@minCount` | `@minCount` | `xsd:integer` | Validation |
-| 44 | `@maxCount` | `@maxCount` | `xsd:integer` | Validation |
-| 45 | `@severity` | `@severity` | `xsd:string` | Validation |
-| 46 | `@or` | `@or` | Array | Validation |
-| 47 | `@and` | `@and` | Array | Validation |
-| 48 | `@not` | `@not` | Object | Validation |
-| 49 | `@if` / `@then` / `@else` | `@if` / `@then` / `@else` | Object | Validation |
-| 50 | `@lessThan` | `@lessThan` | `xsd:string` | Validation |
-| 51 | `@lessThanOrEquals` | `@lessThanOrEquals` | `xsd:string` | Validation |
-| 52 | `@equals` | `@equals` | `xsd:string` | Validation |
-| 53 | `@disjoint` | `@disjoint` | `xsd:string` | Validation |
+| 33 | `@similarity` | `@similarity` | `xsd:string` | Vector |
+| 34 | `@quantization` | `@quantization` | Object | Vector |
+| 35 | `@integrity` | `@integrity` | `xsd:string` | Security |
+| 36 | `@shape` | `@shape` | Object | Validation |
+| 37 | `@required` | `@required` | `xsd:boolean` | Validation |
+| 38 | `@extends` | `@extends` | String / Object | Validation |
+| 39 | `@minimum` | `@minimum` | Numeric | Validation |
+| 40 | `@maximum` | `@maximum` | Numeric | Validation |
+| 41 | `@minLength` | `@minLength` | `xsd:integer` | Validation |
+| 42 | `@maxLength` | `@maxLength` | `xsd:integer` | Validation |
+| 43 | `@pattern` | `@pattern` | `xsd:string` | Validation |
+| 44 | `@in` | `@in` | Array | Validation |
+| 45 | `@minCount` | `@minCount` | `xsd:integer` | Validation |
+| 46 | `@maxCount` | `@maxCount` | `xsd:integer` | Validation |
+| 47 | `@severity` | `@severity` | `xsd:string` | Validation |
+| 48 | `@or` | `@or` | Array | Validation |
+| 49 | `@and` | `@and` | Array | Validation |
+| 50 | `@not` | `@not` | Object | Validation |
+| 51 | `@if` / `@then` / `@else` | `@if` / `@then` / `@else` | Object | Validation |
+| 52 | `@lessThan` | `@lessThan` | `xsd:string` | Validation |
+| 53 | `@lessThanOrEquals` | `@lessThanOrEquals` | `xsd:string` | Validation |
+| 54 | `@equals` | `@equals` | `xsd:string` | Validation |
+| 55 | `@disjoint` | `@disjoint` | `xsd:string` | Validation |
 
 ---
 
