@@ -160,12 +160,101 @@ A new container type `@vector` indicates that a property holds a dense vector em
 
 Optional dimensionality constraint. Processors SHOULD validate vector length against `@dimensions` during expansion.
 
-### 4.3 Processing Rules
+### 4.3 @similarity
 
-- During expansion: vector values are preserved as JSON arrays.
+**IRI:** `https://w3id.org/jsonld-ex/similarity`  
+**Type:** `xsd:string`  
+**Applies to:** Term definitions with `@container: @vector`
+
+Optional declarative metadata naming the recommended similarity metric for this vector property (e.g. `"cosine"`, `"euclidean"`, `"dot_product"`). Any non-empty string is accepted; validation against the metric registry happens at use-time, not at definition-time.
+
+```json
+{
+  "@context": {
+    "embedding": {
+      "@id": "http://example.org/embedding",
+      "@container": "@vector",
+      "@dimensions": 768,
+      "@similarity": "cosine"
+    }
+  }
+}
+```
+
+### 4.4 @quantization
+
+**IRI:** `https://w3id.org/jsonld-ex/quantization`  
+**Type:** Object  
+**Applies to:** Term definitions with `@container: @vector`
+
+Optional metadata describing how vector embeddings are quantized (compressed). This enables downstream consumers to understand compression fidelity, reconstruct or dequantize vectors, and reason about distortion-induced uncertainty.
+
+The descriptor object supports the following fields:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `method` | `xsd:string` | REQUIRED | Name of the quantization algorithm (e.g. `"turboquant"`, `"polarquant"`, `"qjl"`, `"scalar"`, `"product_quantization"`). Any non-empty string is accepted for extensibility. |
+| `bitWidth` | `xsd:integer` | REQUIRED | Bits per coordinate/element. Range: `[1, 32]`. |
+| `rotationSeed` | `xsd:integer` | OPTIONAL | RNG seed for random rotation preprocessing (used by TurboQuant, PolarQuant). Non-negative integer. Required for reproducible dequantization. |
+| `hasResidualQJL` | `xsd:boolean` | OPTIONAL | Whether a 1-bit Quantized Johnson-Lindenstrauss residual correction stage is applied (TurboQuant's two-stage approach for unbiased inner product estimation). |
+| `codebookSize` | `xsd:integer` | OPTIONAL | Number of codewords for codebook-based methods (e.g. product quantization). Positive integer. |
+| `subvectorCount` | `xsd:integer` | OPTIONAL | Number of subvector partitions for product quantization. Positive integer. |
+
+Additional fields MAY be included for algorithm-specific parameters; processors MUST ignore unrecognized fields.
+
+**Example — TurboQuant 4-bit with QJL residual:**
+
+```json
+{
+  "@context": {
+    "embedding": {
+      "@id": "http://example.org/embedding",
+      "@container": "@vector",
+      "@dimensions": 768,
+      "@similarity": "cosine",
+      "@quantization": {
+        "method": "turboquant",
+        "bitWidth": 4,
+        "rotationSeed": 42,
+        "hasResidualQJL": true
+      }
+    }
+  },
+  "@type": "Product",
+  "name": "Widget",
+  "embedding": [0.123, -0.456, 0.789]
+}
+```
+
+**Example — Product Quantization:**
+
+```json
+{
+  "@context": {
+    "embedding": {
+      "@id": "http://example.org/embedding",
+      "@container": "@vector",
+      "@dimensions": 128,
+      "@quantization": {
+        "method": "product_quantization",
+        "bitWidth": 8,
+        "codebookSize": 256,
+        "subvectorCount": 8
+      }
+    }
+  }
+}
+```
+
+**Design rationale.** The `@quantization` descriptor is motivated by recent advances in near-optimal vector quantization, particularly TurboQuant [Zandieh et al., ICLR 2026], which achieves zero accuracy loss at 3.5 bits per channel via random rotation (PolarQuant [AISTATS 2026]) followed by 1-bit residual correction (QJL [AAAI 2025]). By standardizing compression metadata in the term definition, JSON-LD documents become self-describing: consumers know the exact compression fidelity without out-of-band negotiation, and quantization distortion can be modeled as measurement uncertainty within the Subjective Logic confidence algebra (see [Confidence Algebra](confidence-algebra.md)).
+
+### 4.5 Processing Rules
+
+- During expansion: vector values are preserved as JSON arrays (unquantized) or opaque encoded values (quantized).
 - During compaction: vector values are preserved without modification.
-- During RDF conversion: vector properties are EXCLUDED (annotation-only).
-- During CBOR-LD encoding: vectors use efficient binary float arrays (see [Transport](transport.md)).
+- During RDF conversion: vector properties are EXCLUDED (annotation-only). The `@quantization` descriptor is not converted to RDF triples.
+- During CBOR-LD encoding: unquantized vectors use efficient binary float arrays; quantized vectors use raw byte strings with the `@quantization` descriptor preserved as a CBOR map (see [Transport](transport.md)).
+- During validation: if `@dimensions` is present, processors SHOULD validate vector length. If `@quantization` is present, processors SHOULD validate the descriptor against the schema defined in §4.4.
 
 ---
 
