@@ -9,7 +9,20 @@ __version__ = "0.7.1"
 
 from jsonld_ex.processor import JsonLdEx
 from jsonld_ex.ai_ml import annotate, get_confidence, get_provenance, filter_by_confidence
-from jsonld_ex.vector import validate_vector, cosine_similarity, vector_term_definition
+from jsonld_ex.vector import (
+    validate_vector,
+    cosine_similarity,
+    vector_term_definition,
+    quantization_descriptor,
+    validate_quantization_descriptor,
+)
+from jsonld_ex.quantization_bridge import (
+    DISTORTION_CONSTANTS,
+    quantization_distortion,
+    distortion_to_uncertainty,
+    similarity_to_confidence,
+    quantization_to_opinion,
+)
 from jsonld_ex.similarity import (
     similarity,
     compare_metrics,
@@ -267,6 +280,14 @@ __all__ = [
     "validate_vector",
     "cosine_similarity",
     "vector_term_definition",
+    "quantization_descriptor",
+    "validate_quantization_descriptor",
+    # Quantization-SL bridge
+    "DISTORTION_CONSTANTS",
+    "quantization_distortion",
+    "distortion_to_uncertainty",
+    "similarity_to_confidence",
+    "quantization_to_opinion",
     # Similarity metrics & registry
     "similarity",
     "euclidean_distance",
