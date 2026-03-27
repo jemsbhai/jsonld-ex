@@ -50,6 +50,15 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from jsonld_ex.ai_ml import get_confidence
+from jsonld_ex._transport_common import (
+    local_name,
+    sanitise_segment,
+    extract_type_local,
+    extract_id_fragment,
+    find_valid_until,
+    seconds_remaining,
+    scan_confidence,
+)
 
 try:
     from jsonld_ex.cbor_ld import to_cbor, from_cbor
@@ -199,21 +208,7 @@ def derive_coap_uri_path(
         >>> derive_coap_uri_path({"@type": "SensorReading", "@id": "urn:sensor:imu-001"})
         ['ld', 'SensorReading', 'imu-001']
     """
-    # Extract type
-    type_val = doc.get("@type", "unknown")
-    if isinstance(type_val, list):
-        type_val = type_val[0] if type_val else "unknown"
-    type_str = _local_name(str(type_val))
-
-    # Extract id fragment
-    id_val = doc.get("@id", "unknown")
-    id_str = _local_name(str(id_val))
-
-    # Sanitise (reuse MQTT-compatible sanitisation)
-    type_str = _sanitise_segment(type_str)
-    id_str = _sanitise_segment(id_str)
-
-    return [prefix, type_str, id_str]
+    return [prefix, extract_type_local(doc), extract_id_fragment(doc)]
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -240,31 +235,14 @@ def derive_coap_message_type(doc: dict[str, Any]) -> int:
     Returns:
         :data:`MESSAGE_TYPE_CON` or :data:`MESSAGE_TYPE_NON`.
     """
-    # Check @humanVerified first
-    if doc.get("@humanVerified", False) is True:
+    conf, human_verified, _ = scan_confidence(doc)
+
+    if human_verified:
         return MESSAGE_TYPE_CON
 
-    # Check document-level confidence
-    conf = get_confidence(doc)
-
-    # Scan properties if no document-level confidence
-    if conf is None:
-        for key, val in doc.items():
-            if key.startswith("@"):
-                continue
-            if isinstance(val, dict):
-                if val.get("@humanVerified", False) is True:
-                    return MESSAGE_TYPE_CON
-                prop_conf = get_confidence(val)
-                if prop_conf is not None:
-                    conf = prop_conf
-                    break
-
-    # No confidence found → safe default is CON
     if conf is None:
         return MESSAGE_TYPE_CON
 
-    # Low confidence → NON (fire-and-forget)
     if conf < 0.5:
         return MESSAGE_TYPE_NON
 
@@ -345,13 +323,14 @@ def derive_coap_options(
         options["etag"] = etag
 
     # -- Max-Age (§5.10.5) --
-    max_age = _derive_max_age(doc)
-    if max_age is not None:
-        options["max_age"] = max_age
+    valid_until = find_valid_until(doc)
+    if valid_until is not None:
+        remaining = seconds_remaining(valid_until)
+        if remaining is not None and remaining > 0:
+            options["max_age"] = min(int(math.ceil(remaining)), 0xFFFFFFFF)
 
     # -- Observable (RFC 7641) --
-    has_temporal = _has_valid_until(doc)
-    if has_temporal:
+    if find_valid_until(doc) is not None:
         options["observable"] = True
 
     return options
@@ -360,28 +339,6 @@ def derive_coap_options(
 # ═══════════════════════════════════════════════════════════════════
 # INTERNAL HELPERS
 # ═══════════════════════════════════════════════════════════════════
-
-
-def _local_name(iri: str) -> str:
-    """Extract the local/fragment part of an IRI or URN."""
-    if "#" in iri:
-        return iri.rsplit("#", 1)[-1]
-    if "/" in iri:
-        return iri.rsplit("/", 1)[-1]
-    if ":" in iri:
-        return iri.rsplit(":", 1)[-1]
-    return iri
-
-
-def _sanitise_segment(segment: str) -> str:
-    """Clean a URI path segment.
-
-    Removes characters problematic for CoAP URI paths (null bytes,
-    control characters).  Similar to MQTT topic sanitisation.
-    """
-    sanitised = re.sub(r"[#+\x00]", "_", segment)
-    sanitised = sanitised.lstrip("$")
-    return sanitised or "unknown"
 
 
 def _derive_etag(doc: dict[str, Any]) -> Optional[bytes]:
@@ -403,55 +360,5 @@ def _derive_etag(doc: dict[str, Any]) -> Optional[bytes]:
     return h[:8]  # Truncate to 8 bytes (CoAP ETag max)
 
 
-def _derive_max_age(doc: dict[str, Any]) -> Optional[int]:
-    """Derive Max-Age from ``@validUntil`` (seconds remaining).
-
-    Scans document-level and property-level ``@validUntil``.
-    Returns None if not found or already expired.
-    """
-    valid_until = doc.get("@validUntil")
-
-    # Fall back to property-level
-    if valid_until is None:
-        for key, val in doc.items():
-            if key.startswith("@"):
-                continue
-            if isinstance(val, dict) and "@validUntil" in val:
-                valid_until = val["@validUntil"]
-                break
-
-    if valid_until is None:
-        return None
-
-    try:
-        if isinstance(valid_until, str):
-            dt_str = valid_until.replace("Z", "+00:00")
-            expiry_dt = datetime.fromisoformat(dt_str)
-            if expiry_dt.tzinfo is None:
-                expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
-        else:
-            return None
-
-        now = datetime.now(timezone.utc)
-        remaining = (expiry_dt - now).total_seconds()
-
-        if remaining <= 0:
-            return None
-
-        # CoAP Max-Age is uint32 (same as MQTT Message Expiry)
-        return min(int(math.ceil(remaining)), 0xFFFFFFFF)
-
-    except (ValueError, TypeError, OverflowError):
-        return None
-
-
-def _has_valid_until(doc: dict[str, Any]) -> bool:
-    """Check whether the document has any ``@validUntil`` annotation."""
-    if "@validUntil" in doc:
-        return True
-    for key, val in doc.items():
-        if key.startswith("@"):
-            continue
-        if isinstance(val, dict) and "@validUntil" in val:
-            return True
-    return False
+# _derive_max_age and _has_valid_until replaced by
+# find_valid_until() and seconds_remaining() from _transport_common
