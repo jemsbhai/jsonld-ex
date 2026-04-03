@@ -1,0 +1,281 @@
+{
+  "timestamp": "2026-04-03T03-33-22Z",
+  "scales": [
+    1000,
+    10000,
+    100000,
+    1000000
+  ],
+  "scaling": {
+    "annotate_batch": [
+      {
+        "operation": "annotate_batch",
+        "n": 1000,
+        "mean_sec": 0.000418,
+        "std_sec": 2.9e-05,
+        "ci95_low_sec": 0.000407,
+        "ci95_high_sec": 0.000428,
+        "min_sec": 0.000379,
+        "max_sec": 0.000506,
+        "n_trials": 30,
+        "peak_memory_mb": 0.18,
+        "throughput_nodes_per_sec": 2394330.0
+      },
+      {
+        "operation": "annotate_batch",
+        "n": 10000,
+        "mean_sec": 0.004485,
+        "std_sec": 0.000329,
+        "ci95_low_sec": 0.004331,
+        "ci95_high_sec": 0.004639,
+        "min_sec": 0.004132,
+        "max_sec": 0.005423,
+        "n_trials": 20,
+        "peak_memory_mb": 1.84,
+        "throughput_nodes_per_sec": 2229543.0
+      },
+      {
+        "operation": "annotate_batch",
+        "n": 100000,
+        "mean_sec": 0.051275,
+        "std_sec": 0.006674,
+        "ci95_low_sec": 0.046501,
+        "ci95_high_sec": 0.056049,
+        "min_sec": 0.044307,
+        "max_sec": 0.065736,
+        "n_trials": 10,
+        "peak_memory_mb": 18.31,
+        "throughput_nodes_per_sec": 1950272.0
+      },
+      {
+        "operation": "annotate_batch",
+        "n": 1000000,
+        "mean_sec": 0.579211,
+        "std_sec": 0.033803,
+        "ci95_low_sec": 0.537245,
+        "ci95_high_sec": 0.621176,
+        "min_sec": 0.522917,
+        "max_sec": 0.606724,
+        "n_trials": 5,
+        "peak_memory_mb": 183.53,
+        "throughput_nodes_per_sec": 1726487.0
+      }
+    ],
+    "filter_by_confidence": [
+      {
+        "operation": "filter_by_confidence",
+        "n": 1000,
+        "mean_sec": 0.000474,
+        "std_sec": 3.5e-05,
+        "ci95_low_sec": 0.000461,
+        "ci95_high_sec": 0.000487,
+        "min_sec": 0.000432,
+        "max_sec": 0.000593,
+        "n_trials": 30,
+        "peak_memory_mb": 0.01,
+        "throughput_nodes_per_sec": 2108578.0
+      },
+      {
+        "operation": "filter_by_confidence",
+        "n": 10000,
+        "mean_sec": 0.004766,
+        "std_sec": 0.000133,
+        "ci95_low_sec": 0.004704,
+        "ci95_high_sec": 0.004828,
+        "min_sec": 0.004548,
+        "max_sec": 0.004989,
+        "n_trials": 20,
+        "peak_memory_mb": 0.05,
+        "throughput_nodes_per_sec": 2098138.0
+      },
+      {
+        "operation": "filter_by_confidence",
+        "n": 100000,
+        "mean_sec": 0.065377,
+        "std_sec": 0.013916,
+        "ci95_low_sec": 0.055423,
+        "ci95_high_sec": 0.075331,
+        "min_sec": 0.048885,
+        "max_sec": 0.091567,
+        "n_trials": 10,
+        "peak_memory_mb": 0.43,
+        "throughput_nodes_per_sec": 1529591.0
+      },
+      {
+        "operation": "filter_by_confidence",
+        "n": 1000000,
+        "mean_sec": 0.595424,
+        "std_sec": 0.047615,
+        "ci95_low_sec": 0.536312,
+        "ci95_high_sec": 0.654536,
+        "min_sec": 0.555187,
+        "max_sec": 0.670842,
+        "n_trials": 5,
+        "peak_memory_mb": 4.47,
+        "throughput_nodes_per_sec": 1679475.0
+      }
+    ],
+    "merge_graphs": [
+      {
+        "operation": "merge_graphs",
+        "n": 1000,
+        "mean_sec": 0.022413,
+        "std_sec": 0.001539,
+        "ci95_low_sec": 0.021839,
+        "ci95_high_sec": 0.022988,
+        "min_sec": 0.020541,
+        "max_sec": 0.027309,
+        "n_trials": 30,
+        "peak_memory_mb": 1.35,
+        "throughput_nodes_per_sec": 44616.0
+      },
+      {
+        "operation": "merge_graphs",
+        "n": 10000,
+        "mean_sec": 0.290436,
+        "std_sec": 0.02438,
+        "ci95_low_sec": 0.279026,
+        "ci95_high_sec": 0.301846,
+        "min_sec": 0.265318,
+        "max_sec": 0.352216,
+        "n_trials": 20,
+        "peak_memory_mb": 13.38,
+        "throughput_nodes_per_sec": 34431.0
+      },
+      {
+        "operation": "merge_graphs",
+        "n": 100000,
+        "mean_sec": 3.611703,
+        "std_sec": 0.246095,
+        "ci95_low_sec": 3.435669,
+        "ci95_high_sec": 3.787736,
+        "min_sec": 3.304073,
+        "max_sec": 4.170966,
+        "n_trials": 10,
+        "peak_memory_mb": 135.57,
+        "throughput_nodes_per_sec": 27688.0
+      },
+      {
+        "operation": "merge_graphs",
+        "n": 1000000,
+        "mean_sec": 33.870532,
+        "std_sec": 4.703813,
+        "ci95_low_sec": 28.030912,
+        "ci95_high_sec": 39.710151,
+        "min_sec": 27.215604,
+        "max_sec": 38.080816,
+        "n_trials": 5,
+        "peak_memory_mb": 1349.81,
+        "throughput_nodes_per_sec": 29524.0
+      }
+    ],
+    "validate_batch": [
+      {
+        "operation": "validate_batch",
+        "n": 1000,
+        "mean_sec": 0.004448,
+        "std_sec": 0.000352,
+        "ci95_low_sec": 0.004317,
+        "ci95_high_sec": 0.004579,
+        "min_sec": 0.004092,
+        "max_sec": 0.005895,
+        "n_trials": 30,
+        "peak_memory_mb": 0.2,
+        "throughput_nodes_per_sec": 224816.0
+      },
+      {
+        "operation": "validate_batch",
+        "n": 10000,
+        "mean_sec": 0.052508,
+        "std_sec": 0.007392,
+        "ci95_low_sec": 0.049048,
+        "ci95_high_sec": 0.055967,
+        "min_sec": 0.041763,
+        "max_sec": 0.068925,
+        "n_trials": 20,
+        "peak_memory_mb": 1.99,
+        "throughput_nodes_per_sec": 190449.0
+      },
+      {
+        "operation": "validate_batch",
+        "n": 100000,
+        "mean_sec": 0.748118,
+        "std_sec": 0.098288,
+        "ci95_low_sec": 0.677812,
+        "ci95_high_sec": 0.818424,
+        "min_sec": 0.611445,
+        "max_sec": 0.93823,
+        "n_trials": 10,
+        "peak_memory_mb": 19.84,
+        "throughput_nodes_per_sec": 133669.0
+      },
+      {
+        "operation": "validate_batch",
+        "n": 1000000,
+        "mean_sec": 6.128821,
+        "std_sec": 0.326883,
+        "ci95_low_sec": 5.723007,
+        "ci95_high_sec": 6.534635,
+        "min_sec": 5.869188,
+        "max_sec": 6.689785,
+        "n_trials": 5,
+        "peak_memory_mb": 198.79,
+        "throughput_nodes_per_sec": 163164.0
+      }
+    ]
+  },
+  "batch_overhead_en44": {
+    "annotate": {
+      "n": 10000,
+      "per_item_sec": 0.003598,
+      "batch_sec": 0.00694,
+      "speedup": 0.52
+    },
+    "validate": {
+      "n": 10000,
+      "per_item_sec": 0.047538,
+      "batch_sec": 0.043978,
+      "speedup": 1.08
+    },
+    "filter": {
+      "n": 10000,
+      "per_item_sec": 0.000575,
+      "batch_sec": 0.005137,
+      "speedup": 0.11
+    }
+  },
+  "linearity_check": {
+    "annotate_batch": {
+      "smallest_scale": 1000,
+      "largest_scale": 1000000,
+      "throughput_smallest": 2394330.0,
+      "throughput_largest": 1726487.0,
+      "throughput_ratio": 0.721,
+      "is_linear": true
+    },
+    "filter_by_confidence": {
+      "smallest_scale": 1000,
+      "largest_scale": 1000000,
+      "throughput_smallest": 2108578.0,
+      "throughput_largest": 1679475.0,
+      "throughput_ratio": 0.796,
+      "is_linear": true
+    },
+    "merge_graphs": {
+      "smallest_scale": 1000,
+      "largest_scale": 1000000,
+      "throughput_smallest": 44616.0,
+      "throughput_largest": 29524.0,
+      "throughput_ratio": 0.662,
+      "is_linear": true
+    },
+    "validate_batch": {
+      "smallest_scale": 1000,
+      "largest_scale": 1000000,
+      "throughput_smallest": 224816.0,
+      "throughput_largest": 163164.0,
+      "throughput_ratio": 0.726,
+      "is_linear": true
+    }
+  }
+}
