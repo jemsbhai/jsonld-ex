@@ -23,6 +23,8 @@ SCHEMA_ORG = "https://schema.org/"
 CROISSANT_NS = "http://mlcommons.org/croissant/"
 CROISSANT_SPEC_VERSION = "http://mlcommons.org/croissant/1.0"
 DCT_NS = "http://purl.org/dc/terms/"
+RAI_NS = "http://mlcommons.org/croissant/RAI/"
+RAI_SPEC_VERSION = "http://mlcommons.org/croissant/RAI/1.0"
 
 # ── Contexts ────────────────────────────────────────────────────────
 
@@ -31,6 +33,7 @@ DATASET_CONTEXT: dict[str, Any] = {
     "sc": SCHEMA_ORG,
     "cr": CROISSANT_NS,
     "dct": DCT_NS,
+    "rai": RAI_NS,
     "citeAs": "cr:citeAs",
     "conformsTo": "dct:conformsTo",
     "recordSet": "cr:recordSet",
@@ -458,8 +461,12 @@ def to_croissant(dataset: dict[str, Any]) -> dict[str, Any]:
     # Replace context with full Croissant context
     doc["@context"] = copy.deepcopy(CROISSANT_CONTEXT)
 
-    # Ensure conformsTo is set
-    doc["conformsTo"] = CROISSANT_SPEC_VERSION
+    # Ensure conformsTo is set — include RAI if RAI properties are present
+    has_rai = any(k.startswith("rai:") for k in doc if isinstance(k, str))
+    if has_rai:
+        doc["conformsTo"] = [CROISSANT_SPEC_VERSION, RAI_SPEC_VERSION]
+    else:
+        doc["conformsTo"] = CROISSANT_SPEC_VERSION
 
     return doc
 
@@ -486,13 +493,41 @@ def from_croissant(croissant_doc: dict[str, Any]) -> dict[str, Any]:
     # Replace context with our own
     doc["@context"] = copy.deepcopy(DATASET_CONTEXT)
 
-    # Remove Croissant-specific conformsTo
-    doc.pop("conformsTo", None)
+    # Handle conformsTo: strip core Croissant, preserve extensions (RAI, etc.)
+    doc = _strip_core_conformsto(doc, "conformsTo")
+    doc = _strip_core_conformsto(doc, "dct:conformsTo")
 
     return doc
 
 
 # ── Internal helpers ────────────────────────────────────────────────
+
+
+def _strip_core_conformsto(doc: dict[str, Any], key: str) -> dict[str, Any]:
+    """Remove core Croissant conformsTo from *key*, preserving extension URIs.
+
+    If the value is a string matching the core spec version, remove the key.
+    If it is a list, remove only the core URI and keep extension URIs (e.g. RAI).
+    If after filtering a list has one item, unwrap it to a plain string.
+    """
+    value = doc.get(key)
+    if value is None:
+        return doc
+
+    if isinstance(value, str):
+        if value == CROISSANT_SPEC_VERSION:
+            del doc[key]
+        # Non-core URI (e.g. RAI) — keep it
+    elif isinstance(value, list):
+        filtered = [v for v in value if v != CROISSANT_SPEC_VERSION]
+        if not filtered:
+            del doc[key]
+        elif len(filtered) == 1:
+            doc[key] = filtered[0]
+        else:
+            doc[key] = filtered
+
+    return doc
 
 
 def _normalize_creator(

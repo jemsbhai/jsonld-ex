@@ -146,6 +146,8 @@ from jsonld_ex.dataset import (
     DATASET_CONTEXT,
     CROISSANT_CONTEXT,
     DATASET_SHAPE,
+    RAI_NS,
+    RAI_SPEC_VERSION,
 )
 from jsonld_ex.context import (
     context_diff,
@@ -439,6 +441,8 @@ __all__ = [
     "DATASET_CONTEXT",
     "CROISSANT_CONTEXT",
     "DATASET_SHAPE",
+    "RAI_NS",
+    "RAI_SPEC_VERSION",
     # Batch API
     "annotate_batch",
     "validate_batch",
