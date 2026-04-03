@@ -174,7 +174,7 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
         f"**Python:** {results['metadata']['python_version']}  ",
         f"**Total Time:** {results['metadata']['total_seconds']}s  ",
         f"**Trials per measurement:** {n_trials} (with 3 warmup iterations)  ",
-        f"**Statistical method:** Mean ± stddev, 95% CI via t-distribution",
+        f"**Statistical method:** Mean +/- stddev, 95% CI via t-distribution",
         "",
         "---",
         "",
@@ -202,7 +202,7 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
     for k, v in d1.shacl_verbosity.items():
         lines.append(
             f"| {k} | {v['shape_bytes']} | {v['shacl_bytes']} | "
-            f"{v['byte_ratio']} | {'✓' if v['round_trip_properties_preserved'] else '✗'} |"
+            f"{v['byte_ratio']} | {'PASS' if v['round_trip_properties_preserved'] else 'FAIL'} |"
         )
 
     rt = d1.round_trip_fidelity
@@ -213,53 +213,64 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
         "",
         "### Conversion Throughput (n=30 trials)",
         "",
-        "| Scale | to_prov_o (nodes/s) | to_prov_o ± σ (ms) | from_prov_o (nodes/s) | from_prov_o ± σ (ms) |",
-        "|-------|---------------------|--------------------|-----------------------|----------------------|",
+        "| Scale | to_prov_o (nodes/s) | to_prov_o (ms) | from_prov_o (nodes/s) | from_prov_o (ms) |",
+        "|-------|---------------------|----------------|-----------------------|------------------|",
     ]
     for k, v in d1.conversion_throughput.items():
         tp = v['to_prov_o']
         fp = v['from_prov_o']
         lines.append(
             f"| {k} | {tp['nodes_per_sec']:,.0f} | "
-            f"{tp['mean_sec']*1000:.2f} ± {tp['std_sec']*1000:.2f} | "
+            f"{tp['mean_sec']*1000:.2f} +/- {tp['std_sec']*1000:.2f} | "
             f"{fp['nodes_per_sec']:,.0f} | "
-            f"{fp['mean_sec']*1000:.2f} ± {fp['std_sec']*1000:.2f} |"
+            f"{fp['mean_sec']*1000:.2f} +/- {fp['std_sec']*1000:.2f} |"
         )
 
-    # ── Domain 1 Analysis ──
+    # -- Domain 1 Analysis (data-driven) --
+    prov_ratios = [v['byte_ratio'] for v in d1.prov_o_verbosity.values()]
+    prov_ratio_avg = sum(prov_ratios) / len(prov_ratios)
+    prov_expansion = list(d1.prov_o_verbosity.values())[0]['node_expansion_factor']
+    prov_inv_ratio = 1.0 / prov_ratio_avg if prov_ratio_avg > 0 else 0
+
+    shacl_ratios = [v['byte_ratio'] for v in d1.shacl_verbosity.values()]
+    shacl_ratio_avg = sum(shacl_ratios) / len(shacl_ratios)
+    shacl_inv_ratio = 1.0 / shacl_ratio_avg if shacl_ratio_avg > 0 else 0
+
+    ct_keys = list(d1.conversion_throughput.keys())
+    ct_largest = d1.conversion_throughput[ct_keys[-1]]
+    to_prov_nps = ct_largest['to_prov_o']['nodes_per_sec']
+    from_prov_nps = ct_largest['from_prov_o']['nodes_per_sec']
+
+    rt_fidelity_pct = rt['fidelity'] * 100
+    rt_preserved = rt['confidence_preserved']
+    rt_total = rt['total_annotated_properties']
+    all_rt_pass = all(v['round_trip_properties_preserved'] for v in d1.shacl_verbosity.values())
+
     lines += [
         "",
         "### Analysis",
         "",
-        "The PROV-O comparison demonstrates the core value proposition of jsonld-ex's inline",
-        "annotation model. To express the same provenance information — that a value was",
-        "extracted by a specific ML model with a given confidence score at a particular time —",
-        "PROV-O requires 7x more graph nodes and triples. Each annotated value in PROV-O",
-        "expands into a separate Entity node, a SoftwareAgent node, an Activity node, and the",
-        "linking triples between them. jsonld-ex co-locates all metadata directly on the value,",
-        "eliminating graph traversal entirely. The byte ratio of ~0.21 (jsonld-ex is ~5x smaller)",
-        "holds constant across scales from 10 to 1,000 nodes, confirming that the overhead is",
-        "per-annotation rather than structural.",
+        f"PROV-O requires {prov_expansion:.0f}x more graph nodes and triples to express "
+        f"the same provenance information. The byte ratio of ~{prov_ratio_avg:.2f} "
+        f"(jsonld-ex is ~{prov_inv_ratio:.0f}x smaller) holds constant across all tested "
+        f"scales, confirming per-annotation rather than structural overhead.",
         "",
-        "The SHACL comparison shows an even stronger result: @shape definitions are ~5x smaller",
-        "than equivalent SHACL shape graphs (ratio 0.20–0.23). This is because SHACL requires",
-        "a separate shape graph with its own node structure, property paths, and constraint",
-        "vocabulary, while @shape embeds constraints inline using familiar JSON-LD syntax.",
-        "Crucially, the round-trip is lossless — shape_to_shacl followed by shacl_to_shape",
-        "preserves all constraint properties for common validation patterns.",
+        f"@shape definitions are ~{shacl_inv_ratio:.0f}x smaller than equivalent SHACL "
+        f"shape graphs (ratio {min(shacl_ratios):.3f}--{max(shacl_ratios):.3f}). "
+        f"Round-trip is {'lossless' if all_rt_pass else 'lossy'} -- shape_to_shacl "
+        f"followed by shacl_to_shape preserves all constraint properties for common "
+        f"validation patterns.",
         "",
-        "The 100% round-trip fidelity across 300 annotated properties confirms that the",
-        "PROV-O mapping is information-preserving: no provenance metadata is lost during",
-        "conversion. This is essential for the interoperability claim — jsonld-ex simplifies",
-        "the authoring experience without sacrificing compatibility with the existing semantic",
-        "web ecosystem.",
-        "",
-        "Conversion throughput exceeds 160K nodes/sec for to_prov_o and is even faster for",
-        "from_prov_o, confirming that the interop layer adds negligible overhead to pipelines",
-        "that need to exchange data with PROV-O or SHACL-based systems.",
+        f"Round-trip fidelity: {rt_fidelity_pct:.0f}% across {rt_total} annotated "
+        f"properties ({rt_preserved}/{rt_total} preserved). "
+        f"Conversion throughput at largest scale: {to_prov_nps:,.0f} nodes/sec for "
+        f"to_prov_o and {from_prov_nps:,.0f} nodes/sec for from_prov_o.",
         "",
     ]
 
+    # ==================================================================
+    # Domain 2
+    # ==================================================================
     lines += [
         "---",
         "",
@@ -267,13 +278,13 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
         "",
         "### Merge Throughput (n=30 trials)",
         "",
-        "| Scale | Mean ± σ (ms) | Nodes/sec | 95% CI (nodes/s) |",
-        "|-------|---------------|-----------|-------------------|",
+        "| Scale | Mean (ms) | Nodes/sec | 95% CI (nodes/s) |",
+        "|-------|-----------|-----------|-------------------|",
     ]
     for k, v in d2.merge_throughput.items():
         ci = v.get('nodes_per_sec_ci95', [0, 0])
         lines.append(
-            f"| {k} | {v['mean_sec']*1000:.2f} ± {v['std_sec']*1000:.2f} | "
+            f"| {k} | {v['mean_sec']*1000:.2f} +/- {v['std_sec']*1000:.2f} | "
             f"{v['nodes_per_sec']:,.0f} | [{ci[0]:,.0f}, {ci[1]:,.0f}] |"
         )
 
@@ -281,65 +292,71 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
         "",
         "### Merge by Conflict Rate (n=30 trials)",
         "",
-        "| Rate | Mean ± σ (ms) | Agreed | Conflicted |",
-        "|------|---------------|--------|------------|",
+        "| Rate | Mean (ms) | Agreed | Conflicted |",
+        "|------|-----------|--------|------------|",
     ]
     for k, v in d2.merge_by_conflict_rate.items():
         lines.append(
-            f"| {k} | {v['mean_sec']*1000:.2f} ± {v['std_sec']*1000:.2f} | "
+            f"| {k} | {v['mean_sec']*1000:.2f} +/- {v['std_sec']*1000:.2f} | "
             f"{v['properties_agreed']} | {v['properties_conflicted']} |"
         )
 
     lines += [
         "",
-        "### Propagation Overhead (μs/call, n=30 trials)",
+        "### Propagation Overhead (us/call, n=30 trials)",
         "",
-        "| Chain Length | multiply ± σ | bayesian ± σ | min ± σ | dampened ± σ |",
-        "|-------------|-------------|-------------|---------|--------------|",
+        "| Chain Length | multiply | bayesian | min | dampened |",
+        "|-------------|----------|----------|-----|----------|",
     ]
     for k, v in d2.propagation_overhead.items():
         lines.append(
             f"| {v['chain_length']} | "
-            f"{v['multiply_us']} ± {v.get('multiply_std_us', 0):.2f} | "
-            f"{v['bayesian_us']} ± {v.get('bayesian_std_us', 0):.2f} | "
-            f"{v['min_us']} ± {v.get('min_std_us', 0):.2f} | "
-            f"{v['dampened_us']} ± {v.get('dampened_std_us', 0):.2f} |"
+            f"{v['multiply_us']} +/- {v.get('multiply_std_us', 0):.2f} | "
+            f"{v['bayesian_us']} +/- {v.get('bayesian_std_us', 0):.2f} | "
+            f"{v['min_us']} +/- {v.get('min_std_us', 0):.2f} | "
+            f"{v['dampened_us']} +/- {v.get('dampened_std_us', 0):.2f} |"
         )
 
-    # ── Domain 2 Analysis ──
+    # -- Domain 2 Analysis (data-driven) --
+    merge_nps_values = [v['nodes_per_sec'] for v in d2.merge_throughput.values()]
+    merge_nps_min = min(merge_nps_values)
+    merge_nps_max = max(merge_nps_values)
+    merge_nps_avg = sum(merge_nps_values) / len(merge_nps_values)
+
+    conflict_times = list(d2.merge_by_conflict_rate.values())
+    conflict_time_min = conflict_times[0]['mean_sec'] * 1000
+    conflict_time_max = conflict_times[-1]['mean_sec'] * 1000
+    conflict_slowdown = conflict_time_max / conflict_time_min if conflict_time_min > 0 else 0
+
+    prop_keys = list(d2.propagation_overhead.keys())
+    prop_largest = d2.propagation_overhead[prop_keys[-1]]
+    prop_largest_len = prop_largest['chain_length']
+    prop_mult_us = prop_largest['multiply_us']
+    prop_bays_us = prop_largest['bayesian_us']
+    prop_bays_ratio = prop_bays_us / prop_mult_us if prop_mult_us > 0 else 0
+
     lines += [
         "",
         "### Analysis",
         "",
-        "The merge throughput results show that confidence-aware graph merging scales linearly",
-        "with stable performance around 40K nodes/sec across scales from 10 to 1,000 nodes.",
-        "This is significant because merge_graphs performs three operations per node: alignment",
-        "by @id, confidence combination for agreeing sources (via noisy-OR), and conflict",
-        "resolution for disagreeing sources. The flat scaling profile indicates that the",
-        "algorithm is dominated by per-node work rather than quadratic cross-comparisons.",
+        f"Confidence-aware graph merging scales linearly with stable performance "
+        f"between {merge_nps_min:,.0f}--{merge_nps_max:,.0f} nodes/sec "
+        f"(mean {merge_nps_avg:,.0f}) across all tested scales.",
         "",
-        "The conflict rate experiment reveals a key property: merge time increases only modestly",
-        "(~2x) as conflict rate goes from 0% to 100%. This is because conflict resolution",
-        "(comparing confidence scores, selecting winners) is computationally cheap — the",
-        "expensive part is node alignment and property iteration, which is constant regardless",
-        "of conflict rate. The report correctly tracks agreed vs. conflicted properties,",
-        "providing an audit trail for downstream consumers.",
+        f"Merge time increases by ~{conflict_slowdown:.1f}x as conflict rate goes "
+        f"from 0% to 100% ({conflict_time_min:.2f}ms to {conflict_time_max:.2f}ms). "
+        f"Conflict resolution is computationally cheap relative to node alignment "
+        f"and property iteration.",
         "",
-        "Confidence propagation operates in sub-microsecond to low-microsecond range for",
-        "typical chain lengths (2–10 hops). The multiply method is fastest since it is a",
-        "simple product. The bayesian method is ~2x slower due to the iterative Bayesian",
-        "update formula, but still under 7μs even for chains of 50 hops. The dampened method",
-        "(product^(1/sqrt(n))) offers a middle ground — less conservative than multiply for",
-        "long chains, with minimal overhead. This is a novel contribution: no existing",
-        "JSON-LD or RDF tool provides automatic confidence propagation through inference",
-        "chains.",
-        "",
-        "The diff_graphs throughput provides the foundation for change detection in",
-        "multi-agent knowledge graph construction, enabling incremental updates rather than",
-        "full graph reprocessing.",
+        f"Confidence propagation at {prop_largest_len} hops: multiply method "
+        f"costs {prop_mult_us:.2f}us, bayesian method costs {prop_bays_us:.2f}us "
+        f"(~{prop_bays_ratio:.1f}x slower).",
         "",
     ]
 
+    # ==================================================================
+    # Domain 3
+    # ==================================================================
     lines += [
         "---",
         "",
@@ -361,12 +378,12 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
         "",
         f"### Pipeline Throughput (n={p['n_readings']}, {p['n_trials']} trials)",
         "",
-        f"| Phase | Mean ± σ (ms) |",
-        f"|-------|---------------|",
-        f"| Annotate | {p['annotate_avg_ms']} ± {p['annotate_std_ms']} |",
-        f"| Validate | {p['validate_avg_ms']} ± {p['validate_std_ms']} |",
-        f"| Serialize (CBOR) | {p['serialize_avg_ms']} ± {p['serialize_std_ms']} |",
-        f"| **Total** | **{p['total_avg_ms']} ± {p['total_std_ms']}** |",
+        f"| Phase | Mean (ms) |",
+        f"|-------|-----------|",
+        f"| Annotate | {p['annotate_avg_ms']} +/- {p['annotate_std_ms']} |",
+        f"| Validate | {p['validate_avg_ms']} +/- {p['validate_std_ms']} |",
+        f"| Serialize (CBOR) | {p['serialize_avg_ms']} +/- {p['serialize_std_ms']} |",
+        f"| **Total** | **{p['total_avg_ms']} +/- {p['total_std_ms']}** |",
         f"| **Throughput** | **{p['readings_per_sec']:,.0f} readings/sec** |",
     ]
 
@@ -375,55 +392,54 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
         "",
         f"### MQTT Overhead (per message, {m['n_trials']} trials)",
         "",
-        f"| Operation | Mean ± σ (μs/msg) |",
-        f"|-----------|--------------------|",
-        f"| Topic derivation | {m['topic_derivation_us_per_msg']} ± {m['topic_derivation_std_us']} |",
-        f"| QoS derivation | {m['qos_derivation_us_per_msg']} ± {m['qos_derivation_std_us']} |",
-        f"| Full roundtrip | {m['mqtt_roundtrip_us_per_msg']} ± {m['mqtt_roundtrip_std_us']} |",
+        f"| Operation | Mean (us/msg) |",
+        f"|-----------|---------------|",
+        f"| Topic derivation | {m['topic_derivation_us_per_msg']} +/- {m['topic_derivation_std_us']} |",
+        f"| QoS derivation | {m['qos_derivation_us_per_msg']} +/- {m['qos_derivation_std_us']} |",
+        f"| Full roundtrip | {m['mqtt_roundtrip_us_per_msg']} +/- {m['mqtt_roundtrip_std_us']} |",
     ]
 
-    # ── Domain 3 Analysis ──
+    # -- Domain 3 Analysis (data-driven) --
+    payload_keys = list(d3.payload_sizes.keys())
+    payload_largest = d3.payload_sizes[payload_keys[-1]]
+    payload_n1 = d3.payload_sizes[payload_keys[0]]
+
+    p_annotate = float(p['annotate_avg_ms'])
+    p_validate = float(p['validate_avg_ms'])
+    p_serialize = float(p['serialize_avg_ms'])
+    p_total = float(p['total_avg_ms'])
+    p_throughput = p['readings_per_sec']
+    p_n = p['n_readings']
+
+    m_topic = float(m['topic_derivation_us_per_msg'])
+    m_qos = float(m['qos_derivation_us_per_msg'])
+    m_roundtrip = float(m['mqtt_roundtrip_us_per_msg'])
+    m_msgs_per_sec = int(1_000_000 / m_roundtrip) if m_roundtrip > 0 else 0
+
     lines += [
         "",
         "### Analysis",
         "",
-        "The healthcare IoT domain simulates a posture monitoring scenario using IMU sensor",
-        "readings flowing through an annotation, validation, and serialization pipeline —",
-        "representative of wearable health systems using 6-axis IMU sensors on Arm Cortex-M33",
-        "MCUs.",
+        f"At single-reading granularity, CBOR+gzip savings are {payload_n1['savings_pct']}% "
+        f"(fixed overhead dominates). At batch size {payload_keys[-1].split('=')[1]}, "
+        f"a {payload_largest['json_bytes']:,}-byte JSON payload compresses to "
+        f"{payload_largest['gzip_cbor_bytes']:,} bytes ({payload_largest['savings_pct']}% "
+        f"reduction).",
         "",
-        "**Payload sizes** demonstrate the compression advantage of CBOR-LD for semantically",
-        "annotated sensor data. At single-reading granularity (n=1), savings are a modest 28%",
-        "because fixed overhead from CBOR framing and gzip headers dominates. At batch sizes",
-        "of 10+, repetitive structure — context URLs, type declarations, source URIs — compresses",
-        "extremely well. At n=1000, a 290KB JSON payload becomes 23KB with gzip+CBOR, a 92%",
-        "reduction. This is the difference between fitting in a single MQTT packet versus",
-        "requiring fragmentation on bandwidth-constrained wearable links.",
+        f"Pipeline throughput for {p_n} readings: annotation {p_annotate:.2f}ms, "
+        f"validation {p_validate:.2f}ms (most expensive phase), "
+        f"CBOR serialization {p_serialize:.2f}ms. Total {p_total:.2f}ms yields "
+        f"{p_throughput:,.0f} readings/sec.",
         "",
-        "**Pipeline throughput** breaks down per-phase costs. Annotation (wrapping raw values",
-        "with @confidence/@source) is essentially free at 0.29ms for 1,000 readings — just dict",
-        "construction. Validation against @shape constraints (required fields, types) is the",
-        "most expensive phase at 3.4ms but still sub-4ms for 1,000 readings. CBOR serialization",
-        "with context compression adds 1.9ms. The total of 5.6ms yields 179K readings/sec,",
-        "meaning the semantic layer adds negligible overhead compared to typical IMU sampling",
-        "rates of 50–200Hz. The processing pipeline will not be the bottleneck on constrained",
-        "MCU hardware.",
-        "",
-        "**MQTT overhead** measures the cost of semantic-driven transport decisions. Topic",
-        "derivation — extracting a structured topic like `ld/SensorReading/imu-0001` from the",
-        "document's @type and @id — costs under 1μs per message, replacing hardcoded topic",
-        "strings with semantically-derived ones. QoS derivation (mapping @confidence to MQTT",
-        "QoS levels: high-confidence posture alerts get QoS 2 guaranteed delivery, noisy",
-        "accelerometer samples get QoS 0 best-effort) costs 0.45μs. The full serialize +",
-        "deserialize roundtrip is under 8μs per message, supporting 130K+ messages/sec per",
-        "core — far exceeding any realistic sensor throughput.",
-        "",
-        "The key claim: jsonld-ex adds semantic interoperability, provenance tracking, and",
-        "validation to IoT pipelines with overhead that is invisible at typical sensor data",
-        "rates, while achieving 90%+ payload reduction through CBOR-LD compression.",
+        f"MQTT overhead: topic derivation {m_topic:.2f}us/msg, QoS derivation "
+        f"{m_qos:.2f}us/msg, full roundtrip {m_roundtrip:.2f}us/msg "
+        f"(~{m_msgs_per_sec:,} messages/sec per core).",
         "",
     ]
 
+    # ==================================================================
+    # Domain 4
+    # ==================================================================
     lines += [
         "---",
         "",
@@ -431,13 +447,13 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
         "",
         "### Temporal Query Performance (n=30 trials)",
         "",
-        "| Scale | Mean ± σ (ms) | Nodes/sec | 95% CI (nodes/s) |",
-        "|-------|---------------|-----------|-------------------|",
+        "| Scale | Mean (ms) | Nodes/sec | 95% CI (nodes/s) |",
+        "|-------|-----------|-----------|-------------------|",
     ]
     for k, v in d4.temporal_query.items():
         ci = v.get('nodes_per_sec_ci95', [0, 0])
         lines.append(
-            f"| {k} | {v['avg_ms']:.2f} ± {v['std_ms']:.2f} | "
+            f"| {k} | {v['avg_ms']:.2f} +/- {v['std_ms']:.2f} | "
             f"{v['nodes_per_sec']:,.0f} | [{ci[0]:,.0f}, {ci[1]:,.0f}] |"
         )
 
@@ -446,58 +462,45 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
         "",
         f"### RAG Pipeline (n={rp['n_nodes']}, {rp['n_sources']} sources, {rp['n_trials']} trials)",
         "",
-        f"| Phase | Mean ± σ (ms) |",
-        f"|-------|---------------|",
-        f"| Merge ({rp['n_sources']} sources) | {rp['merge_avg_ms']} ± {rp['merge_std_ms']} |",
-        f"| Confidence filter (≥{rp['threshold']}) | {rp['filter_avg_ms']} ± {rp['filter_std_ms']} |",
-        f"| **Total** | **{rp['total_avg_ms']} ± {rp['total_std_ms']}** |",
+        f"| Phase | Mean (ms) |",
+        f"|-------|-----------|",
+        f"| Merge ({rp['n_sources']} sources) | {rp['merge_avg_ms']} +/- {rp['merge_std_ms']} |",
+        f"| Confidence filter (>={rp['threshold']}) | {rp['filter_avg_ms']} +/- {rp['filter_std_ms']} |",
+        f"| **Total** | **{rp['total_avg_ms']} +/- {rp['total_std_ms']}** |",
         f"| Nodes after filter | {rp['nodes_after_filter']} |",
         f"| **Effective throughput** | **{rp['effective_nodes_per_sec']:,.0f} nodes/sec** |",
     ]
 
-    # ── Domain 4 Analysis ──
+    # -- Domain 4 Analysis (data-driven) --
+    tq_nps_values = [v['nodes_per_sec'] for v in d4.temporal_query.values()]
+    tq_nps_avg = sum(tq_nps_values) / len(tq_nps_values)
+    tq_keys = list(d4.temporal_query.keys())
+
+    rp_merge_ms = float(rp['merge_avg_ms'])
+    rp_filter_ms = float(rp['filter_avg_ms'])
+    rp_total_ms = float(rp['total_avg_ms'])
+    rp_n_nodes = rp['n_nodes']
+    rp_eff_nps = rp['effective_nodes_per_sec']
+    rp_merge_pct = (rp_merge_ms / rp_total_ms * 100) if rp_total_ms > 0 else 0
+
     lines += [
         "",
         "### Analysis",
         "",
-        "The confidence filter benchmark demonstrates that semantic metadata enables",
-        "quality-aware retrieval — a capability absent from raw JSON pipelines. Filtering",
-        "nodes by minimum confidence threshold operates at high throughput across all tested",
-        "scales. The selectivity column shows how different thresholds affect result set size:",
-        "because the data generator produces confidence scores uniformly distributed between",
-        "0.3 and 0.99, a threshold of 0.5 retains most nodes while 0.9 filters aggressively.",
-        "In production RAG pipelines, this enables tunable precision/recall tradeoffs based on",
-        "the @confidence metadata that jsonld-ex attaches to every extracted value.",
+        f"Temporal queries achieve ~{tq_nps_avg:,.0f} nodes/sec with linear scaling "
+        f"from {tq_keys[0]} to {tq_keys[-1]}.",
         "",
-        "Temporal queries via query_at_time achieve ~24K nodes/sec with linear scaling from",
-        "100 to 5,000 nodes. Each query filters multi-valued temporal properties by checking",
-        "@validFrom <= timestamp <= @validUntil bounds, returning a point-in-time graph",
-        "snapshot. This supports knowledge graph versioning — answering questions like 'what",
-        "was this person's job title in June 2022?' — without maintaining separate graph",
-        "snapshots. The temporal_diff operation compares two timestamps and returns added,",
-        "removed, and modified assertions, enabling incremental change tracking.",
+        f"RAG pipeline ({rp['n_sources']} sources, filter >= {rp['threshold']}): "
+        f"{rp_total_ms:.1f}ms for {rp_n_nodes} nodes ({rp_eff_nps:,.0f} nodes/sec). "
+        f"Merge dominates at {rp_merge_ms:.1f}ms ({rp_merge_pct:.0f}% of total); "
+        f"confidence filtering costs {rp_filter_ms:.3f}ms.",
         "",
-        "The end-to-end RAG pipeline benchmark combines merge and filter into a realistic",
-        "workflow: three independent extraction sources produce overlapping knowledge graphs",
-        "with 30% conflict rate, which are merged using confidence-aware conflict resolution,",
-        "then filtered to retain only high-confidence assertions (>=0.7). The total pipeline",
-        "runs in 12.2ms for 500 nodes (41K nodes/sec effective throughput). The merge phase",
-        "dominates at 12.0ms; confidence filtering is nearly instantaneous at 0.18ms. This",
-        "confirms that the merge algorithm, not the filtering, is the computational",
-        "bottleneck — and even that bottleneck is well within interactive latency budgets.",
-        "",
-        "The practical implication: a RAG system can merge knowledge from multiple LLM",
-        "extraction passes, automatically resolve conflicts using confidence scores, and",
-        "filter to high-quality assertions — all within a single-digit millisecond budget",
-        "per query.",
     ]
 
-    # ══════════════════════════════════════════════════════════
+    # ==================================================================
     # Baseline Comparisons
-    # ══════════════════════════════════════════════════════════
-
+    # ==================================================================
     lines += [
-        "",
         "---",
         "",
         "## Baseline Comparisons Against Existing Tools",
@@ -511,55 +514,36 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
     lines += [
         "### B.1 PROV-O Provenance Construction: rdflib vs jsonld-ex",
         "",
-        "Task: Attach provenance metadata (confidence, source, method, timestamp)",
-        "to every property of every node in a knowledge graph.",
-        "",
-        "| Scale | rdflib Mean ± σ (ms) | jsonld-ex Mean ± σ (ms) | Speedup |",
-        "|-------|----------------------|-------------------------|---------|",
+        "| Scale | rdflib (ms) | jsonld-ex (ms) | Speedup |",
+        "|-------|-------------|----------------|---------|",
     ]
     for k, v in db.prov_o_construction.items():
         rl = v['rdflib']
         jl = v['jsonld_ex']
         lines.append(
-            f"| {k} | {rl['mean_sec']*1000:.2f} ± {rl['std_sec']*1000:.2f} | "
-            f"{jl['mean_sec']*1000:.2f} ± {jl['std_sec']*1000:.2f} | "
+            f"| {k} | {rl['mean_sec']*1000:.2f} +/- {rl['std_sec']*1000:.2f} | "
+            f"{jl['mean_sec']*1000:.2f} +/- {jl['std_sec']*1000:.2f} | "
             f"{v['speedup']}x |"
         )
-    lines += [
-        "",
-        "**Note:** rdflib requires ~30 lines of manual triple construction per property",
-        "(Entity, Activity, SoftwareAgent, linking predicates). jsonld-ex requires",
-        "`annotate()` + `to_prov_o()` — 2 function calls. Beyond the speed difference,",
-        "the developer effort gap is substantial.",
-        "",
-    ]
+    lines.append("")
 
     # B.2 SHACL Validation
     if "skipped" not in db.shacl_validation:
         lines += [
             "### B.2 SHACL Validation: pyshacl vs jsonld-ex",
             "",
-            "Task: Validate sensor readings against a schema requiring value (double),",
-            "unit (string, required), and axis (string, optional).",
-            "",
-            "| Scale | pyshacl Mean ± σ (ms) | jsonld-ex Mean ± σ (ms) | Speedup |",
-            "|-------|----------------------|-------------------------|---------|",
+            "| Scale | pyshacl (ms) | jsonld-ex (ms) | Speedup |",
+            "|-------|--------------|----------------|---------|",
         ]
         for k, v in db.shacl_validation.items():
             ps = v['pyshacl']
             jl = v['jsonld_ex']
             lines.append(
-                f"| {k} | {ps['mean_sec']*1000:.2f} ± {ps['std_sec']*1000:.2f} | "
-                f"{jl['mean_sec']*1000:.2f} ± {jl['std_sec']*1000:.2f} | "
+                f"| {k} | {ps['mean_sec']*1000:.2f} +/- {ps['std_sec']*1000:.2f} | "
+                f"{jl['mean_sec']*1000:.2f} +/- {jl['std_sec']*1000:.2f} | "
                 f"{v['speedup']}x |"
             )
-        lines += [
-            "",
-            "**Note:** pyshacl operates on an rdflib Graph and validates the full SHACL",
-            "constraint language. jsonld-ex @shape validates inline with the JSON-LD",
-            "document, avoiding the RDF materialization step entirely.",
-            "",
-        ]
+        lines.append("")
     else:
         lines += [
             "### B.2 SHACL Validation: pyshacl vs jsonld-ex",
@@ -570,86 +554,64 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
 
     # B.3 Graph Merge
     lines += [
-        "### B.3 Graph Merge: rdflib (union + SPARQL conflict resolution) vs jsonld-ex",
+        "### B.3 Graph Merge: rdflib vs jsonld-ex",
         "",
-        "Task: Combine 3 overlapping knowledge graphs (30% property conflicts)",
-        "into a single unified graph with conflicts detected and resolved.",
-        "The rdflib baseline performs: (1) graph union, (2) SPARQL GROUP BY to detect",
-        "conflicting subject-predicate pairs, (3) resolution by removing duplicate objects.",
-        "",
-        "| Scale | rdflib Mean ± σ (ms) | jsonld-ex Mean ± σ (ms) | Speedup |",
-        "|-------|----------------------|-------------------------|---------|",
+        "| Scale | rdflib (ms) | jsonld-ex (ms) | Speedup |",
+        "|-------|-------------|----------------|---------|",
     ]
     for k, v in db.graph_merge.items():
         rl = v['rdflib_merge']
         jl = v['jsonld_ex_merge']
         lines.append(
-            f"| {k} | {rl['mean_sec']*1000:.2f} ± {rl['std_sec']*1000:.2f} | "
-            f"{jl['mean_sec']*1000:.2f} ± {jl['std_sec']*1000:.2f} | "
+            f"| {k} | {rl['mean_sec']*1000:.2f} +/- {rl['std_sec']*1000:.2f} | "
+            f"{jl['mean_sec']*1000:.2f} +/- {jl['std_sec']*1000:.2f} | "
             f"{v['speedup']}x |"
         )
-    lines += [
-        "",
-        "**Note:** The rdflib pipeline performs an equivalent task: union all triples,",
-        "then use SPARQL to detect subject-predicate pairs with multiple conflicting",
-        "objects, then remove duplicates. Even with this simplified conflict resolution",
-        "(no confidence-aware selection, no provenance tracking, no merge report),",
-        "the SPARQL-based approach is slower due to the overhead of graph materialization",
-        "and query execution. jsonld-ex's inline annotation model enables faster conflict",
-        "detection while also preserving richer metadata.",
-        "",
-    ]
+    lines.append("")
 
     # B.4 Temporal Query
     lines += [
-        "### B.4 Temporal Query: SPARQL via rdflib vs jsonld-ex query_at_time",
+        "### B.4 Temporal Query: SPARQL via rdflib vs jsonld-ex",
         "",
-        "Task: Retrieve all job titles valid at a specific point in time (2022-06-15)",
-        "from a knowledge graph with multi-version temporal properties.",
-        "",
-        "| Scale | SPARQL Mean ± σ (ms) | jsonld-ex Mean ± σ (ms) | Speedup |",
-        "|-------|---------------------|-------------------------|---------|",
+        "| Scale | SPARQL (ms) | jsonld-ex (ms) | Speedup |",
+        "|-------|-------------|----------------|---------|",
     ]
     for k, v in db.temporal_query.items():
         sp = v['rdflib_sparql']
         jl = v['jsonld_ex']
         lines.append(
-            f"| {k} | {sp['mean_sec']*1000:.2f} ± {sp['std_sec']*1000:.2f} | "
-            f"{jl['mean_sec']*1000:.2f} ± {jl['std_sec']*1000:.2f} | "
+            f"| {k} | {sp['mean_sec']*1000:.2f} +/- {sp['std_sec']*1000:.2f} | "
+            f"{jl['mean_sec']*1000:.2f} +/- {jl['std_sec']*1000:.2f} | "
             f"{v['speedup']}x |"
         )
-    lines += [
-        "",
-        "**Note:** The rdflib approach requires reifying temporal statements as",
-        "rdf:Statement nodes (5+ triples per temporal assertion) and querying with",
-        "SPARQL FILTER on dateTime comparisons. jsonld-ex's query_at_time operates",
-        "directly on the inline @validFrom/@validUntil annotations without graph",
-        "materialization or query compilation.",
-        "",
-    ]
+    lines.append("")
 
-    # Baseline Analysis
+    # -- Baseline Analysis (data-driven) --
+    prov_speedups = [v['speedup'] for v in db.prov_o_construction.values()]
+    merge_speedups = [v['speedup'] for v in db.graph_merge.values()]
+    temp_speedups = [v['speedup'] for v in db.temporal_query.values()]
+
+    if "skipped" not in db.shacl_validation:
+        shacl_speedups = [v['speedup'] for v in db.shacl_validation.values()]
+        shacl_str = f"SHACL validation {min(shacl_speedups)}--{max(shacl_speedups)}x, "
+    else:
+        shacl_str = ""
+
     lines += [
         "### Baseline Analysis",
         "",
-        "These comparisons demonstrate that jsonld-ex's inline annotation model provides",
-        "both performance and usability advantages over the traditional RDF toolchain for",
-        "AI/ML-centric knowledge graph operations. The key insight is that by co-locating",
-        "metadata (confidence, provenance, temporal bounds) directly on JSON-LD values",
-        "rather than in separate graph structures, jsonld-ex avoids the overhead of:",
-        "(1) materializing an RDF graph, (2) constructing reified statement patterns, and",
-        "(3) executing SPARQL queries. The graph merge comparison is particularly telling:",
-        "even when rdflib performs only basic conflict detection via SPARQL GROUP BY",
-        "(without confidence-aware resolution or provenance tracking), its pipeline is",
-        "still slower than jsonld-ex's fully-featured merge with audit trail. This",
-        "validates the architectural hypothesis that inline metadata co-location",
-        "outperforms the traditional RDF reification approach for ML/AI workloads.",
+        f"Speedup ranges: "
+        f"PROV-O construction {min(prov_speedups)}--{max(prov_speedups)}x, "
+        f"{shacl_str}"
+        f"graph merge {min(merge_speedups)}--{max(merge_speedups)}x, "
+        f"temporal query {min(temp_speedups)}--{max(temp_speedups)}x. "
+        f"The advantage comes from co-locating metadata directly on JSON-LD values "
+        f"rather than materializing separate RDF graph structures.",
     ]
 
-    # ══════════════════════════════════════════════════════════
+    # ==================================================================
     # Domain 5: Confidence Algebra
-    # ══════════════════════════════════════════════════════════
-
+    # ==================================================================
     lines += [
         "",
         "---",
@@ -658,12 +620,12 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
         "",
         "### Cumulative Fusion Throughput",
         "",
-        "| Opinions | Mean ± σ (μs) | Ops/sec |",
-        "|----------|---------------|---------|",
+        "| Opinions | Mean (us) | Ops/sec |",
+        "|----------|-----------|---------|",
     ]
     for k, v in d5.cumulative_fusion.items():
         lines.append(
-            f"| {k} | {v['mean_us']:.2f} ± {v['std_us']:.2f} | "
+            f"| {k} | {v['mean_us']:.2f} +/- {v['std_us']:.2f} | "
             f"{v['ops_per_sec']:,.0f} |"
         )
 
@@ -671,12 +633,12 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
         "",
         "### Averaging Fusion Throughput (n-ary simultaneous)",
         "",
-        "| Opinions | Mean ± σ (μs) | Ops/sec |",
-        "|----------|---------------|---------|",
+        "| Opinions | Mean (us) | Ops/sec |",
+        "|----------|-----------|---------|",
     ]
     for k, v in d5.averaging_fusion.items():
         lines.append(
-            f"| {k} | {v['mean_us']:.2f} ± {v['std_us']:.2f} | "
+            f"| {k} | {v['mean_us']:.2f} +/- {v['std_us']:.2f} | "
             f"{v['ops_per_sec']:,.0f} |"
         )
 
@@ -684,12 +646,12 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
         "",
         "### Trust Discount Chain",
         "",
-        "| Chain Length | Mean ± σ (μs) | μs/hop |",
-        "|-------------|---------------|--------|",
+        "| Chain Length | Mean (us) | us/hop |",
+        "|-------------|-----------|--------|",
     ]
     for k, v in d5.trust_discount_chain.items():
         lines.append(
-            f"| {k} | {v['mean_us']:.2f} ± {v['std_us']:.2f} | "
+            f"| {k} | {v['mean_us']:.2f} +/- {v['std_us']:.2f} | "
             f"{v['us_per_hop']:.2f} |"
         )
 
@@ -697,11 +659,11 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
         "",
         "### Trust Discount vs Scalar Multiply Equivalence",
         "",
-        "| Chain | Scalar (μs) | Algebra (μs) | Overhead | Equivalent |",
+        "| Chain | Scalar (us) | Algebra (us) | Overhead | Equivalent |",
         "|-------|-------------|--------------|----------|------------|",
     ]
     for k, v in d5.trust_vs_scalar.items():
-        eq = "✓" if v['numerically_equivalent'] else "✗"
+        eq = "PASS" if v['numerically_equivalent'] else "FAIL"
         lines.append(
             f"| {k} | {v['scalar_us']:.2f} | {v['algebra_us']:.2f} | "
             f"+{v['overhead_pct']:.1f}% | {eq} |"
@@ -711,22 +673,22 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
         "",
         "### Deduction Throughput",
         "",
-        "| Operation | Mean ± σ (μs) |",
-        "|-----------|---------------|",
+        "| Operation | Mean (us) |",
+        "|-----------|-----------|",
     ]
     for k, v in d5.deduction.items():
-        extra = f" ({v.get('us_per_stage', 0):.2f} μs/stage)" if 'us_per_stage' in v else ""
-        lines.append(f"| {k} | {v['mean_us']:.2f} ± {v['std_us']:.2f}{extra} |")
+        extra = f" ({v.get('us_per_stage', 0):.2f} us/stage)" if 'us_per_stage' in v else ""
+        lines.append(f"| {k} | {v['mean_us']:.2f} +/- {v['std_us']:.2f}{extra} |")
 
     lines += [
         "",
         "### Opinion Formation & Serialization",
         "",
-        "| Operation | Mean ± σ (μs) |",
-        "|-----------|---------------|",
+        "| Operation | Mean (us) |",
+        "|-----------|-----------|",
     ]
     for k, v in d5.opinion_formation.items():
-        lines.append(f"| {k} | {v['mean_us']:.2f} ± {v['std_us']:.2f} |")
+        lines.append(f"| {k} | {v['mean_us']:.2f} +/- {v['std_us']:.2f} |")
 
     lines += [
         "",
@@ -762,55 +724,83 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
                 f"{b['mean_uncertainty']:.3f} |"
             )
 
+    # -- Domain 5 Analysis (data-driven) --
+    cum_n2 = d5.cumulative_fusion.get('n=2', {})
+    cum_n2_us = cum_n2.get('mean_us', 0)
+    cum_n2_ops = cum_n2.get('ops_per_sec', 0)
+    cum_n100 = d5.cumulative_fusion.get('n=100', {})
+    cum_n100_us = cum_n100.get('mean_us', 0)
+    cum_n100_ops = cum_n100.get('ops_per_sec', 0)
+
+    cum_per_opinion_us = (cum_n100_us - cum_n2_us) / (100 - 2) if (cum_n100_us > 0 and cum_n2_us > 0) else 0
+
+    avg_n100 = d5.averaging_fusion.get('n=100', {})
+    avg_n100_us = avg_n100.get('mean_us', 0)
+    avg_n100_ops = avg_n100.get('ops_per_sec', 0)
+    avg_vs_cum_ratio = cum_n100_us / avg_n100_us if avg_n100_us > 0 else 0
+
+    td_hops = [v['us_per_hop'] for v in d5.trust_discount_chain.values()]
+    td_avg_hop = sum(td_hops) / len(td_hops) if td_hops else 0
+
+    td_overheads = [v['overhead_pct'] for v in d5.trust_vs_scalar.values()]
+    td_overhead_min = min(td_overheads) if td_overheads else 0
+    td_overhead_max = max(td_overheads) if td_overheads else 0
+    td_all_equiv = all(v['numerically_equivalent'] for v in d5.trust_vs_scalar.values())
+
+    ir_all_same = all(v['same_scalar'] for v in d5.information_richness.values())
+    ir_count = len(d5.information_richness)
+
+    cal_ece = cal['expected_calibration_error']
+    cal_brier = cal['brier_score']
+
     lines += [
         "",
         "### Analysis",
         "",
-        "The confidence algebra benchmarks validate jsonld-ex's most novel contribution:",
-        "a formal Subjective Logic layer that operates on JSON-LD metadata. Cumulative",
-        "fusion scales linearly at ~1.35μs per additional opinion, achieving 650K binary",
-        "fusions/sec. Averaging fusion is sublinear due to the n-ary simultaneous formula,",
-        "reaching 60K ops/sec even at n=100 (8x faster than cumulative at that scale).",
+        f"Cumulative fusion at n=2: {cum_n2_us:.2f}us ({cum_n2_ops:,.0f} ops/sec). "
+        f"Scales linearly at ~{cum_per_opinion_us:.2f}us per additional opinion. "
+        f"At n=100: {cum_n100_us:.1f}us ({cum_n100_ops:,.0f} ops/sec).",
         "",
-        "Trust discount chains show constant ~1.27μs/hop cost, confirming linear scaling.",
-        "The equivalence proof demonstrates that trust discount with base_rate=0 produces",
-        "numerically identical results (within 1e-12) to scalar multiplication, but preserves",
-        "full (b, d, u, a) tuples — three additional metadata dimensions per hop. The overhead",
-        "(~10-20x) is the price of richer epistemic metadata.",
+        f"Averaging fusion (n-ary simultaneous formula): at n=100 costs "
+        f"{avg_n100_us:.1f}us ({avg_n100_ops:,.0f} ops/sec), "
+        f"{avg_vs_cum_ratio:.1f}x faster than cumulative at the same scale.",
         "",
-        "The information richness experiment proves the core thesis: three pairs of opinions",
-        "map to identical scalar probabilities but carry radically different epistemic states.",
-        "A scalar confidence of 0.75 could mean either strong evidence or total ignorance",
-        "with base rate 0.75 — indistinguishable without the algebra.",
+        f"Trust discount chains: ~{td_avg_hop:.2f}us/hop (constant per-hop cost). "
+        f"Equivalence with scalar multiplication "
+        f"{'verified' if td_all_equiv else 'FAILED'} across all chain lengths, "
+        f"with +{td_overhead_min:.0f}% to +{td_overhead_max:.0f}% overhead for "
+        f"preserving full (b, d, u, a) tuples.",
         "",
-        "Calibration analysis (ECE < 0.05, Brier < 0.20) confirms that cumulative fusion",
-        "of evidence-based opinions produces well-calibrated probability estimates, validating",
-        "the algebra's correctness for real-world use.",
+        f"Information richness: {ir_count} pairs of opinions map to identical scalar "
+        f"probabilities but carry different epistemic states "
+        f"(all same_scalar={'True' if ir_all_same else 'False'}).",
+        "",
+        f"Calibration: ECE={cal_ece:.4f}, Brier={cal_brier:.4f}. Cumulative fusion "
+        f"of evidence-based opinions produces well-calibrated probability estimates.",
     ]
 
-    # ══════════════════════════════════════════════════════════
+    # ==================================================================
     # Domain 6: Neuro-Symbolic Bridge
-    # ══════════════════════════════════════════════════════════
-
+    # ==================================================================
     lines += [
         "",
         "---",
         "",
         "## Domain 6: Neuro-Symbolic Bridge Pipeline",
         "",
-        "End-to-end pipeline: ML outputs → opinion lift → fusion → decay → validate → PROV-O export → filter",
+        "End-to-end: ML outputs -> opinion lift -> fusion -> decay -> validate -> PROV-O export -> filter",
         "",
         "### Pipeline Comparison: jsonld-ex vs Ad-hoc",
         "",
         "| Scale | jsonld-ex (ms) | Ad-hoc (ms) | Overhead | Conflicts | Validated |",
-        "|-------|----------------|-------------|----------|-----------|----------|",
+        "|-------|----------------|-------------|----------|-----------|-----------|",
     ]
     for k, v in d6.pipeline_comparison.items():
         jl = v['jsonld_ex']
         ah = v['adhoc']
         lines.append(
-            f"| {k} | {jl['mean_sec']*1000:.2f} ± {jl['std_sec']*1000:.2f} | "
-            f"{ah['mean_sec']*1000:.2f} ± {ah['std_sec']*1000:.2f} | "
+            f"| {k} | {jl['mean_sec']*1000:.2f} +/- {jl['std_sec']*1000:.2f} | "
+            f"{ah['mean_sec']*1000:.2f} +/- {ah['std_sec']*1000:.2f} | "
             f"{v['overhead_factor']}x | "
             f"{jl['metadata']['merge_conflicts']} | {jl['metadata']['valid_nodes']} |"
         )
@@ -820,16 +810,15 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
         "### Phase Breakdown (n=1000 nodes)",
         "",
     ]
-    # Get the 1000-node result for detailed breakdown
     if "n=1000" in d6.pipeline_comparison:
         phases = d6.pipeline_comparison["n=1000"]["jsonld_ex"]["phase_breakdown_ms"]
         lines += [
             "| Phase | Time (ms) | % of Total |",
             "|-------|-----------|------------|",
         ]
-        total_ms = sum(phases.values())
+        total_ms_d6 = sum(phases.values())
         for phase, ms in phases.items():
-            pct = (ms / total_ms * 100) if total_ms > 0 else 0
+            pct = (ms / total_ms_d6 * 100) if total_ms_d6 > 0 else 0
             label = phase.replace('_sec', '')
             lines.append(f"| {label} | {ms:.3f} | {pct:.1f}% |")
 
@@ -840,38 +829,57 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
         "",
         f"| Pipeline | Metadata Dimensions |",
         f"|----------|---------------------|",
-        f"| jsonld-ex | {mr['jsonld_ex_preserves']['metadata_dimensions']} "
-        f"(opinion, trust, decay, provenance, validation, PROV-O export, merge audit) |",
-        f"| ad-hoc | {mr['adhoc_preserves']['metadata_dimensions']} "
-        f"(scalar confidence, source URL) |",
+        f"| jsonld-ex | {mr['jsonld_ex_preserves']['metadata_dimensions']} |",
+        f"| ad-hoc | {mr['adhoc_preserves']['metadata_dimensions']} |",
     ]
 
-    lines += [
-        "",
-        "### Analysis",
-        "",
-        "The neuro-symbolic bridge benchmark demonstrates jsonld-ex as a complete pipeline",
-        "for converting ML model outputs into validated, interoperable knowledge graphs.",
-        "At 1,000 nodes, the full 6-stage pipeline runs in ~195ms (5.1K nodes/sec), which",
-        "is ~40x slower than the ad-hoc baseline — but the ad-hoc baseline performs only 2",
-        "of the 6 stages (scalar weighting and naive merge) while preserving only 2 metadata",
-        "dimensions. jsonld-ex preserves 10 metadata dimensions including formal opinions,",
-        "trust discounting, temporal decay, shape validation, PROV-O export, and merge audit.",
-        "",
-        "The phase breakdown reveals that fusion (38%) and PROV-O export (22%) dominate.",
-        "Lifting scalars to opinions (30%) is the third major cost. Validation and filtering",
-        "are negligible (<3% combined). This suggests optimization opportunities in the merge",
-        "and export paths for future versions.",
-        "",
-        "The overhead is justified by the metadata richness difference: 10 vs 2 dimensions",
-        "means downstream consumers can make quality-aware decisions, audit provenance,",
-        "interoperate with PROV-O/SHACL systems, and reason about temporal freshness —",
-        "capabilities absent from ad-hoc pipelines. At 195ms for 1,000 nodes, the pipeline",
-        "is well within interactive latency budgets for RAG, knowledge graph construction,",
-        "and multi-agent systems.",
-    ]
+    # -- Domain 6 Analysis (data-driven) --
+    if "n=1000" in d6.pipeline_comparison:
+        d6_1k = d6.pipeline_comparison["n=1000"]
+        d6_jl_ms = d6_1k['jsonld_ex']['mean_sec'] * 1000
+        d6_ah_ms = d6_1k['adhoc']['mean_sec'] * 1000
+        d6_overhead = d6_1k['overhead_factor']
+        d6_nps = 1000 / (d6_jl_ms / 1000) if d6_jl_ms > 0 else 0
+
+        d6_phases = d6_1k['jsonld_ex']['phase_breakdown_ms']
+        d6_total_phase_ms = sum(d6_phases.values())
+
+        sorted_phases = sorted(d6_phases.items(), key=lambda x: x[1], reverse=True)
+        phase_strs = []
+        for phase_name, phase_ms in sorted_phases:
+            phase_pct = (phase_ms / d6_total_phase_ms * 100) if d6_total_phase_ms > 0 else 0
+            label = phase_name.replace('_sec', '')
+            phase_strs.append(f"{label} {phase_ms:.1f}ms ({phase_pct:.0f}%)")
+
+        d6_jl_dims = mr['jsonld_ex_preserves']['metadata_dimensions']
+        d6_ah_dims = mr['adhoc_preserves']['metadata_dimensions']
+
+        lines += [
+            "",
+            "### Analysis",
+            "",
+            f"At 1,000 nodes, the full 6-stage pipeline runs in {d6_jl_ms:.0f}ms "
+            f"({d6_nps:,.0f} nodes/sec), {d6_overhead}x slower than the ad-hoc "
+            f"baseline ({d6_ah_ms:.1f}ms). The ad-hoc baseline performs only scalar "
+            f"weighting and naive merge, preserving {d6_ah_dims} metadata dimensions. "
+            f"jsonld-ex preserves {d6_jl_dims} metadata dimensions.",
+            "",
+            f"Phase breakdown (descending cost): {', '.join(phase_strs)}.",
+            "",
+            f"The overhead is the cost of {d6_jl_dims} vs {d6_ah_dims} metadata "
+            f"dimensions: quality-aware decisions, provenance auditing, PROV-O/SHACL "
+            f"interop, and temporal freshness reasoning.",
+        ]
+    else:
+        lines += [
+            "",
+            "### Analysis",
+            "",
+            "(n=1000 data point not available for detailed analysis.)",
+        ]
 
     return "\n".join(lines) + "\n"
+
 
 
 if __name__ == "__main__":
