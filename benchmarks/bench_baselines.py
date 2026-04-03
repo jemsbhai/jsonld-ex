@@ -127,15 +127,10 @@ def _build_prov_o_rdflib(nodes: list[dict]) -> Graph:
     return g
 
 
-def _build_prov_o_jsonldex(nodes: list[dict]) -> list:
-    """Build PROV-O using jsonld-ex: annotate values, then convert."""
-    results = []
-    for node in nodes:
-        single = {"@context": "http://schema.org/"}
-        single.update(node)
-        prov_doc, _ = to_prov_o(single)
-        results.append(prov_doc)
-    return results
+def _build_prov_o_jsonldex(doc: dict) -> dict:
+    """Build PROV-O using jsonld-ex: convert entire @graph document."""
+    prov_doc, _ = to_prov_o(doc)
+    return prov_doc
 
 
 def bench_prov_o_construction(
@@ -156,7 +151,7 @@ def bench_prov_o_construction(
 
         # jsonld-ex
         stats_jldx = timed_trials(
-            lambda: _build_prov_o_jsonldex(nodes),
+            lambda: _build_prov_o_jsonldex(doc),
             n=n_trials,
         )
 

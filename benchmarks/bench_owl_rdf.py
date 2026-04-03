@@ -48,19 +48,12 @@ def bench_prov_o_verbosity(sizes: list[int] = [10, 100, 1000]) -> dict[str, Any]
         doc = make_annotated_graph(n)
         doc_bytes = len(json.dumps(doc, separators=(",", ":")))
 
-        # Convert each node individually and sum PROV-O output
-        total_prov_nodes = 0
-        total_prov_bytes = 0
-        total_triples_in = 0
-        total_triples_out = 0
-        for node in doc["@graph"]:
-            single = {"@context": "http://schema.org/"}
-            single.update(node)
-            prov_doc, report = to_prov_o(single)
-            total_prov_nodes += len(prov_doc.get("@graph", []))
-            total_prov_bytes += len(json.dumps(prov_doc, separators=(",", ":")))
-            total_triples_in += report.triples_input
-            total_triples_out += report.triples_output
+        # to_prov_o handles @graph natively now
+        prov_doc, report = to_prov_o(doc)
+        total_prov_nodes = len(prov_doc.get("@graph", []))
+        total_prov_bytes = len(json.dumps(prov_doc, separators=(",", ":")))
+        total_triples_in = report.triples_input
+        total_triples_out = report.triples_output
 
         results[f"n={n}"] = {
             "jsonld_ex_bytes": doc_bytes,
@@ -144,20 +137,30 @@ def bench_round_trip_fidelity(n: int = 100) -> dict[str, Any]:
     total_props = 0
     preserved = 0
 
-    for orig_node in doc["@graph"]:
-        single_doc = {"@context": "http://schema.org/"}
-        single_doc.update(orig_node)
+    # Round-trip the entire @graph document
+    prov_doc, _ = to_prov_o(doc)
+    restored, _ = from_prov_o(prov_doc)
 
-        prov_doc, _ = to_prov_o(single_doc)
-        restored, _ = from_prov_o(prov_doc)
+    # restored should have @graph with all nodes
+    restored_nodes = restored.get("@graph", [restored])
+    orig_nodes = doc["@graph"]
 
+    # Index restored nodes by @id
+    restored_by_id = {}
+    for rn in restored_nodes:
+        if isinstance(rn, dict) and "@id" in rn:
+            restored_by_id[rn["@id"]] = rn
+
+    for orig_node in orig_nodes:
+        node_id = orig_node.get("@id")
+        rest_node = restored_by_id.get(node_id, {})
         for key in ("name", "worksFor", "location"):
             if key in orig_node and isinstance(orig_node[key], dict):
                 total_props += 1
                 orig_conf = orig_node[key].get("@confidence")
                 rest_conf = None
-                if key in restored and isinstance(restored[key], dict):
-                    rest_conf = restored[key].get("@confidence")
+                if key in rest_node and isinstance(rest_node[key], dict):
+                    rest_conf = rest_node[key].get("@confidence")
                 if orig_conf is not None and rest_conf is not None:
                     if abs(orig_conf - rest_conf) < 0.001:
                         preserved += 1
@@ -178,26 +181,17 @@ def bench_conversion_throughput(
     for n in sizes:
         doc = make_annotated_graph(n)
 
-        # Build per-node single docs (to_prov_o/from_prov_o handle single nodes)
-        singles = []
-        for node in doc["@graph"]:
-            single = {"@context": "http://schema.org/"}
-            single.update(node)
-            singles.append(single)
-
-        # to_prov_o: convert each node
+        # to_prov_o now handles @graph natively — single call
         def do_to_prov():
-            for s in singles:
-                to_prov_o(s)
+            to_prov_o(doc)
 
         stats_to = timed_trials(do_to_prov, n=n_trials)
 
-        # from_prov_o: convert each PROV-O doc back
-        prov_docs = [to_prov_o(s)[0] for s in singles]
+        # from_prov_o: convert the PROV-O doc back
+        prov_doc_for_rt = to_prov_o(doc)[0]
 
         def do_from_prov():
-            for pd in prov_docs:
-                from_prov_o(pd)
+            from_prov_o(prov_doc_for_rt)
 
         stats_from = timed_trials(do_from_prov, n=n_trials)
 

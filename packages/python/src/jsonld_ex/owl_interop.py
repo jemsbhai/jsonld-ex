@@ -262,6 +262,9 @@ def to_prov_o(doc: dict[str, Any]) -> tuple[dict[str, Any], ConversionReport]:
                         sub_node = {key: item}
                         sub_result = _process_node(sub_node, node_id)
                         processed_list.append(sub_result.get(key, item))
+                    elif isinstance(item, dict) and "@value" not in item:
+                        # Non-annotated nested node — pass through
+                        processed_list.append(item)
                     else:
                         processed_list.append(item)
                 processed[key] = processed_list
@@ -270,8 +273,22 @@ def to_prov_o(doc: dict[str, Any]) -> tuple[dict[str, Any], ConversionReport]:
 
         return processed
 
-    # Process the main document (read-only traversal — no deepcopy needed;
-    # _process_node builds entirely new dicts and never mutates its input)
+    # -- @graph documents: process each member node with shared setup --
+    if "@graph" in doc and isinstance(doc["@graph"], list):
+        processed_members = []
+        for member in doc["@graph"]:
+            processed_members.append(_process_node(member, None))
+
+        all_nodes = processed_members + graph_nodes
+        prov_doc: dict[str, Any] = {
+            "@context": prov_context,
+            "@graph": all_nodes,
+        }
+        report.triples_input = input_triples
+        report.triples_output = output_triples
+        return prov_doc, report
+
+    # -- Single-node document --
     main_node = _process_node(doc)
 
     # Remove @context from main_node (we'll add our own)
@@ -373,8 +390,8 @@ def from_prov_o(prov_doc: dict[str, Any]) -> tuple[dict[str, Any], ConversionRep
         if entity_type in node_types or "prov:Entity" in node_types:
             entities[nid] = node
 
-    # Find the "main" node (non-PROV-O typed node, or first non-entity)
-    main_node: Optional[dict] = None
+    # Find ALL "main" nodes (non-PROV-O typed nodes)
+    main_nodes: list[dict] = []
     for node in graph:
         if not isinstance(node, dict):
             continue
@@ -386,38 +403,45 @@ def from_prov_o(prov_doc: dict[str, Any]) -> tuple[dict[str, Any], ConversionRep
             for t in node_types
         )
         if not is_prov_type and node_types:
-            main_node = copy.deepcopy(node)
-            break
+            main_nodes.append(copy.deepcopy(node))
 
-    if main_node is None:
+    if not main_nodes:
         report.success = False
         report.errors.append("No main (non-PROV) node found in graph")
         return prov_doc, report
 
-    # For each property on the main node, check if it references an entity
-    for key, value in list(main_node.items()):
-        if key.startswith("@"):
-            continue
+    # For each main node, resolve entity references
+    for main_node in main_nodes:
+        for key, value in list(main_node.items()):
+            if key.startswith("@"):
+                continue
 
-        ref_id = None
-        if isinstance(value, dict) and "@id" in value:
-            ref_id = value["@id"]
-        elif isinstance(value, str) and value in entities:
-            ref_id = value
+            ref_id = None
+            if isinstance(value, dict) and "@id" in value:
+                ref_id = value["@id"]
+            elif isinstance(value, str) and value in entities:
+                ref_id = value
 
-        if ref_id and ref_id in entities:
-            entity = entities[ref_id]
-            annotated = _entity_to_annotation(entity, nodes_by_id)
-            if annotated is not None:
-                main_node[key] = annotated
-                report.nodes_converted += 1
+            if ref_id and ref_id in entities:
+                entity = entities[ref_id]
+                annotated = _entity_to_annotation(entity, nodes_by_id)
+                if annotated is not None:
+                    main_node[key] = annotated
+                    report.nodes_converted += 1
 
-    # Clean up context
-    main_node.pop("@context", None)
-    result: dict[str, Any] = {"@context": prov_doc.get("@context", {})}
-    result.update(main_node)
-
-    return result, report
+    # Clean up and return
+    out_context = prov_doc.get("@context", {})
+    if len(main_nodes) == 1:
+        # Single-node result (backward compatible)
+        main_nodes[0].pop("@context", None)
+        result: dict[str, Any] = {"@context": out_context}
+        result.update(main_nodes[0])
+        return result, report
+    else:
+        # Multi-node @graph result
+        for mn in main_nodes:
+            mn.pop("@context", None)
+        return {"@context": out_context, "@graph": main_nodes}, report
 
 
 def _entity_to_annotation(

@@ -288,14 +288,10 @@ def pipeline_jsonldex(
     metadata_counts["valid_nodes"] = valid_count
     metadata_counts["invalid_nodes"] = invalid_count
 
-    # ── Stage 5: EXPORT — PROV-O conversion ───────────────────
+    # -- Stage 5: EXPORT -- PROV-O conversion ---
     t0 = time.perf_counter()
-    prov_docs = []
-    for node in merged_nodes:
-        single = {"@context": "http://schema.org/"}
-        single.update(node)
-        prov_doc, _ = to_prov_o(single)
-        prov_docs.append(prov_doc)
+    export_doc = {"@context": "http://schema.org/", "@graph": merged_nodes}
+    prov_doc, _ = to_prov_o(export_doc)
     timings["export_sec"] = time.perf_counter() - t0
 
     # ── Stage 6: FILTER — quality gate ────────────────────────
