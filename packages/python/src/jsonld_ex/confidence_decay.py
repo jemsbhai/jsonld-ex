@@ -192,9 +192,9 @@ def decay_opinion(
     if new_u < 0.0:
         new_u = 0.0
 
-    return Opinion(
-        belief=new_b,
-        disbelief=new_d,
-        uncertainty=new_u,
-        base_rate=opinion.base_rate,
+    return Opinion._create_unchecked(
+        b=new_b,
+        d=new_d,
+        u=new_u,
+        a=opinion.base_rate,
     )
