@@ -113,6 +113,9 @@ def main() -> None:
             "opinion_formation": d5.opinion_formation,
             "information_richness": d5.information_richness,
             "calibration": d5.calibration,
+            "robust_fuse": d5.robust_fuse,
+            "byzantine_fuse": d5.byzantine_fuse,
+            "byzantine_overhead": d5.byzantine_overhead,
         },
         "domain_6_neuro_symbolic_bridge": {
             "pipeline_comparison": d6.pipeline_comparison,
@@ -724,6 +727,51 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
                 f"{b['mean_uncertainty']:.3f} |"
             )
 
+    # -- A8: Byzantine-Resistant Fusion --
+    lines += [
+        "",
+        "### Byzantine-Resistant Fusion",
+        "",
+        "#### robust_fuse Throughput",
+        "",
+        "| Config | n | Adversaries | Removed | Mean (us) | Std (us) | ops/sec |",
+        "|--------|---|-------------|---------|-----------|----------|---------|",
+    ]
+    for k, v in d5.robust_fuse.items():
+        lines.append(
+            f"| {v['scenario']} | {v['n_opinions']} | {v['n_adversaries']} | "
+            f"{v['n_removed']} | {v['mean_us']:.2f} | {v['std_us']:.2f} | "
+            f"{v['ops_per_sec']:,.0f} |"
+        )
+
+    lines += [
+        "",
+        "#### byzantine_fuse Throughput (20% adversaries)",
+        "",
+        "| Strategy | n | Removed | Cohesion | Mean (us) | Std (us) | ops/sec |",
+        "|----------|---|---------|----------|-----------|----------|---------|",
+    ]
+    for k, v in d5.byzantine_fuse.items():
+        lines.append(
+            f"| {v['strategy']} | {v['n_opinions']} | {v['n_removed']} | "
+            f"{v['cohesion']:.4f} | {v['mean_us']:.2f} | {v['std_us']:.2f} | "
+            f"{v['ops_per_sec']:,.0f} |"
+        )
+
+    lines += [
+        "",
+        "#### Overhead Comparison (honest-only, no removals)",
+        "",
+        "| n | cumulative (us) | robust (us) | robust overhead | byzantine (us) | byzantine overhead |",
+        "|---|-----------------|-------------|-----------------|----------------|--------------------|",
+    ]
+    for k, v in d5.byzantine_overhead.items():
+        lines.append(
+            f"| {v['n_opinions']} | {v['cumulative_us']:.2f} | {v['robust_us']:.2f} | "
+            f"+{v['robust_overhead_pct']:.1f}% | {v['byzantine_us']:.2f} | "
+            f"+{v['byzantine_overhead_pct']:.1f}% |"
+        )
+
     # -- Domain 5 Analysis (data-driven) --
     cum_n2 = d5.cumulative_fusion.get('n=2', {})
     cum_n2_us = cum_n2.get('mean_us', 0)
@@ -753,6 +801,21 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
     cal_ece = cal['expected_calibration_error']
     cal_brier = cal['brier_score']
 
+    # A8 data extraction
+    rob_n10_k = d5.robust_fuse.get('n=10_k_adversary', {})
+    rob_n10_k_us = rob_n10_k.get('mean_us', 0)
+    rob_n10_k_removed = rob_n10_k.get('n_removed', 0)
+    rob_n100_k = d5.robust_fuse.get('n=100_k_adversary', {})
+    rob_n100_k_us = rob_n100_k.get('mean_us', 0)
+    rob_n100_k_removed = rob_n100_k.get('n_removed', 0)
+
+    overhead_n10 = d5.byzantine_overhead.get('n=10', {})
+    overhead_n100 = d5.byzantine_overhead.get('n=100', {})
+    rob_oh_n10 = overhead_n10.get('robust_overhead_pct', 0)
+    byz_oh_n10 = overhead_n10.get('byzantine_overhead_pct', 0)
+    rob_oh_n100 = overhead_n100.get('robust_overhead_pct', 0)
+    byz_oh_n100 = overhead_n100.get('byzantine_overhead_pct', 0)
+
     lines += [
         "",
         "### Analysis",
@@ -777,6 +840,14 @@ def _generate_markdown(results, d1, d2, d3, d4, db, d5, d6) -> str:
         "",
         f"Calibration: ECE={cal_ece:.4f}, Brier={cal_brier:.4f}. Cumulative fusion "
         f"of evidence-based opinions produces well-calibrated probability estimates.",
+        "",
+        f"Byzantine-resistant fusion: robust_fuse at n=10 with 20% adversaries: "
+        f"{rob_n10_k_us:.1f}us, {rob_n10_k_removed} agents removed. "
+        f"At n=100: {rob_n100_k_us:.1f}us, {rob_n100_k_removed} removed. "
+        f"Overhead vs plain cumulative_fuse: robust +{rob_oh_n10:.0f}% (n=10), "
+        f"+{rob_oh_n100:.0f}% (n=100); byzantine +{byz_oh_n10:.0f}% (n=10), "
+        f"+{byz_oh_n100:.0f}% (n=100). The O(n^2) conflict matrix dominates cost "
+        f"at larger group sizes.",
     ]
 
     # ==================================================================

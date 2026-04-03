@@ -32,6 +32,11 @@ from jsonld_ex.confidence_algebra import (
     averaging_fuse,
     trust_discount,
     deduce,
+    robust_fuse,
+)
+from jsonld_ex.confidence_byzantine import (
+    byzantine_fuse,
+    ByzantineConfig,
 )
 from jsonld_ex.confidence_bridge import (
     combine_opinions_from_scalars,
@@ -554,6 +559,195 @@ def bench_calibration(
 
 
 # ═══════════════════════════════════════════════════════════════════
+# A8: Byzantine-Resistant Fusion Throughput
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _make_adversarial_batch(
+    n_honest: int,
+    n_adversary: int,
+    seed: int = 42,
+) -> list[Opinion]:
+    """Generate a mixed honest/adversarial opinion batch.
+
+    Honest agents cluster around belief~0.7, disbelief~0.1, uncertainty~0.2.
+    Adversaries are diametrically opposed: belief~0.1, disbelief~0.7, uncertainty~0.2.
+    Realistic scenario for Byzantine-resistant fusion benchmarking.
+    """
+    rng = random.Random(seed)
+    opinions = []
+    for _ in range(n_honest):
+        b = rng.uniform(0.55, 0.85)
+        u = rng.uniform(0.05, 0.25)
+        d = 1.0 - b - u
+        if d < 0:
+            d = 0.0
+            u = 1.0 - b
+        opinions.append(Opinion(belief=b, disbelief=d, uncertainty=u, base_rate=0.5))
+    for _ in range(n_adversary):
+        b = rng.uniform(0.0, 0.15)
+        u = rng.uniform(0.05, 0.25)
+        d = 1.0 - b - u
+        opinions.append(Opinion(belief=b, disbelief=d, uncertainty=u, base_rate=0.5))
+    return opinions
+
+
+def bench_robust_fuse(
+    sizes: list[int] = [5, 10, 20, 50, 100],
+    n_trials: int = DEFAULT_TRIALS,
+    inner: int = 200,
+) -> dict[str, Any]:
+    """Measure robust_fuse throughput across opinion counts and conflict levels.
+
+    Three conflict scenarios per size:
+      - no_adversary:  all honest (measures overhead vs plain cumulative_fuse)
+      - one_adversary:  1 rogue agent
+      - k_adversary:    20% of agents are adversarial
+    """
+    results = {}
+    for n in sizes:
+        for scenario, n_adv in [
+            ("no_adversary", 0),
+            ("one_adversary", 1),
+            ("k_adversary", max(1, n // 5)),
+        ]:
+            n_honest = n - n_adv
+            opinions = _make_adversarial_batch(n_honest, n_adv, seed=42)
+
+            # Use default args to capture by value
+            def do_robust(ops=opinions):
+                return robust_fuse(ops)
+
+            stats = timed_trials_us(do_robust, inner_iterations=inner, n=n_trials)
+
+            # Also run once to get removal count for reporting
+            _, removed = robust_fuse(opinions)
+
+            key = f"n={n}_{scenario}"
+            results[key] = {
+                "n_opinions": n,
+                "n_adversaries": n_adv,
+                "scenario": scenario,
+                "n_removed": len(removed),
+                "mean_us": round(stats.mean * 1e6, 3),
+                "std_us": round(stats.std * 1e6, 3),
+                "ops_per_sec": round(1.0 / stats.mean, 0) if stats.mean > 0 else 0,
+                **stats.to_dict(),
+            }
+    return results
+
+
+def bench_byzantine_fuse(
+    sizes: list[int] = [5, 10, 20, 50, 100],
+    n_trials: int = DEFAULT_TRIALS,
+    inner: int = 200,
+) -> dict[str, Any]:
+    """Measure byzantine_fuse throughput across strategies and opinion counts.
+
+    Tests all three strategies:
+      - most_conflicting (pure discord)
+      - least_trusted (trust-weighted)
+      - combined (discord x distrust)
+
+    Uses the k_adversary scenario (20% adversaries) as the stress test,
+    with trust_weights reflecting ground truth (honest=0.9, adversary=0.1).
+    """
+    results = {}
+    for n in sizes:
+        n_adv = max(1, n // 5)
+        n_honest = n - n_adv
+        opinions = _make_adversarial_batch(n_honest, n_adv, seed=42)
+
+        # Trust weights: honest agents get high trust, adversaries get low
+        trust_weights = [0.9] * n_honest + [0.1] * n_adv
+
+        for strategy in ["most_conflicting", "least_trusted", "combined"]:
+            if strategy == "most_conflicting":
+                cfg = ByzantineConfig(strategy=strategy)
+            else:
+                cfg = ByzantineConfig(
+                    strategy=strategy,
+                    trust_weights=trust_weights,
+                )
+
+            def do_byzantine(ops=opinions, c=cfg):
+                return byzantine_fuse(ops, config=c)
+
+            stats = timed_trials_us(do_byzantine, inner_iterations=inner, n=n_trials)
+
+            # Run once for removal stats
+            report = byzantine_fuse(opinions, config=cfg)
+
+            key = f"n={n}_{strategy}"
+            results[key] = {
+                "n_opinions": n,
+                "n_adversaries": n_adv,
+                "strategy": strategy,
+                "n_removed": len(report.removed),
+                "cohesion": round(report.cohesion_score, 4),
+                "mean_us": round(stats.mean * 1e6, 3),
+                "std_us": round(stats.std * 1e6, 3),
+                "ops_per_sec": round(1.0 / stats.mean, 0) if stats.mean > 0 else 0,
+                **stats.to_dict(),
+            }
+    return results
+
+
+def bench_byzantine_overhead(
+    sizes: list[int] = [5, 10, 20, 50, 100],
+    n_trials: int = DEFAULT_TRIALS,
+    inner: int = 200,
+) -> dict[str, Any]:
+    """Compare overhead: cumulative_fuse vs robust_fuse vs byzantine_fuse.
+
+    All use the same honest-only opinions (no adversary scenario)
+    to isolate algorithmic overhead from filtering behavior.
+    """
+    results = {}
+    for n in sizes:
+        opinions = _make_opinion_batch(n)
+
+        # Plain cumulative_fuse
+        stats_plain = timed_trials_us(
+            lambda ops=opinions: cumulative_fuse(*ops),
+            inner_iterations=inner,
+            n=n_trials,
+        )
+
+        # robust_fuse (no adversaries -> no removals expected)
+        stats_robust = timed_trials_us(
+            lambda ops=opinions: robust_fuse(ops),
+            inner_iterations=inner,
+            n=n_trials,
+        )
+
+        # byzantine_fuse default (most_conflicting, no adversaries)
+        stats_byz = timed_trials_us(
+            lambda ops=opinions: byzantine_fuse(ops),
+            inner_iterations=inner,
+            n=n_trials,
+        )
+
+        plain_us = stats_plain.mean * 1e6
+        robust_us = stats_robust.mean * 1e6
+        byz_us = stats_byz.mean * 1e6
+
+        results[f"n={n}"] = {
+            "n_opinions": n,
+            "cumulative_us": round(plain_us, 3),
+            "robust_us": round(robust_us, 3),
+            "byzantine_us": round(byz_us, 3),
+            "robust_overhead_pct": round(
+                (robust_us / plain_us - 1.0) * 100, 1
+            ) if plain_us > 0 else 0,
+            "byzantine_overhead_pct": round(
+                (byz_us / plain_us - 1.0) * 100, 1
+            ) if plain_us > 0 else 0,
+        }
+    return results
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Runner
 # ═══════════════════════════════════════════════════════════════════
 
@@ -569,6 +763,9 @@ class AlgebraResults:
     opinion_formation: dict[str, Any] = field(default_factory=dict)
     information_richness: dict[str, Any] = field(default_factory=dict)
     calibration: dict[str, Any] = field(default_factory=dict)
+    robust_fuse: dict[str, Any] = field(default_factory=dict)
+    byzantine_fuse: dict[str, Any] = field(default_factory=dict)
+    byzantine_overhead: dict[str, Any] = field(default_factory=dict)
 
 
 def run_all() -> AlgebraResults:
@@ -601,6 +798,15 @@ def run_all() -> AlgebraResults:
 
     print("A7   Calibration analysis...")
     results.calibration = bench_calibration()
+
+    print("A8a  Robust fuse throughput...")
+    results.robust_fuse = bench_robust_fuse()
+
+    print("A8b  Byzantine fuse throughput (3 strategies)...")
+    results.byzantine_fuse = bench_byzantine_fuse()
+
+    print("A8c  Byzantine overhead comparison...")
+    results.byzantine_overhead = bench_byzantine_overhead()
 
     return results
 
@@ -664,3 +870,22 @@ if __name__ == "__main__":
                   f"actual={b['mean_actual']:.3f}, "
                   f"err={b['calibration_error']:.3f}, "
                   f"unc={b['mean_uncertainty']:.3f}")
+
+    print("\n--- Robust Fuse ---")
+    for k, v in r.robust_fuse.items():
+        print(f"  {k}: {v['mean_us']:.2f} +/- {v['std_us']:.2f} us "
+              f"(removed={v['n_removed']}, "
+              f"{v['ops_per_sec']:,.0f} ops/sec)")
+
+    print("\n--- Byzantine Fuse (3 strategies) ---")
+    for k, v in r.byzantine_fuse.items():
+        print(f"  {k}: {v['mean_us']:.2f} +/- {v['std_us']:.2f} us "
+              f"(removed={v['n_removed']}, "
+              f"cohesion={v['cohesion']:.4f}, "
+              f"{v['ops_per_sec']:,.0f} ops/sec)")
+
+    print("\n--- Byzantine Overhead (honest-only, no removals) ---")
+    for k, v in r.byzantine_overhead.items():
+        print(f"  {k}: cumulative={v['cumulative_us']:.2f}us, "
+              f"robust={v['robust_us']:.2f}us (+{v['robust_overhead_pct']:.1f}%), "
+              f"byzantine={v['byzantine_us']:.2f}us (+{v['byzantine_overhead_pct']:.1f}%)")
