@@ -7,7 +7,11 @@ Wraps PyLD for core JSON-LD processing and adds extension layers.
 
 __version__ = "0.7.1"
 
-from jsonld_ex.processor import JsonLdEx
+# JsonLdEx requires pyld, which may not be compatible with all Python versions.
+# Use lazy import to avoid breaking the entire package when pyld has issues.
+# Access via: from jsonld_ex.processor import JsonLdEx
+# Or:         jsonld_ex.JsonLdEx (triggers lazy load)
+
 from jsonld_ex.ai_ml import annotate, get_confidence, get_provenance, filter_by_confidence
 from jsonld_ex.vector import (
     validate_vector,
@@ -636,3 +640,11 @@ __all__ = [
     "temporal_fuse_weighted",
     "temporal_byzantine_fuse",
 ]
+
+
+def __getattr__(name: str):
+    """Lazy import for JsonLdEx (requires pyld, which may not support all Python versions)."""
+    if name == "JsonLdEx":
+        from jsonld_ex.processor import JsonLdEx
+        return JsonLdEx
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

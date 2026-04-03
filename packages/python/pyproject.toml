@@ -50,7 +50,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "PyLD>=2.0.4",
+    "PyLD>=2.0.4,<2.1",
 ]
 
 [project.optional-dependencies]
