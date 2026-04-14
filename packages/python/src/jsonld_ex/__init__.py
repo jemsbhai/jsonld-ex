@@ -5,7 +5,7 @@ Reference implementation of proposed JSON-LD 1.2 extensions.
 Wraps PyLD for core JSON-LD processing and adds extension layers.
 """
 
-__version__ = "0.7.1"
+__version__ = "0.7.2"
 
 # JsonLdEx requires pyld, which may not be compatible with all Python versions.
 # Use lazy import to avoid breaking the entire package when pyld has issues.

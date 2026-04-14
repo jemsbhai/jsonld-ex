@@ -85,6 +85,23 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - CoAP `CONTENT_FORMAT_JSONLD` corrected from 11050 (collides with `application/json` deflate) to 11100 (unassigned range)
 
+## [0.7.2] - 2026-04-14
+
+### Added
+
+**Validation Framework: 3 New Constraint Types (GAP-V8, V9, V10)**
+
+- `@class` — Instance-of check (maps to `sh:class`): constrains a property value to be a node whose `@type` includes the specified class IRI. Useful for ML schemas that require typed nested nodes (e.g., "author must be a Person").
+- `@qualifiedShape` / `@qualifiedMinCount` / `@qualifiedMaxCount` — Qualified cardinality (maps to `sh:qualifiedValueShape`): constrains how many items in a list must conform to a given shape. Enables ML quality gates like "at least 2 annotations must have confidence > 0.9".
+- `@uniqueLang` — Unique language tags (maps to `sh:uniqueLang`): ensures no two values in a list share the same `@language` tag (case-insensitive per RDF semantics).
+
+**SHACL Interop for New Constraints**
+
+- `shape_to_shacl()` now emits `sh:class`, `sh:qualifiedValueShape`/`sh:qualifiedMinCount`/`sh:qualifiedMaxCount`, and `sh:uniqueLang`
+- `shacl_to_shape()` now round-trips all three back to `@class`, `@qualifiedShape`, `@uniqueLang`
+- Removed `sh:class`, `sh:qualifiedValueShape`, and `sh:uniqueLang` from the "unsupported SHACL features" warning list
+- Only `sh:sparql`, `sh:node`, and `sh:hasValue` remain as genuinely unsupported SHACL features
+
 ## [0.7.0] — 2026-03-03
 
 ### Added

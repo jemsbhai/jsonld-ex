@@ -364,7 +364,7 @@ result = validate_node(
 # result.errors[0].message -> age exceeds @maximum
 ```
 
-Supported constraints: `@required`, `@type`, `@minimum`, `@maximum`, `@minLength`, `@maxLength`, `@pattern`, `@minCount`, `@maxCount`, `@in`/`@enum`, `@and`/`@or`/`@not` (logical combinators), `@if`/`@then`/`@else` (conditional), `@extends` (shape inheritance), nested shapes, and configurable severity levels.
+Supported constraints: `@required`, `@type`, `@minimum`, `@maximum`, `@minLength`, `@maxLength`, `@pattern`, `@minCount`, `@maxCount`, `@in`/`@enum`, `@class` (instance-of check), `@qualifiedShape`/`@qualifiedMinCount`/`@qualifiedMaxCount` (qualified cardinality), `@uniqueLang` (unique language tags), `@and`/`@or`/`@not` (logical combinators), `@if`/`@then`/`@else` (conditional), `@extends` (shape inheritance), `@lessThan`/`@lessThanOrEquals`/`@equals`/`@disjoint` (cross-property), nested shapes, and configurable severity levels.
 
 ## Data Protection and Privacy Compliance
 

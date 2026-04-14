@@ -700,6 +700,26 @@ def shape_to_shacl(
         if "@disjoint" in constraint:
             sh_property[f"{SHACL}disjoint"] = {"@id": constraint["@disjoint"]}
 
+        # -- Instance-of: @class -> sh:class (GAP-V8) --
+        if "@class" in constraint:
+            sh_property[f"{SHACL}class"] = {"@id": constraint["@class"]}
+
+        # -- Unique language tags: @uniqueLang -> sh:uniqueLang (GAP-V10) --
+        if "@uniqueLang" in constraint and constraint["@uniqueLang"] is True:
+            sh_property[f"{SHACL}uniqueLang"] = True
+
+        # -- Qualified cardinality: @qualifiedShape -> sh:qualifiedValueShape (GAP-V9) --
+        if "@qualifiedShape" in constraint:
+            q_shape = constraint["@qualifiedShape"]
+            q_shacl = shape_to_shacl(q_shape)
+            q_graph = q_shacl.get("@graph", [])
+            if q_graph:
+                sh_property[f"{SHACL}qualifiedValueShape"] = q_graph[0]
+        if "@qualifiedMinCount" in constraint:
+            sh_property[f"{SHACL}qualifiedMinCount"] = constraint["@qualifiedMinCount"]
+        if "@qualifiedMaxCount" in constraint:
+            sh_property[f"{SHACL}qualifiedMaxCount"] = constraint["@qualifiedMaxCount"]
+
         properties.append(sh_property)
 
     shacl_shape: dict[str, Any] = {
@@ -922,14 +942,42 @@ def shacl_to_shape(shacl_doc: dict[str, Any]) -> tuple[dict[str, Any], list[str]
             if val is not None:
                 constraint[shape_key] = val.get("@id") if isinstance(val, dict) else val
 
+        # -- sh:class -> @class (GAP-V8) --
+        sh_class = prop.get(f"{SHACL}class") or prop.get("sh:class")
+        if sh_class is not None:
+            constraint["@class"] = sh_class.get("@id") if isinstance(sh_class, dict) else sh_class
+
+        # -- sh:uniqueLang -> @uniqueLang (GAP-V10) --
+        sh_unique_lang = prop.get(f"{SHACL}uniqueLang")
+        if sh_unique_lang is None:
+            sh_unique_lang = prop.get("sh:uniqueLang")
+        if sh_unique_lang is True:
+            constraint["@uniqueLang"] = True
+
+        # -- sh:qualifiedValueShape -> @qualifiedShape (GAP-V9) --
+        sh_qvs = prop.get(f"{SHACL}qualifiedValueShape") or prop.get("sh:qualifiedValueShape")
+        if sh_qvs is not None and isinstance(sh_qvs, dict):
+            # Convert the nested SHACL shape back to jsonld-ex shape
+            nested_shacl = {
+                "@context": shacl_doc.get("@context", {}),
+                "@graph": [sh_qvs],
+            }
+            nested_shape, _qw = shacl_to_shape(nested_shacl)
+            constraint["@qualifiedShape"] = nested_shape
+
+        sh_qmin = prop.get(f"{SHACL}qualifiedMinCount") or prop.get("sh:qualifiedMinCount")
+        if sh_qmin is not None:
+            constraint["@qualifiedMinCount"] = int(sh_qmin)
+
+        sh_qmax = prop.get(f"{SHACL}qualifiedMaxCount") or prop.get("sh:qualifiedMaxCount")
+        if sh_qmax is not None:
+            constraint["@qualifiedMaxCount"] = int(sh_qmax)
+
         # Warn on unsupported SHACL features
         unsupported_keys = [
             (f"{SHACL}sparql", "sh:sparql"),
-            (f"{SHACL}qualifiedValueShape", "sh:qualifiedValueShape"),
-            (f"{SHACL}class", "sh:class"),
             (f"{SHACL}node", "sh:node"),
             (f"{SHACL}hasValue", "sh:hasValue"),
-            (f"{SHACL}uniqueLang", "sh:uniqueLang"),
         ]
         for full_key, short_key in unsupported_keys:
             if full_key in prop or short_key in prop:

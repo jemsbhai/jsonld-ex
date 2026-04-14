@@ -92,6 +92,36 @@ def validate_node(
                     value,
                 )
 
+        # -- Qualified cardinality (GAP-V9: @qualifiedShape, maps to sh:qualifiedValueShape) --
+        # Checked before scalar extraction because it operates on the full list,
+        # and @qualifiedMinCount must fire even when the property is absent.
+        if "@qualifiedShape" in constraint:
+            q_shape = constraint["@qualifiedShape"]
+            q_min = constraint.get("@qualifiedMinCount")
+            q_max = constraint.get("@qualifiedMaxCount")
+            if q_min is not None or q_max is not None:
+                items = value if isinstance(value, list) else ([value] if value is not None else [])
+                match_count = 0
+                for item in items:
+                    if isinstance(item, dict):
+                        item_result = validate_node(item, q_shape)
+                        if item_result.valid:
+                            match_count += 1
+                if q_min is not None and match_count < q_min:
+                    _emit(
+                        errors, warnings, severity, prop, "qualifiedMinCount",
+                        f"Expected at least {q_min} item(s) matching qualified shape, "
+                        f"found {match_count}",
+                        value,
+                    )
+                if q_max is not None and match_count > q_max:
+                    _emit(
+                        errors, warnings, severity, prop, "qualifiedMaxCount",
+                        f"Expected at most {q_max} item(s) matching qualified shape, "
+                        f"found {match_count}",
+                        value,
+                    )
+
         # -- Extract scalar for remaining constraints --
         raw = _extract_raw(value)
 
@@ -104,6 +134,46 @@ def validate_node(
 
         if raw is None and value is None:
             continue
+
+        # -- Instance-of check (GAP-V8: @class, maps to sh:class) --
+        if "@class" in constraint:
+            target = value
+            if isinstance(target, list):
+                target = target[0] if target else None
+            if target is None:
+                pass  # absent optional, already handled
+            elif not isinstance(target, dict) or "@value" in target:
+                _emit(
+                    errors, warnings, severity, prop, "class",
+                    f"Expected a node of type \"{constraint['@class']}\", "
+                    f"got {type(target).__name__}",
+                    target,
+                )
+            else:
+                target_types = _get_types(target)
+                if constraint["@class"] not in target_types:
+                    _emit(
+                        errors, warnings, severity, prop, "class",
+                        f"Expected node type \"{constraint['@class']}\", "
+                        f"found: {target_types}",
+                        target,
+                    )
+
+        # -- Unique language tags (GAP-V10: @uniqueLang, maps to sh:uniqueLang) --
+        if constraint.get("@uniqueLang") is True:
+            items = value if isinstance(value, list) else ([value] if value is not None else [])
+            seen_langs: dict[str, int] = {}
+            for item in items:
+                if isinstance(item, dict) and "@language" in item:
+                    lang = item["@language"].lower()
+                    seen_langs[lang] = seen_langs.get(lang, 0) + 1
+            duplicates = [lang for lang, count in seen_langs.items() if count > 1]
+            if duplicates:
+                _emit(
+                    errors, warnings, severity, prop, "uniqueLang",
+                    f"Duplicate language tag(s): {', '.join(sorted(duplicates))}",
+                    value,
+                )
 
         # -- Nested shape validation (GAP-V5) --
         if "@shape" in constraint:
