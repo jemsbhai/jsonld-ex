@@ -13,6 +13,7 @@ DEFAULT_RESOURCE_LIMITS = {
     "max_graph_depth": 100,
     "max_document_size": 10 * 1024 * 1024,  # 10 MB
     "max_expansion_time": 30,  # seconds
+    "max_total_nodes": 50_000,
 }
 
 SUPPORTED_ALGORITHMS = ("sha256", "sha384", "sha512")
@@ -101,20 +102,34 @@ def enforce_resource_limits(
         parsed = document
     else:
         raise TypeError(f"Document must be a str, dict, or list, got: {type(document).__name__}")
-    depth = _measure_depth(parsed)
+    depth, total_nodes = _measure_depth_and_nodes(parsed)
     if depth > resolved["max_graph_depth"]:
         raise ValueError(
             f"Document depth {depth} exceeds limit {resolved['max_graph_depth']}"
         )
+    if total_nodes > resolved["max_total_nodes"]:
+        raise ValueError(
+            f"Document node count {total_nodes} exceeds limit {resolved['max_total_nodes']}"
+        )
 
 
 def _measure_depth(obj: Any, current: int = 0) -> int:
+    """Measure max nesting depth. Public helper kept for backward compat."""
+    depth, _ = _measure_depth_and_nodes(obj, current)
+    return depth
+
+
+def _measure_depth_and_nodes(obj: Any, current: int = 0) -> tuple[int, int]:
+    """Measure max depth and total node count in a single traversal."""
     if current > _MAX_RECURSION_DEPTH:
-        return current  # Safety cap to prevent stack overflow
+        return current, 1  # Safety cap to prevent stack overflow
     if obj is None or not isinstance(obj, (dict, list)):
-        return current
+        return current, 1
     max_depth = current
+    total_nodes = 1  # Count this node
     items = obj if isinstance(obj, list) else obj.values()
     for item in items:
-        max_depth = max(max_depth, _measure_depth(item, current + 1))
-    return max_depth
+        child_depth, child_nodes = _measure_depth_and_nodes(item, current + 1)
+        max_depth = max(max_depth, child_depth)
+        total_nodes += child_nodes
+    return max_depth, total_nodes
