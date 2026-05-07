@@ -1255,9 +1255,23 @@ def shape_to_owl_restrictions(
     if restrictions:
         owl_class[f"{RDFS}subClassOf"] = restrictions if len(restrictions) > 1 else restrictions[0]
 
-    # Attach unmappable constraint annotations on the OWL class
-    for ann in unmappable_annotations:
-        owl_class[ann["key"]] = ann["value"]
+    # Attach unmappable constraint annotations with property association.
+    # Group by property IRI so that owl_to_shape can restore each
+    # constraint under the correct property (not at the shape top level).
+    if unmappable_annotations:
+        prop_constraints: list[dict[str, Any]] = []
+        for ann in unmappable_annotations:
+            # Find existing entry for this property, or create new one
+            prop_entry = None
+            for pc in prop_constraints:
+                if pc.get(f"{JSONLD_EX}onProperty") == ann["property"]:
+                    prop_entry = pc
+                    break
+            if prop_entry is None:
+                prop_entry = {f"{JSONLD_EX}onProperty": ann["property"]}
+                prop_constraints.append(prop_entry)
+            prop_entry[ann["key"]] = ann["value"]
+        owl_class[f"{JSONLD_EX}propertyConstraints"] = prop_constraints
 
     return {
         "@context": owl_context,
@@ -1541,10 +1555,46 @@ def _restore_jex_annotations(
 ) -> None:
     """Restore jex: namespace annotations from OWL class to shape.
 
-    Unmappable constraints are stored as class-level annotations in the
-    jex: namespace by shape_to_owl_restrictions.  This function detects
-    them and places them back on the shape.
+    Unmappable constraints are stored in the jex: namespace by
+    shape_to_owl_restrictions.  The preferred format is a
+    ``jex:propertyConstraints`` list where each entry carries a
+    ``jex:onProperty`` IRI so that constraints are restored under
+    the correct property.  A legacy fallback handles the old format
+    where annotations were flat class-level keys (no property
+    association).
     """
+    # ── New format: jex:propertyConstraints list ───────────────
+    prop_constraints = owl_class.get(f"{JSONLD_EX}propertyConstraints")
+    if prop_constraints is not None:
+        entries = prop_constraints if isinstance(prop_constraints, list) else [prop_constraints]
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            prop_iri = entry.get(f"{JSONLD_EX}onProperty")
+            if not prop_iri:
+                continue
+            # Ensure property dict exists in the shape
+            if prop_iri not in shape:
+                shape[prop_iri] = {}
+            target = shape[prop_iri]
+            for ekey, evalue in entry.items():
+                if ekey == f"{JSONLD_EX}onProperty":
+                    continue
+                local_name = ekey[len(JSONLD_EX):] if ekey.startswith(JSONLD_EX) else None
+                if local_name and local_name in _JEX_ANNOTATION_MAP:
+                    target[_JEX_ANNOTATION_MAP[local_name]] = evalue
+                elif local_name == "conditional":
+                    if isinstance(evalue, dict):
+                        for cond_key in ("@if", "@then", "@else"):
+                            if cond_key in evalue:
+                                target[cond_key] = evalue[cond_key]
+                    else:
+                        target[f"{JSONLD_EX}conditional"] = evalue
+                else:
+                    target[ekey] = evalue
+        return  # New format handled; skip legacy path
+
+    # ── Legacy fallback: flat class-level annotations ─────────
     for key, value in owl_class.items():
         if not key.startswith(JSONLD_EX):
             continue

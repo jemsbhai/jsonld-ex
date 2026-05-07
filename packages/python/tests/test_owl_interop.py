@@ -1980,6 +1980,155 @@ class TestOwlToShape:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# OWL PROPERTY ASSOCIATION TESTS (BUG FIX)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestOwlPropertyAssociation:
+    """Verify OWL round-trip preserves property association for unmappable constraints.
+
+    Bug: shape_to_owl_restrictions stores unmappable constraints (@lessThan,
+    @if/@then/@else, etc.) as class-level annotations, discarding the
+    property IRI they belong to. owl_to_shape then restores them at the
+    shape top-level instead of under the correct property.
+
+    These tests verify the fix: unmappable constraints must round-trip
+    under their original property.
+    """
+
+    def test_conditional_round_trip_preserves_property(self):
+        """@if/@then/@else must round-trip under the correct property."""
+        original = {
+            "@type": "http://example.org/Order",
+            "http://example.org/status": {
+                "@if": {"@in": ["shipped", "delivered"]},
+                "@then": {"@required": True},
+                "@else": {"@maxCount": 0},
+            },
+            "http://example.org/price": {
+                "@required": True,
+                "@type": "xsd:decimal",
+                "@minimum": 0,
+            },
+        }
+        owl = shape_to_owl_restrictions(original)
+        restored = owl_to_shape(owl)
+
+        # Conditional must be under the original property, not at top level
+        status = restored.get("http://example.org/status", {})
+        assert "@if" in status, \
+            f"@if must be under http://example.org/status, got shape keys: {list(restored.keys())}"
+        assert status["@if"] == {"@in": ["shipped", "delivered"]}
+        assert status["@then"] == {"@required": True}
+        assert status["@else"] == {"@maxCount": 0}
+
+        # Top-level shape should NOT have @if/@then/@else
+        assert "@if" not in restored, "@if must not be at shape top level"
+        assert "@then" not in restored, "@then must not be at shape top level"
+        assert "@else" not in restored, "@else must not be at shape top level"
+
+    def test_lessthan_round_trip_preserves_property(self):
+        """@lessThan must round-trip under the correct property."""
+        original = {
+            "@type": "http://example.org/Event",
+            "http://example.org/startDate": {
+                "@required": True,
+                "@type": "xsd:dateTime",
+                "@lessThan": "http://example.org/endDate",
+            },
+            "http://example.org/endDate": {
+                "@required": True,
+                "@type": "xsd:dateTime",
+            },
+        }
+        owl = shape_to_owl_restrictions(original)
+        restored = owl_to_shape(owl)
+
+        start = restored.get("http://example.org/startDate", {})
+        assert "@lessThan" in start, \
+            f"@lessThan must be under startDate, got: {list(restored.keys())}"
+        assert start["@lessThan"] == "http://example.org/endDate"
+
+    def test_multiple_unmappable_different_properties_no_clobber(self):
+        """Two properties with unmappable constraints must not clobber each other."""
+        original = {
+            "@type": "http://example.org/Range",
+            "http://example.org/low": {
+                "@type": "xsd:decimal",
+                "@lessThan": "http://example.org/high",
+            },
+            "http://example.org/start": {
+                "@type": "xsd:dateTime",
+                "@lessThan": "http://example.org/end",
+            },
+        }
+        owl = shape_to_owl_restrictions(original)
+        restored = owl_to_shape(owl)
+
+        low = restored.get("http://example.org/low", {})
+        start = restored.get("http://example.org/start", {})
+        assert low.get("@lessThan") == "http://example.org/high"
+        assert start.get("@lessThan") == "http://example.org/end"
+
+    def test_conditional_and_lessthan_on_different_properties(self):
+        """Mixed unmappable constraint types on different properties."""
+        original = {
+            "@type": "http://example.org/Form",
+            "http://example.org/status": {
+                "@if": {"@in": ["active"]},
+                "@then": {"@required": True},
+            },
+            "http://example.org/startDate": {
+                "@type": "xsd:dateTime",
+                "@lessThan": "http://example.org/endDate",
+            },
+            "http://example.org/password": {
+                "@type": "xsd:string",
+                "@equals": "http://example.org/confirmPassword",
+            },
+        }
+        owl = shape_to_owl_restrictions(original)
+        restored = owl_to_shape(owl)
+
+        # Each unmappable constraint under its correct property
+        assert "@if" in restored.get("http://example.org/status", {})
+        assert "@then" in restored.get("http://example.org/status", {})
+        assert restored["http://example.org/startDate"]["@lessThan"] == "http://example.org/endDate"
+        assert restored["http://example.org/password"]["@equals"] == "http://example.org/confirmPassword"
+
+    def test_owl_intermediate_preserves_property_iri(self):
+        """The OWL intermediate form must include property IRI for unmappable constraints."""
+        original = {
+            "@type": "http://example.org/Order",
+            "http://example.org/status": {
+                "@if": {"@in": ["shipped"]},
+                "@then": {"@required": True},
+            },
+        }
+        owl = shape_to_owl_restrictions(original)
+        owl_str = json.dumps(owl)
+        # The property IRI must appear somewhere in the OWL output
+        assert "http://example.org/status" in owl_str, \
+            "OWL intermediate must preserve property IRI for unmappable constraints"
+
+    def test_severity_round_trip_preserves_property(self):
+        """@severity must round-trip under the correct property."""
+        original = {
+            "@type": "http://example.org/Thing",
+            "http://example.org/field": {
+                "@required": True,
+                "@severity": "warning",
+            },
+        }
+        owl = shape_to_owl_restrictions(original)
+        restored = owl_to_shape(owl)
+
+        field = restored.get("http://example.org/field", {})
+        assert field.get("@severity") == "warning", \
+            f"@severity must be under field, got: {restored}"
+
+
+# ═══════════════════════════════════════════════════════════════════
 # RDF-STAR TESTS
 # ═══════════════════════════════════════════════════════════════════
 
