@@ -1570,6 +1570,23 @@ def _from_patient_r4(
     completeness: more populated demographic fields → lower
     uncertainty (more confident the record is accurate).
     """
+    # Extension recovery (round-trip path)
+    dq_ext = resource.get("_data_quality")
+    recovered = _try_recover_opinion(dq_ext)
+    if recovered is not None:
+        doc: dict[str, Any] = {
+            "@type": "fhir:Patient",
+            "id": resource.get("id"),
+            "opinions": [{
+                "field": "data_quality",
+                "value": "from_extension",
+                "opinion": recovered,
+                "source": "extension",
+            }],
+        }
+        return doc, ConversionReport(success=True, nodes_converted=1)
+
+    # Reconstruct from data completeness
     # Count populated data-quality fields.
     quality_fields = (
         "name", "gender", "birthDate", "telecom", "address",
