@@ -77,6 +77,7 @@ References:
 
 from jsonld_ex.fhir_interop._constants import (
     FHIR_EXTENSION_URL,
+    FHIR_COMPLIANCE_EXTENSION_URL,
     SUPPORTED_FHIR_VERSIONS,
     SUPPORTED_RESOURCE_TYPES,
     FAMILY_HISTORY_DEFAULT_UNCERTAINTY,
@@ -142,6 +143,9 @@ from jsonld_ex.fhir_interop._compliance import (
     fhir_multi_site_meet,
     fhir_consent_expiry,
     fhir_consent_regulatory_change,
+    ComplianceOpinionCarrier,
+    fhir_attach_compliance_opinion,
+    fhir_read_compliance_opinion,
 )
 from jsonld_ex.fhir_interop._provenance import (
     fhir_provenance_to_prov_o,
@@ -164,6 +168,7 @@ __all__ = [
     "to_fhir",
     # Constants
     "FHIR_EXTENSION_URL",
+    "FHIR_COMPLIANCE_EXTENSION_URL",
     "SUPPORTED_FHIR_VERSIONS",
     "SUPPORTED_RESOURCE_TYPES",
     "FAMILY_HISTORY_DEFAULT_UNCERTAINTY",
@@ -204,6 +209,10 @@ __all__ = [
     "fhir_multi_site_meet",
     "fhir_consent_expiry",
     "fhir_consent_regulatory_change",
+    # Resource-level compliance opinion carrier
+    "ComplianceOpinionCarrier",
+    "fhir_attach_compliance_opinion",
+    "fhir_read_compliance_opinion",
     # Bundle processing
     "BundleReport",
     "fhir_bundle_annotate",

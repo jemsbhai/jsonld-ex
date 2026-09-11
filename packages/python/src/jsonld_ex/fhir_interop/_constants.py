@@ -18,6 +18,16 @@ do not understand this extension will ignore it; jsonld-ex-aware
 systems can recover the full opinion for downstream reasoning.
 """
 
+FHIR_COMPLIANCE_EXTENSION_URL = "https://jsonld-ex.github.io/ns/fhir/compliance-opinion"
+"""FHIR extension URL for the resource-level compliance opinion carrier.
+
+Placed in ``Resource.meta.extension``.  Distinct from FHIR_EXTENSION_URL
+because a compliance opinion is about the lawfulness of handling a
+resource, not about the truth of a clinical assertion.  Same
+four-component structure (belief, disbelief, uncertainty, baseRate),
+read back as a ComplianceOpinion.
+"""
+
 SUPPORTED_FHIR_VERSIONS = ("R4",)
 """FHIR versions with implemented conversion logic."""
 

@@ -29,6 +29,8 @@ Design rationale:
 
 from __future__ import annotations
 
+import copy
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Optional, Union
 
@@ -44,7 +46,9 @@ from jsonld_ex.compliance_algebra import (
 from jsonld_ex.fhir_interop._constants import (
     CONSENT_STATUS_PROBABILITY,
     CONSENT_STATUS_UNCERTAINTY,
+    FHIR_COMPLIANCE_EXTENSION_URL,
     FHIR_EXTENSION_URL,
+    SUPPORTED_FHIR_VERSIONS,
 )
 from jsonld_ex.fhir_interop._scalar import (
     scalar_to_opinion,
@@ -737,4 +741,200 @@ def fhir_consent_regulatory_change(
         assessment_time=float(t_assess.toordinal()),
         trigger_time=float(t_change.toordinal()),
         new_opinion=new_op,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Resource-level compliance opinion carrier (Resource.meta.extension)
+# ═══════════════════════════════════════════════════════════════════
+#
+# A compliance opinion (l, v, u, a) about a whole resource or Bundle
+# (for example the PHI classification of a Patient record, or the
+# dual-regime HIPAA x GDPR status of a Bundle) is carried as a complex
+# extension in ``Resource.meta.extension``.  ``Meta`` is an Element in
+# FHIR R4 and therefore may carry extensions; systems that do not know
+# the extension ignore it.  The clinical-assertion carrier (see
+# ``opinion_to_fhir_extension``) attaches to the qualified element
+# instead, under a different URL, so the two are never confused.
+
+_COMPLIANCE_COMPONENTS = ("belief", "disbelief", "uncertainty", "baseRate")
+_CONSTRAINT_TOL = 1e-9
+
+
+@dataclass(frozen=True)
+class ComplianceOpinionCarrier:
+    """A compliance opinion read from a FHIR resource, with its metadata.
+
+    Attributes:
+        opinion:     The ComplianceOpinion (l, v, u, a).
+        regime:      Optional regime code as written (e.g. "HIPAA",
+                     "GDPR", "HIPAA+GDPR"), or None.
+        assessed_at: Optional ISO 8601 timestamp of the assessment, or None.
+    """
+
+    opinion: ComplianceOpinion
+    regime: Optional[str] = None
+    assessed_at: Optional[str] = None
+
+
+def _validate_fhir_version(fhir_version: str) -> None:
+    if fhir_version not in SUPPORTED_FHIR_VERSIONS:
+        raise ValueError(
+            f"Unsupported FHIR version '{fhir_version}'; "
+            f"supported: {SUPPORTED_FHIR_VERSIONS}"
+        )
+
+
+def _validate_any_resource(resource: Any) -> None:
+    if not isinstance(resource, dict):
+        raise ValueError("resource must be a FHIR resource dict")
+    resource_type = resource.get("resourceType")
+    if not isinstance(resource_type, str) or not resource_type:
+        raise ValueError("resource must have a non-empty string 'resourceType'")
+
+
+def fhir_attach_compliance_opinion(
+    resource: dict[str, Any],
+    opinion: ComplianceOpinion,
+    *,
+    regime: Optional[str] = None,
+    assessed_at: Optional[str] = None,
+    fhir_version: str = "R4",
+) -> dict[str, Any]:
+    """Return a copy of *resource* carrying *opinion* in ``meta.extension``.
+
+    The input is not mutated.  An existing compliance opinion extension
+    is replaced, so repeated calls never accumulate duplicates.  Other
+    ``meta`` fields and other extensions are preserved.
+
+    Args:
+        resource:    Any FHIR R4 resource dict (Bundle included).
+        opinion:     The ComplianceOpinion to carry.
+        regime:      Optional regime code written as a ``valueCode``
+                     sub-extension (``regime``).
+        assessed_at: Optional ISO 8601 timestamp written as a
+                     ``valueDateTime`` sub-extension (``assessedAt``).
+        fhir_version: FHIR version (currently only "R4").
+
+    Returns:
+        A deep copy of *resource* with the extension attached.
+
+    Raises:
+        ValueError: If *resource* is not a resource dict, the version is
+            unsupported, or *regime* / *assessed_at* are empty or not strings.
+        TypeError:  If *opinion* is not a ComplianceOpinion.
+    """
+    _validate_fhir_version(fhir_version)
+    _validate_any_resource(resource)
+    if not isinstance(opinion, ComplianceOpinion):
+        raise TypeError(
+            f"opinion must be a ComplianceOpinion, got {type(opinion).__name__}"
+        )
+    if regime is not None and (not isinstance(regime, str) or not regime):
+        raise ValueError("regime must be a non-empty string code")
+    if assessed_at is not None and (
+        not isinstance(assessed_at, str) or not assessed_at
+    ):
+        raise ValueError("assessed_at must be a non-empty ISO 8601 string")
+
+    out = copy.deepcopy(resource)
+    meta = out.get("meta")
+    if meta is None:
+        meta = {}
+        out["meta"] = meta
+    if not isinstance(meta, dict):
+        raise ValueError("resource 'meta' must be an object")
+
+    kept = [
+        e for e in meta.get("extension", [])
+        if not (isinstance(e, dict) and e.get("url") == FHIR_COMPLIANCE_EXTENSION_URL)
+    ]
+    sub: list[dict[str, Any]] = [
+        {"url": "belief", "valueDecimal": opinion.belief},
+        {"url": "disbelief", "valueDecimal": opinion.disbelief},
+        {"url": "uncertainty", "valueDecimal": opinion.uncertainty},
+        {"url": "baseRate", "valueDecimal": opinion.base_rate},
+    ]
+    if regime is not None:
+        sub.append({"url": "regime", "valueCode": regime})
+    if assessed_at is not None:
+        sub.append({"url": "assessedAt", "valueDateTime": assessed_at})
+    kept.append({"url": FHIR_COMPLIANCE_EXTENSION_URL, "extension": sub})
+    meta["extension"] = kept
+    return out
+
+
+def fhir_read_compliance_opinion(
+    resource: dict[str, Any],
+    *,
+    fhir_version: str = "R4",
+) -> Optional[ComplianceOpinionCarrier]:
+    """Read the compliance opinion carried in ``resource.meta.extension``.
+
+    Reverses :func:`fhir_attach_compliance_opinion`.
+
+    Returns:
+        A ComplianceOpinionCarrier, or None if the resource carries no
+        compliance opinion extension.
+
+    Raises:
+        ValueError: If *resource* is not a resource dict, the version is
+            unsupported, more than one compliance extension is present,
+            a component is missing or outside [0, 1], or the constraint
+            l + v + u = 1 is violated beyond 1e-9.
+    """
+    _validate_fhir_version(fhir_version)
+    _validate_any_resource(resource)
+    meta = resource.get("meta")
+    if not isinstance(meta, dict):
+        return None
+    matches = [
+        e for e in meta.get("extension", [])
+        if isinstance(e, dict) and e.get("url") == FHIR_COMPLIANCE_EXTENSION_URL
+    ]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        raise ValueError(
+            "resource carries more than one compliance opinion extension"
+        )
+
+    values: dict[str, float] = {}
+    regime: Optional[str] = None
+    assessed_at: Optional[str] = None
+    for sub in matches[0].get("extension", []):
+        if not isinstance(sub, dict):
+            raise ValueError("malformed compliance opinion sub-extension")
+        url = sub.get("url")
+        if url in _COMPLIANCE_COMPONENTS:
+            if "valueDecimal" not in sub:
+                raise ValueError(f"sub-extension '{url}' lacks valueDecimal")
+            values[url] = float(sub["valueDecimal"])
+        elif url == "regime":
+            regime = sub.get("valueCode")
+        elif url == "assessedAt":
+            assessed_at = sub.get("valueDateTime")
+
+    missing = set(_COMPLIANCE_COMPONENTS) - values.keys()
+    if missing:
+        raise ValueError(
+            f"Missing required sub-extension(s): {sorted(missing)}"
+        )
+    for name, value in values.items():
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"sub-extension '{name}' = {value} is outside [0, 1]")
+    total = values["belief"] + values["disbelief"] + values["uncertainty"]
+    if abs(total - 1.0) > _CONSTRAINT_TOL:
+        raise ValueError(
+            f"constraint l + v + u = 1 violated: sum = {total}"
+        )
+
+    opinion = ComplianceOpinion.create(
+        lawfulness=values["belief"],
+        violation=values["disbelief"],
+        uncertainty=values["uncertainty"],
+        base_rate=values["baseRate"],
+    )
+    return ComplianceOpinionCarrier(
+        opinion=opinion, regime=regime, assessed_at=assessed_at
     )
